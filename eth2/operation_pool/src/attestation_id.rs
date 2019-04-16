@@ -1,6 +1,5 @@
 use int_to_bytes::int_to_bytes8;
 use ssz::ssz_encode;
-// use types::chain_spec::Domain;
 use types::{AttestationData, BeaconState, ChainSpec, Domain, Epoch};
 
 /// Serialized `AttestationData` augmented with a domain to encode the fork info.

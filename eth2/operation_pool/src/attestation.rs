@@ -50,14 +50,16 @@ impl<'a> MaxCover for AttMaxCover<'a> {
     }
 }
 
-/// Compute a fitness score for an attestation.
+/// Extract the validators for which `attestation` would be their earliest in the epoch.
 ///
-/// The score is calculated by determining the number of *new* attestations that
-/// the aggregate attestation introduces, and is proportional to the size of the reward we will
-/// receive for including it in a block.
-// TODO: this could be optimised with a map from validator index to whether that validator has
+/// The reward paid to a proposer for including an attestation is proportional to the number
+/// of validators for which the included attestation is their first in the epoch. The attestation
+/// is judged against the state's `current_epoch_attestations` or `previous_epoch_attestations`
+/// depending on when it was created, and all those validators who have already attested are
+/// removed from the `aggregation_bitfield` before returning it.
+// TODO: This could be optimised with a map from validator index to whether that validator has
 // attested in each of the current and previous epochs. Currently quadractic in number of validators.
-pub fn attestation_score(
+pub fn earliest_attestation_validators(
     attestation: &Attestation,
     state: &BeaconState,
     spec: &ChainSpec,
@@ -80,10 +82,10 @@ pub fn attestation_score(
         // In a single epoch, an attester should only be attesting for one shard.
         // TODO: we avoid including slashable attestations in the state here,
         // but maybe we should do something else with them (like construct slashings).
-        .filter(|current_attestation| current_attestation.data.shard == attestation.data.shard)
-        .for_each(|current_attestation| {
+        .filter(|existing_attestation| existing_attestation.data.shard == attestation.data.shard)
+        .for_each(|existing_attestation| {
             // Remove the validators who have signed the existing attestation (they are not new)
-            new_validators.difference_inplace(&current_attestation.aggregation_bitfield);
+            new_validators.difference_inplace(&existing_attestation.aggregation_bitfield);
         });
 
     new_validators

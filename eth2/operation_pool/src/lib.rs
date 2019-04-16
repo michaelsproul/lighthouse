@@ -2,7 +2,7 @@ mod attestation;
 mod attestation_id;
 mod max_cover;
 
-use attestation::{attestation_score, AttMaxCover};
+use attestation::{earliest_attestation_validators, AttMaxCover};
 use attestation_id::AttestationId;
 use itertools::Itertools;
 use max_cover::maximum_cover;
@@ -130,7 +130,7 @@ impl OperationPool {
             .flat_map(|(_, attestations)| attestations)
             // That are valid...
             .filter(|attestation| validate_attestation(state, attestation, spec).is_ok())
-            .map(|att| AttMaxCover::new(att, attestation_score(att, state, spec)));
+            .map(|att| AttMaxCover::new(att, earliest_attestation_validators(att, state, spec)));
 
         maximum_cover(valid_attestations, spec.max_attestations as usize)
     }
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     #[cfg(not(debug_assertions))]
-    fn test_attestation_score() {
+    fn test_earliest_attestation() {
         let spec = &ChainSpec::foundation();
         let (ref mut state, ref keypairs) = attestation_test_state(spec, 1);
         let slot = state.slot - 1;
@@ -680,7 +680,7 @@ mod tests {
 
             assert_eq!(
                 att1.aggregation_bitfield.num_set_bits(),
-                attestation_score(&att1, state, spec).num_set_bits()
+                earliest_attestation_validators(&att1, state, spec).num_set_bits()
             );
 
             state
@@ -689,7 +689,7 @@ mod tests {
 
             assert_eq!(
                 committee.committee.len() - 2,
-                attestation_score(&att2, state, spec).num_set_bits()
+                earliest_attestation_validators(&att2, state, spec).num_set_bits()
             );
         }
     }
