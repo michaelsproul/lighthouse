@@ -90,7 +90,7 @@ fn validate_attestation_parametric(
     //
     // Verify that either:
     //
-    // (i)`state.latest_crosslinks[attestation.data.shard] == attestation.data.latest_crosslink`,
+    // (i)`state.latest_crosslinks[attestation.data.shard] == attestation.data.previous_crosslink`,
     //
     // (ii) `state.latest_crosslinks[attestation.data.shard] ==
     // Crosslink(crosslink_data_root=attestation.data.crosslink_data_root,
