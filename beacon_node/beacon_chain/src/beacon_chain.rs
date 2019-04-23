@@ -662,6 +662,11 @@ where
             self.update_state(state)?;
         }
 
+        // Prune the operation pool
+        // FIXME(sproul): Could do this less often (only upon changes to the finalized head?)
+        self.op_pool
+            .prune_all(&self.finalized_head().beacon_state, &self.spec);
+
         Ok(BlockProcessingOutcome::ValidBlock(ValidBlock::Processed))
     }
 
