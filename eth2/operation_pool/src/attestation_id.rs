@@ -1,10 +1,17 @@
 use int_to_bytes::int_to_bytes8;
 use ssz::ssz_encode;
+use std::fmt;
 use types::{AttestationData, BeaconState, ChainSpec, Domain, Epoch};
 
 /// Serialized `AttestationData` augmented with a domain to encode the fork info.
-#[derive(PartialEq, Eq, Clone, Hash, Debug)]
+#[derive(PartialEq, Eq, Clone, Hash)]
 pub struct AttestationId(Vec<u8>);
+
+impl fmt::Debug for AttestationId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "AttestationId(..)")
+    }
+}
 
 /// Number of domain bytes that the end of an attestation ID is padded with.
 const DOMAIN_BYTES_LEN: usize = 8;

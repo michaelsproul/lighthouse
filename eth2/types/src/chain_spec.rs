@@ -108,12 +108,12 @@ pub struct ChainSpec {
      *
      * Use `ChainSpec::get_domain(..)` to access these values.
      */
-    domain_beacon_block: u32,
-    domain_randao: u32,
-    domain_attestation: u32,
-    domain_deposit: u32,
-    domain_exit: u32,
-    domain_transfer: u32,
+    pub domain_beacon_block: u32,
+    pub domain_randao: u32,
+    pub domain_attestation: u32,
+    pub domain_deposit: u32,
+    pub domain_exit: u32,
+    pub domain_transfer: u32,
 
     /*
      * Network specific parameters

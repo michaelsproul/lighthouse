@@ -12,7 +12,7 @@ use std::default;
 
 /// A BooleanBitfield represents a set of booleans compactly stored as a vector of bits.
 /// The BooleanBitfield is given a fixed size during construction. Reads outside of the current size return an out-of-bounds error. Writes outside of the current size expand the size of the set.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct BooleanBitfield(BitVec);
 
 /// Error represents some reason a request against a bitfield was not satisfied
@@ -175,6 +175,7 @@ impl cmp::PartialEq for BooleanBitfield {
         ssz::ssz_encode(self) == ssz::ssz_encode(other)
     }
 }
+impl Eq for BooleanBitfield {}
 
 /// Create a new bitfield that is a union of two other bitfields.
 ///
