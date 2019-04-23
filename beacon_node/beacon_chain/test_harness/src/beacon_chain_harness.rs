@@ -135,7 +135,7 @@ impl BeaconChainHarness {
         slot
     }
 
-    pub fn gather_attesations(&mut self) -> Vec<Attestation> {
+    pub fn gather_attestations(&mut self) -> Vec<Attestation> {
         let present_slot = self.beacon_chain.present_slot();
         let state = self.beacon_chain.state.read();
 
@@ -234,7 +234,7 @@ impl BeaconChainHarness {
         debug!("Producing attestations...");
 
         // Produce new attestations.
-        let attestations = self.gather_attesations();
+        let attestations = self.gather_attestations();
 
         debug!("Processing {} attestations...", attestations.len());
 
