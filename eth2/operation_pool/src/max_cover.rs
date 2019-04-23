@@ -51,8 +51,9 @@ where
     let mut all_items: Vec<_> = items_iter
         .into_iter()
         .map(MaxCoverItem::new)
-        .filter(|x| x.item.score() != 0)
+        // .filter(|x| x.item.score() != 0)
         .collect();
+    // println!("max_cover, all_items.len(): {}", all_items.len());
 
     let mut result = vec![];
 

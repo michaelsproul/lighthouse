@@ -103,7 +103,20 @@ fn validate_attestation_parametric(
         (attestation.data.previous_crosslink
             == state.latest_crosslinks[attestation.data.shard as usize])
             | (state.latest_crosslinks[attestation.data.shard as usize] == potential_crosslink),
-        Invalid::BadPreviousCrosslink
+        {
+            /*
+            println!(
+                "state.latest_crosslink: {:?}",
+                state.latest_crosslinks[attestation.data.shard as usize]
+            );
+            println!("attestation creating crosslink: {:?}", potential_crosslink);
+            println!(
+                "attestation previous crosslink: {:?}",
+                attestation.data.previous_crosslink
+            );
+            */
+            Invalid::BadPreviousCrosslink
+        }
     );
 
     // Attestation must be non-empty!
@@ -301,5 +314,6 @@ fn verify_attestation_signature(
         Invalid::BadSignature
     );
 
+    println!("verifying attestation at slot {}", a.data.slot.as_u64());
     Ok(())
 }

@@ -115,6 +115,8 @@ impl OperationPool {
 
     /// Get a list of attestations for inclusion in a block.
     pub fn get_attestations(&self, state: &BeaconState, spec: &ChainSpec) -> Vec<Attestation> {
+        use state_processing::per_block_processing::errors::AttestationInvalid;
+
         // Attestations for the current fork, which may be from the current or previous epoch.
         let prev_epoch = state.previous_epoch(spec);
         let current_epoch = state.current_epoch(spec);
@@ -129,7 +131,20 @@ impl OperationPool {
             })
             .flat_map(|(_, attestations)| attestations)
             // That are valid...
-            .filter(|attestation| validate_attestation(state, attestation, spec).is_ok())
+            .filter(
+                |attestation| match validate_attestation(state, attestation, spec) {
+                    Ok(_) => true,
+                    Err(AttestationValidationError::Invalid(AttestationInvalid::BadSignature)) => {
+                        println!(
+                            "attestation from slot {} invalid with bad sig",
+                            attestation.data.slot
+                        );
+                        // println!("attestation is {:#?}", attestation);
+                        false
+                    }
+                    Err(_) => false,
+                },
+            )
             .map(|att| AttMaxCover::new(att, earliest_attestation_validators(att, state, spec)));
 
         maximum_cover(valid_attestations, spec.max_attestations as usize)

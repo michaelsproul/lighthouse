@@ -158,6 +158,11 @@ impl BeaconChainHarness {
                     .unwrap();
 
                 // Produce an aggregate signature with a single signature.
+                println!(
+                    "producing an attestation for slot {} from validator {}",
+                    state.slot.as_u64(),
+                    validator
+                );
                 let aggregate_signature = {
                     let message = AttestationDataAndCustodyBit {
                         data: data.clone(),

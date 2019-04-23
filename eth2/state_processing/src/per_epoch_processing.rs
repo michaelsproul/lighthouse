@@ -185,11 +185,16 @@ pub fn process_crosslinks(
 ) -> Result<WinningRootHashSet, Error> {
     let mut winning_root_for_shards: WinningRootHashSet = HashMap::new();
 
-    let previous_and_current_epoch_slots: Vec<Slot> = state
-        .previous_epoch(spec)
-        .slot_iter(spec.slots_per_epoch)
-        .chain(state.current_epoch(spec).slot_iter(spec.slots_per_epoch))
-        .collect();
+    let current_epoch = state.current_epoch(spec);
+    let previous_and_current_epoch_slots: Vec<Slot> = if current_epoch == spec.genesis_epoch {
+        current_epoch.slot_iter(spec.slots_per_epoch).collect()
+    } else {
+        state
+            .previous_epoch(spec)
+            .slot_iter(spec.slots_per_epoch)
+            .chain(state.current_epoch(spec).slot_iter(spec.slots_per_epoch))
+            .collect()
+    };
 
     for slot in previous_and_current_epoch_slots {
         // Clone removes the borrow which becomes an issue when mutating `state.balances`.
@@ -205,7 +210,17 @@ pub fn process_crosslinks(
                 let total_committee_balance = state.get_total_balance(&c.committee, spec)?;
 
                 // TODO: I think this has a bug.
+                // FIXME: yeah, this is COOKED
                 if (3 * winning_root.total_attesting_balance) >= (2 * total_committee_balance) {
+                    /*
+                    println!(
+                        "setting crosslink for shard {}, epoch: {} => {} (slot is: {})",
+                        shard,
+                        state.latest_crosslinks[shard as usize].epoch.as_u64(),
+                        slot.epoch(spec.slots_per_epoch).as_u64(),
+                        slot.as_u64()
+                    );
+                    */
                     state.latest_crosslinks[shard as usize] = Crosslink {
                         epoch: slot.epoch(spec.slots_per_epoch),
                         crosslink_data_root: winning_root.crosslink_data_root,
