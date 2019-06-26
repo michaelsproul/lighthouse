@@ -265,3 +265,54 @@ fn roundtrip_operation_pool() {
 
     assert_eq!(harness.chain.op_pool, restored_op_pool);
 }
+
+#[test]
+fn operation_pool_outputs_all_attestations() {
+    let num_blocks = MinimalEthSpec::slots_per_epoch() * 5;
+
+    let harness = get_harness(VALIDATOR_COUNT);
+
+    // Produce `num_blocks` plus a few more to get all the attestations included on-chain.
+    harness.extend_chain(
+        num_blocks as usize,
+        BlockStrategy::OnCanonicalHead,
+        AttestationStrategy::AllValidators,
+    );
+
+    harness.advance_slot();
+
+    harness.extend_chain(
+        dbg!(harness.spec.min_attestation_inclusion_delay) as usize,
+        BlockStrategy::OnCanonicalHead,
+        AttestationStrategy::SomeValidators(vec![]),
+    );
+
+    let state = &harness.chain.current_state();
+    println!("state slot is: {}", state.slot);
+
+    // TODO: work out why the 42nd block (latest) isn't included in the reverse iter
+
+    let all_attestations: Vec<_> = harness
+        .chain
+        .rev_iter_blocks(state.slot)
+        .flat_map(|block| {
+            println!(
+                "In block {} ({:?}): {:#?}",
+                block.slot,
+                block.canonical_root(),
+                block.body.attestations.first()
+            );
+            block.body.attestations
+        })
+        .collect::<Vec<_>>();
+
+    println!("Num attestations: {}", all_attestations.len());
+    println!(
+        "Attestation value: {}",
+        all_attestations
+            .iter()
+            .map(|a| a.aggregation_bitfield.num_set_bits())
+            .sum::<usize>()
+    );
+    println!("Expected: {}", num_blocks as usize * VALIDATOR_COUNT);
+}

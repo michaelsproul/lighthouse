@@ -156,7 +156,8 @@ where
 
         let mut head_block_root = None;
 
-        for _ in 0..num_blocks {
+        for i in 0..num_blocks {
+            println!("Making the {}th block at slot {}", i, slot);
             while self.chain.read_slot_clock().expect("should have a slot") < slot {
                 self.advance_slot();
             }
