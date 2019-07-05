@@ -16,6 +16,16 @@ pub struct FixedLenVec<T, N> {
 }
 
 impl<T, N: Unsigned> FixedLenVec<T, N> {
+    pub fn from_elem(elem: T) -> Self
+    where
+        T: Clone,
+    {
+        Self {
+            vec: vec![elem; N::to_usize()],
+            _phantom: PhantomData,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.vec.len()
     }
