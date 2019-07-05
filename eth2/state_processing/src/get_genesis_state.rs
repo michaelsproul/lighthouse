@@ -7,6 +7,30 @@ pub enum GenesisError {
     BeaconStateError(BeaconStateError),
 }
 
+/// New genesis state
+pub fn initialize_beacon_state_from_eth1(
+    eth1_block_hash: Hash256,
+    eth1_timestamp: u64,
+    deposits: Vec<Deposit>,
+    spec: &ChainSpec,
+) -> Self {
+    let genesis_time =
+        eth1_timestamp - eth_timestamp % spec.seconds_per_day + 2 * spec.seconds_per_day;
+    let eth1_data = Eth1Data {
+        // Temporary deposit root
+        deposit_root: spec.zero_hash,
+        deposit_count: deposits.len() as u64,
+        block_hash: eth1_block_hash,
+    };
+    let mut state = BeaconState::new(genesis_time, eth1_data, spec);
+
+    // Process deposits
+    // TODO: merkle tree construction (needs tree hash impl for Lists)
+    for i, deposit in deposits.iter().enumerate() {
+        process
+    }
+}
+
 /// Returns the genesis `BeaconState`
 ///
 /// Spec v0.6.3
