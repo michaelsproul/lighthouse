@@ -26,7 +26,7 @@ pub type WinningRootHashSet = HashMap<u64, WinningRoot>;
 /// Mutates the given `BeaconState`, returning early if an error is encountered. If an error is
 /// returned, a state might be "half-processed" and therefore in an invalid state.
 ///
-/// Spec v0.6.3
+/// Spec v0.8.0
 pub fn per_epoch_processing<T: EthSpec>(
     state: &mut BeaconState<T>,
     spec: &ChainSpec,
@@ -80,38 +80,42 @@ pub fn per_epoch_processing<T: EthSpec>(
 /// - `finalized_epoch`
 /// - `finalized_root`
 ///
-/// Spec v0.6.3
+/// Spec v0.8.0
 pub fn process_justification_and_finalization<T: EthSpec>(
     state: &mut BeaconState<T>,
     total_balances: &TotalBalances,
 ) -> Result<(), Error> {
-    if state.current_epoch() == T::genesis_epoch() {
+    if state.current_epoch() <= T::genesis_epoch() + 1 {
         return Ok(());
     }
 
     let previous_epoch = state.previous_epoch();
     let current_epoch = state.current_epoch();
 
-    let old_previous_justified_epoch = state.previous_justified_epoch;
-    let old_current_justified_epoch = state.current_justified_epoch;
+    let old_previous_justified_checkpoint = state.previous_justified_checkpoint;
+    let old_current_justified_checkpoint = state.current_justified_checkpoint;
 
     // Process justifications
-    state.previous_justified_epoch = state.current_justified_epoch;
-    state.previous_justified_root = state.current_justified_root;
-    state.justification_bitfield <<= 1;
+    state.previous_justified_checkpoint = state.current_justified_epoch.clone();
+    // FIXME(freeze): justification_bits
+    // state.justification_bitfield <<= 1;
 
-    if total_balances.previous_epoch_target_attesters * 3 >= total_balances.previous_epoch * 2 {
-        state.current_justified_epoch = previous_epoch;
-        state.current_justified_root =
-            *state.get_block_root_at_epoch(state.current_justified_epoch)?;
-        state.justification_bitfield |= 2;
+    if total_balances.previous_epoch_target_attesters * 3 >= total_balances.current_epoch * 2 {
+        state.current_justified_checkpoint = Checkpoint {
+            epoch: previous_epoch,
+            root: *state.get_block_root_at_epoch(previous_epoch)?,
+        };
+        // FIXME(freeze): justification bits
+        // state.justification_bits[1] = 0b1
     }
     // If the current epoch gets justified, fill the last bit.
     if total_balances.current_epoch_target_attesters * 3 >= total_balances.current_epoch * 2 {
-        state.current_justified_epoch = current_epoch;
-        state.current_justified_root =
-            *state.get_block_root_at_epoch(state.current_justified_epoch)?;
-        state.justification_bitfield |= 1;
+        state.current_justified_checkpoint = Checkpoint {
+            epoch: current_epoch,
+            root: *state.get_block_root_at_epoch(current_epoch)?,
+        };
+        // FIXME(freeze): justification bits
+        // state.justification_bits[0] = 0b1
     }
 
     let bitfield = state.justification_bitfield;
