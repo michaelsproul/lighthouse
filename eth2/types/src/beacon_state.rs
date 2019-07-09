@@ -11,6 +11,7 @@ use pubkey_cache::PubkeyCache;
 use serde_derive::{Deserialize, Serialize};
 use ssz::ssz_encode;
 use ssz_derive::{Decode, Encode};
+use ssz_types::BitVector;
 use test_random_derive::TestRandom;
 use tree_hash::TreeHash;
 use tree_hash_derive::{CachedTreeHash, TreeHash};
@@ -44,7 +45,6 @@ pub enum Error {
     InsufficientIndexRoots,
     InsufficientAttestations,
     InsufficientCommittees,
-    InsufficientSlashedBalances,
     InsufficientStateRoots,
     NoCommitteeForShard,
     NoCommitteeForSlot,
@@ -64,6 +64,7 @@ pub enum Error {
 /// The state of the `BeaconChain` at some slot.
 ///
 /// Spec v0.6.3
+// FIXME(freeze): re-enable CachedTreeHash
 #[derive(
     Debug,
     PartialEq,
@@ -74,7 +75,6 @@ pub enum Error {
     Encode,
     Decode,
     TreeHash,
-    CachedTreeHash,
     CompareFields,
 )]
 pub struct BeaconState<T>
@@ -124,7 +124,8 @@ where
     pub current_crosslinks: FixedLenVec<Crosslink, T::ShardCount>,
 
     // Finality
-    pub justification_bits: Bitfield,
+    #[test_random(default)]
+    pub justification_bits: BitVector<T::JustificationBitsLength>,
     pub previous_justified_checkpoint: Checkpoint,
     pub current_justified_checkpoint: Checkpoint,
     pub finalized_checkpoint: Checkpoint,
@@ -202,7 +203,7 @@ impl<T: EthSpec> BeaconState<T> {
             current_crosslinks: FixedLenVec::from_elem(Crosslink::default()),
 
             // Finality
-            justification_bits: Bitfield::new(),
+            justification_bits: BitVector::new(),
             previous_justified_checkpoint: Checkpoint::default(),
             current_justified_checkpoint: Checkpoint::default(),
             finalized_checkpoint: Checkpoint::default(),
@@ -520,7 +521,7 @@ impl<T: EthSpec> BeaconState<T> {
         let lookahead = spec.activation_exit_delay;
         let lookback = self.active_index_roots.len() as u64 - lookahead;
 
-        if (epoch + lookback > current_epoch) && (current_epoch + lookahead >= epoch) {
+        if epoch + lookback > current_epoch && current_epoch + lookahead >= epoch {
             Ok(epoch.as_usize() % self.active_index_roots.len())
         } else {
             Err(Error::EpochOutOfBounds)
@@ -593,39 +594,44 @@ impl<T: EthSpec> BeaconState<T> {
         Ok(())
     }
 
-    /*
-    /// Safely obtains the index for `latest_slashed_balances`, given some `epoch`.
+    /// Safely obtain the index for `slashings`, given some `epoch`.
     ///
-    /// Spec v0.6.3
-    fn get_slashed_balance_index(&self, epoch: Epoch) -> Result<usize, Error> {
-        let i = epoch.as_usize() % self.latest_slashed_balances.len();
-
-        // NOTE: the validity of the epoch is not checked. It is not in the spec but it's probably
-        // useful to have.
-        if i < self.latest_slashed_balances.len() {
-            Ok(i)
+    /// Spec v0.8.0
+    fn get_slashings_index(&self, epoch: Epoch) -> Result<usize, Error> {
+        // We allow the slashings vector to be accessed at any cached epoch at or before
+        // the current epoch.
+        if epoch <= self.current_epoch()
+            && epoch + T::EpochsPerSlashingsVector::to_u64() >= self.current_epoch() + 1
+        {
+            Ok((epoch.as_u64() % T::EpochsPerSlashingsVector::to_u64()) as usize)
         } else {
-            Err(Error::InsufficientSlashedBalances)
+            Err(Error::EpochOutOfBounds)
         }
     }
 
-    /// Gets the total slashed balances for some epoch.
+    /// Get a reference to the entire `slashings` vector.
     ///
-    /// Spec v0.6.3
-    pub fn get_slashed_balance(&self, epoch: Epoch) -> Result<u64, Error> {
-        let i = self.get_slashed_balance_index(epoch)?;
-        Ok(self.latest_slashed_balances[i])
+    /// Spec v0.8.0
+    pub fn get_all_slashings(&self) -> &[u64] {
+        &self.slashings
     }
 
-    /// Sets the total slashed balances for some epoch.
+    /// Get the total slashed balances for some epoch.
     ///
-    /// Spec v0.6.3
-    pub fn set_slashed_balance(&mut self, epoch: Epoch, balance: u64) -> Result<(), Error> {
-        let i = self.get_slashed_balance_index(epoch)?;
-        self.latest_slashed_balances[i] = balance;
+    /// Spec v0.8.0
+    pub fn get_slashings(&self, epoch: Epoch) -> Result<u64, Error> {
+        let i = self.get_slashings_index(epoch)?;
+        Ok(self.slashings[i])
+    }
+
+    /// Set the total slashed balances for some epoch.
+    ///
+    /// Spec v0.8.0
+    pub fn set_slashings(&mut self, epoch: Epoch, value: u64) -> Result<(), Error> {
+        let i = self.get_slashings_index(epoch)?;
+        self.slashings[i] = value;
         Ok(())
     }
-    */
 
     /// Get the attestations from the current or previous epoch.
     ///
@@ -660,27 +666,6 @@ impl<T: EthSpec> BeaconState<T> {
             .get(shard as usize)
             .ok_or(Error::ShardOutOfBounds)
     }
-
-    /* FIXME(freeze): delete
-    /// Transform an attestation into the crosslink that it reinforces.
-    ///
-    /// Spec v0.6.3
-    pub fn get_crosslink_from_attestation_data(
-        &self,
-        data: &AttestationData,
-        spec: &ChainSpec,
-    ) -> Result<Crosslink, Error> {
-        let current_crosslink_epoch = self.get_current_crosslink(data.shard)?.epoch;
-        Ok(Crosslink {
-            epoch: std::cmp::min(
-                data.target_epoch,
-                current_crosslink_epoch + spec.max_crosslink_epochs,
-            ),
-            previous_crosslink_root: data.previous_crosslink_root,
-            crosslink_data_root: data.crosslink_data_root,
-        })
-    }
-    */
 
     /// Generate a seed for the given `epoch`.
     ///
@@ -720,7 +705,7 @@ impl<T: EthSpec> BeaconState<T> {
     ///  Return the epoch at which an activation or exit triggered in ``epoch`` takes effect.
     ///
     ///  Spec v0.6.3
-    pub fn get_delayed_activation_exit_epoch(&self, epoch: Epoch, spec: &ChainSpec) -> Epoch {
+    pub fn compute_activation_exit_epoch(&self, epoch: Epoch, spec: &ChainSpec) -> Epoch {
         epoch + 1 + spec.activation_exit_delay
     }
 
@@ -889,6 +874,7 @@ impl<T: EthSpec> BeaconState<T> {
     /// Returns the `tree_hash_root` resulting from the update. This root can be considered the
     /// canonical root of `self`.
     pub fn update_tree_hash_cache(&mut self) -> Result<Hash256, Error> {
+        /* FIXME(freeze): re-enable this
         if self.tree_hash_cache.is_empty() {
             self.tree_hash_cache = TreeHashCache::new(self)?;
         } else {
@@ -902,6 +888,8 @@ impl<T: EthSpec> BeaconState<T> {
         }
 
         self.cached_tree_hash_root()
+        */
+        Ok(Hash256::zero())
     }
 
     /// Returns the tree hash root determined by the last execution of `self.update_tree_hash_cache(..)`.

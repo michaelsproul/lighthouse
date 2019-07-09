@@ -1,11 +1,12 @@
 use crate::*;
 use fixed_len_vec::typenum::{
-    Unsigned, U0, U1024, U1099511627776, U16777216, U64, U65536, U8, U8192,
+    Unsigned, U0, U1024, U1099511627776, U16777216, U4, U64, U65536, U8, U8192,
 };
 use serde_derive::{Deserialize, Serialize};
 use std::fmt::Debug;
 
 pub trait EthSpec: 'static + Default + Sync + Send + Clone + Debug + PartialEq {
+    type JustificationBitsLength: Unsigned + Clone + Sync + Send + Debug + PartialEq + Default;
     type ShardCount: Unsigned + Clone + Sync + Send + Debug + PartialEq;
     type SlotsPerHistoricalRoot: Unsigned + Clone + Sync + Send + Debug + PartialEq;
     type EpochsPerHistoricalVector: Unsigned + Clone + Sync + Send + Debug + PartialEq;
@@ -96,6 +97,7 @@ pub trait EthSpec: 'static + Default + Sync + Send + Clone + Debug + PartialEq {
 pub struct MainnetEthSpec;
 
 impl EthSpec for MainnetEthSpec {
+    type JustificationBitsLength = U4;
     type ShardCount = U1024;
     type SlotsPerHistoricalRoot = U8192;
     type EpochsPerHistoricalVector = U65536;
@@ -121,6 +123,7 @@ pub type FoundationBeaconState = BeaconState<MainnetEthSpec>;
 pub struct MinimalEthSpec;
 
 impl EthSpec for MinimalEthSpec {
+    type JustificationBitsLength = U4;
     type ShardCount = U8;
     type SlotsPerHistoricalRoot = U64;
     type EpochsPerHistoricalVector = U64;
