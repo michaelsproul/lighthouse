@@ -2,6 +2,7 @@ use apply_rewards::process_rewards_and_penalties;
 use errors::EpochProcessingError as Error;
 use process_slashings::process_slashings;
 use registry_updates::process_registry_updates;
+use ssz_types::BitVector;
 use std::collections::HashMap;
 use tree_hash::TreeHash;
 use types::*;
@@ -59,7 +60,7 @@ pub fn per_epoch_processing<T: EthSpec>(
     process_registry_updates(state, spec)?;
 
     // Slashings.
-    process_slashings(state, validator_statuses.total_balances.current_epoch, spec)?;
+    process_slashings(state, validator_statuses.total_balances.current_epoch)?;
 
     // Final updates.
     process_final_updates(state, spec)?;
@@ -92,21 +93,19 @@ pub fn process_justification_and_finalization<T: EthSpec>(
     let previous_epoch = state.previous_epoch();
     let current_epoch = state.current_epoch();
 
-    let old_previous_justified_checkpoint = state.previous_justified_checkpoint;
-    let old_current_justified_checkpoint = state.current_justified_checkpoint;
+    let old_previous_justified_checkpoint = state.previous_justified_checkpoint.clone();
+    let old_current_justified_checkpoint = state.current_justified_checkpoint.clone();
 
     // Process justifications
-    state.previous_justified_checkpoint = state.current_justified_epoch.clone();
-    // FIXME(freeze): justification_bits
-    // state.justification_bitfield <<= 1;
+    state.previous_justified_checkpoint = state.current_justified_checkpoint.clone();
+    shift_bitvector_up(&mut state.justification_bits, 1)?;
 
     if total_balances.previous_epoch_target_attesters * 3 >= total_balances.current_epoch * 2 {
         state.current_justified_checkpoint = Checkpoint {
             epoch: previous_epoch,
             root: *state.get_block_root_at_epoch(previous_epoch)?,
         };
-        // FIXME(freeze): justification bits
-        // state.justification_bits[1] = 0b1
+        state.justification_bits.set(1, true)?;
     }
     // If the current epoch gets justified, fill the last bit.
     if total_balances.current_epoch_target_attesters * 3 >= total_balances.current_epoch * 2 {
@@ -114,33 +113,59 @@ pub fn process_justification_and_finalization<T: EthSpec>(
             epoch: current_epoch,
             root: *state.get_block_root_at_epoch(current_epoch)?,
         };
-        // FIXME(freeze): justification bits
-        // state.justification_bits[0] = 0b1
+        state.justification_bits.set(0, true)?;
     }
 
-    let bitfield = state.justification_bitfield;
+    let bits = &state.justification_bits;
 
     // The 2nd/3rd/4th most recent epochs are all justified, the 2nd using the 4th as source.
-    if (bitfield >> 1) % 8 == 0b111 && old_previous_justified_epoch == current_epoch - 3 {
-        state.finalized_epoch = old_previous_justified_epoch;
-        state.finalized_root = *state.get_block_root_at_epoch(state.finalized_epoch)?;
+    if (1..4).all(|i| bits.get(i).unwrap_or(false))
+        && old_previous_justified_checkpoint.epoch + 3 == current_epoch
+    {
+        state.finalized_checkpoint = old_previous_justified_checkpoint;
     }
     // The 2nd/3rd most recent epochs are both justified, the 2nd using the 3rd as source.
-    if (bitfield >> 1) % 4 == 0b11 && old_previous_justified_epoch == current_epoch - 2 {
-        state.finalized_epoch = old_previous_justified_epoch;
-        state.finalized_root = *state.get_block_root_at_epoch(state.finalized_epoch)?;
+    else if (1..3).all(|i| bits.get(i).unwrap_or(false))
+        && old_previous_justified_checkpoint.epoch + 2 == current_epoch
+    {
+        state.finalized_checkpoint = old_previous_justified_checkpoint;
     }
-    // The 1st/2nd/3rd most recent epochs are all justified, the 1st using the 2nd as source.
-    if bitfield % 8 == 0b111 && old_current_justified_epoch == current_epoch - 2 {
-        state.finalized_epoch = old_current_justified_epoch;
-        state.finalized_root = *state.get_block_root_at_epoch(state.finalized_epoch)?;
+    // The 1st/2nd/3rd most recent epochs are all justified, the 1st using the 3nd as source.
+    if (0..3).all(|i| bits.get(i).unwrap_or(false))
+        && old_current_justified_checkpoint.epoch + 2 == current_epoch
+    {
+        state.finalized_checkpoint = old_current_justified_checkpoint;
     }
     // The 1st/2nd most recent epochs are both justified, the 1st using the 2nd as source.
-    if bitfield % 4 == 0b11 && old_current_justified_epoch == current_epoch - 1 {
-        state.finalized_epoch = old_current_justified_epoch;
-        state.finalized_root = *state.get_block_root_at_epoch(state.finalized_epoch)?;
+    else if (0..2).all(|i| bits.get(i).unwrap_or(false))
+        && old_current_justified_checkpoint.epoch + 1 == current_epoch
+    {
+        state.finalized_checkpoint = old_current_justified_checkpoint;
     }
 
+    Ok(())
+}
+
+/// Shift the bits of a BitVector to higher indices, filling the lower indices with zeroes.
+// TODO(freeze): move to BitVector/BitList library
+fn shift_bitvector_up<N: Unsigned>(
+    bitvector: &mut BitVector<N>,
+    n: usize,
+) -> Result<(), ssz_types::Error> {
+    if n > N::to_usize() {
+        return Err(ssz_types::Error::OutOfBounds {
+            i: n,
+            len: N::to_usize(),
+        });
+    }
+    // Shift the bits up (starting from the high indices to avoid overwriting)
+    for i in (n..N::to_usize()).rev() {
+        bitvector.set(i, bitvector.get(i - n)?)?;
+    }
+    // Zero the low bits
+    for i in 0..n {
+        bitvector.set(i, false)?;
+    }
     Ok(())
 }
 
@@ -151,7 +176,7 @@ pub fn process_justification_and_finalization<T: EthSpec>(
 ///
 /// Also returns a `WinningRootHashSet` for later use during epoch processing.
 ///
-/// Spec v0.6.3
+/// Spec v0.8.0
 pub fn process_crosslinks<T: EthSpec>(
     state: &mut BeaconState<T>,
     spec: &ChainSpec,
@@ -162,7 +187,7 @@ pub fn process_crosslinks<T: EthSpec>(
 
     for &relative_epoch in &[RelativeEpoch::Previous, RelativeEpoch::Current] {
         let epoch = relative_epoch.into_epoch(state.current_epoch());
-        for offset in 0..state.get_epoch_committee_count(relative_epoch)? {
+        for offset in 0..state.get_committee_count(relative_epoch)? {
             let shard =
                 (state.get_epoch_start_shard(relative_epoch)? + offset) % T::ShardCount::to_u64();
             let crosslink_committee =
@@ -187,7 +212,7 @@ pub fn process_crosslinks<T: EthSpec>(
 
 /// Finish up an epoch update.
 ///
-/// Spec v0.6.3
+/// Spec v0.8.0
 pub fn process_final_updates<T: EthSpec>(
     state: &mut BeaconState<T>,
     spec: &ChainSpec,
@@ -201,7 +226,7 @@ pub fn process_final_updates<T: EthSpec>(
     }
 
     // Update effective balances with hysteresis (lag).
-    for (index, validator) in state.validator_registry.iter_mut().enumerate() {
+    for (index, validator) in state.validators.iter_mut().enumerate() {
         let balance = state.balances[index];
         let half_increment = spec.effective_balance_increment / 2;
         if balance < validator.effective_balance
@@ -215,7 +240,7 @@ pub fn process_final_updates<T: EthSpec>(
     }
 
     // Update start shard.
-    state.latest_start_shard = state.next_epoch_start_shard(spec)?;
+    state.start_shard = state.next_epoch_start_shard(spec)?;
 
     // This is a hack to allow us to update index roots and slashed balances for the next epoch.
     //
@@ -224,6 +249,7 @@ pub fn process_final_updates<T: EthSpec>(
         state.slot += 1;
 
         // Set active index root
+        // TODO(freeze): use SSZ list type here
         let active_index_root = Hash256::from_slice(
             &state
                 .get_active_validator_indices(next_epoch + spec.activation_exit_delay)
@@ -235,8 +261,8 @@ pub fn process_final_updates<T: EthSpec>(
             spec,
         )?;
 
-        // Set total slashed balances
-        state.set_slashed_balance(next_epoch, state.get_slashed_balance(current_epoch)?)?;
+        // Reset slashings
+        state.set_slashings(next_epoch, 0)?;
 
         // Set randao mix
         state.set_randao_mix(next_epoch, *state.get_randao_mix(current_epoch)?)?;
