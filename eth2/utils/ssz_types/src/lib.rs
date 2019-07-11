@@ -38,10 +38,13 @@ mod bitfield;
 mod fixed_vector;
 mod variable_list;
 
-pub use bitfield::{BitList, BitVector, Bitfield};
+pub use bitfield::{BitList as Variable, BitVector as Fixed, Bitfield};
 pub use fixed_vector::FixedVector;
 pub use typenum;
 pub use variable_list::VariableList;
+
+pub type BitList<N> = Bitfield<Variable<N>>;
+pub type BitVector<N> = Bitfield<Fixed<N>>;
 
 /// Returned when an item encounters an error.
 #[derive(PartialEq, Debug)]
