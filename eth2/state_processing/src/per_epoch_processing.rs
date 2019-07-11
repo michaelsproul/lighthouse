@@ -105,7 +105,14 @@ pub fn process_justification_and_finalization<T: EthSpec>(
             epoch: previous_epoch,
             root: *state.get_block_root_at_epoch(previous_epoch)?,
         };
-        state.justification_bits.set(1, true)?;
+        // FIXME(freeze): push error back in to ssz_types
+        state
+            .justification_bits
+            .set(1, true)
+            .ok_or(ssz_types::Error::OutOfBounds {
+                i: 1,
+                len: state.justification_bits.len(),
+            })?;
     }
     // If the current epoch gets justified, fill the last bit.
     if total_balances.current_epoch_target_attesters * 3 >= total_balances.current_epoch * 2 {
@@ -113,7 +120,13 @@ pub fn process_justification_and_finalization<T: EthSpec>(
             epoch: current_epoch,
             root: *state.get_block_root_at_epoch(current_epoch)?,
         };
-        state.justification_bits.set(0, true)?;
+        state
+            .justification_bits
+            .set(0, true)
+            .ok_or(ssz_types::Error::OutOfBounds {
+                i: 0,
+                len: state.justification_bits.len(),
+            })?;
     }
 
     let bits = &state.justification_bits;
@@ -148,7 +161,7 @@ pub fn process_justification_and_finalization<T: EthSpec>(
 
 /// Shift the bits of a BitVector to higher indices, filling the lower indices with zeroes.
 // TODO(freeze): move to BitVector/BitList library
-fn shift_bitvector_up<N: Unsigned>(
+fn shift_bitvector_up<N: Unsigned + Clone>(
     bitvector: &mut BitVector<N>,
     n: usize,
 ) -> Result<(), ssz_types::Error> {
@@ -160,11 +173,12 @@ fn shift_bitvector_up<N: Unsigned>(
     }
     // Shift the bits up (starting from the high indices to avoid overwriting)
     for i in (n..N::to_usize()).rev() {
-        bitvector.set(i, bitvector.get(i - n)?)?;
+        bitvector.set(i, bitvector.get(i - n).unwrap()).unwrap();
+        // bitvector.set(i, bitvector.get(i - n)?)?;
     }
     // Zero the low bits
     for i in 0..n {
-        bitvector.set(i, false)?;
+        bitvector.set(i, false).unwrap();
     }
     Ok(())
 }
