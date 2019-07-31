@@ -12,7 +12,9 @@ impl<T: EthSpec> StoreItem for BeaconBlock<T> {
         self.as_ssz_bytes()
     }
 
-    fn from_store_bytes(bytes: &mut [u8]) -> Result<Self, Error> {
-        Self::from_ssz_bytes(bytes).map_err(Into::into)
+    fn from_store_bytes(bytes: &mut [u8]) -> Result<(Self, usize), Error> {
+        Self::from_ssz_bytes(bytes)
+            .map_err(Into::into)
+            .map(|x| (x, bytes.len()))
     }
 }

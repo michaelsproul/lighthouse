@@ -16,7 +16,7 @@ mod memory_store;
 
 pub mod iter;
 
-pub use self::leveldb_store::LevelDB as DiskStore;
+pub use self::leveldb_store::{BytesKey, LevelDB as DiskStore};
 pub use self::memory_store::MemoryStore;
 pub use errors::Error;
 pub use types::*;
@@ -103,7 +103,7 @@ pub trait StoreItem: Sized {
     fn as_store_bytes(&self) -> Vec<u8>;
 
     /// De-serialize `self` from bytes.
-    fn from_store_bytes(bytes: &mut [u8]) -> Result<Self, Error>;
+    fn from_store_bytes(bytes: &mut [u8]) -> Result<(Self, usize), Error>;
 
     /// Store `self`.
     fn db_put(&self, store: &impl Store, key: &Hash256) -> Result<(), Error> {
@@ -121,7 +121,7 @@ pub trait StoreItem: Sized {
         let key = key.as_bytes();
 
         match store.get_bytes(column, key)? {
-            Some(mut bytes) => Ok(Some(Self::from_store_bytes(&mut bytes[..])?)),
+            Some(mut bytes) => Ok(Some(Self::from_store_bytes(&mut bytes[..])?.0)),
             None => Ok(None),
         }
     }
@@ -140,6 +140,24 @@ pub trait StoreItem: Sized {
         let key = key.as_bytes();
 
         store.key_delete(column, key)
+    }
+
+    fn byte_size() -> usize {
+        unimplemented!()
+    }
+}
+
+impl StoreItem for Hash256 {
+    fn db_column() -> DBColumn {
+        DBColumn::BeaconState
+    }
+
+    fn as_store_bytes(&self) -> Vec<u8> {
+        self.as_bytes().to_vec()
+    }
+
+    fn from_store_bytes(bytes: &mut [u8]) -> Result<(Self, usize), Error> {
+        Ok((Hash256::from_slice(&bytes[..32]), 32))
     }
 }
 
@@ -166,7 +184,7 @@ mod tests {
         }
 
         fn from_store_bytes(bytes: &mut [u8]) -> Result<Self, Error> {
-            Self::from_ssz_bytes(bytes).map_err(Into::into)
+            (Self::from_ssz_bytes(bytes).map_err(Into::into), bytes.len())
         }
     }
 

@@ -1,0 +1,17 @@
+[package]
+name = "db_bench"
+version = "0.1.0"
+authors = ["Michael Sproul <michael@sigmaprime.io>"]
+edition = "2018"
+
+[dependencies]
+store = { path = "../beacon_node/store" }
+leveldb = "0.8.4"
+hashing = { path = "../eth2/utils/hashing" }
+
+[dev-dependencies]
+criterion = "0.2"
+
+[[bench]]
+name = "comparison"
+harness = false
