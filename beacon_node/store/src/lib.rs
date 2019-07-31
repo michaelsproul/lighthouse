@@ -16,7 +16,7 @@ mod memory_store;
 
 pub mod iter;
 
-pub use self::leveldb_store::LevelDB as DiskStore;
+pub use self::leveldb_store::{BytesKey, LevelDB as DiskStore};
 pub use self::memory_store::MemoryStore;
 pub use errors::Error;
 pub use types::*;

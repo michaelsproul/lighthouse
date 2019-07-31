@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub struct LevelDB {
     // Note: this `Arc` is only included because of an artificial constraint by gRPC. Hopefully we
     // can remove this one day.
-    db: Arc<Database<BytesKey>>,
+    pub db: Arc<Database<BytesKey>>,
 }
 
 impl LevelDB {
@@ -28,11 +28,15 @@ impl LevelDB {
     }
 
     fn read_options(&self) -> ReadOptions<BytesKey> {
-        ReadOptions::new()
+        let mut options = ReadOptions::new();
+        options.fill_cache = false;
+        options
     }
 
     fn write_options(&self) -> WriteOptions {
-        WriteOptions::new()
+        let mut options = WriteOptions::new();
+        // options.sync = true;
+        options
     }
 
     fn get_key_for_col(col: &str, key: &[u8]) -> BytesKey {
@@ -44,7 +48,7 @@ impl LevelDB {
 
 /// Used for keying leveldb.
 pub struct BytesKey {
-    key: Vec<u8>,
+    pub key: Vec<u8>,
 }
 
 impl Key for BytesKey {
