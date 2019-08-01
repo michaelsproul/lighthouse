@@ -11,7 +11,7 @@ pub struct Entries {
     pub vec: Vec<Entry>,
 }
 
-pub const CHUNK_COUNT: usize = 4;
+pub const CHUNK_COUNT: usize = 16;
 
 #[derive(Default)]
 pub struct Chunk {
