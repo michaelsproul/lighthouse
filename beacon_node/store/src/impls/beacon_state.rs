@@ -57,8 +57,8 @@ impl<T: EthSpec> StoreItem for BeaconState<T> {
         container.as_ssz_bytes()
     }
 
-    fn from_store_bytes(bytes: &mut [u8]) -> Result<Self, Error> {
+    fn from_store_bytes(bytes: &mut [u8]) -> Result<(Self, usize), Error> {
         let container = StorageContainer::from_ssz_bytes(bytes)?;
-        container.try_into()
+        container.try_into().map(|x| (x, bytes.len()))
     }
 }
