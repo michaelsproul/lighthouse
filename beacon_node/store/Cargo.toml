@@ -11,6 +11,8 @@ tempfile = "3"
 db-key = "0.0.5"
 leveldb = "0.8.4"
 parking_lot = "0.7"
+serde = "1.0"
+serde_derive = "1.0"
 eth2_ssz = { path = "../../eth2/utils/ssz" }
 eth2_ssz_derive = { path = "../../eth2/utils/ssz_derive" }
 tree_hash = { path = "../../eth2/utils/tree_hash" }

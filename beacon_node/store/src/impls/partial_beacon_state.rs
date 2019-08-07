@@ -13,7 +13,7 @@ struct StorageContainer {
 
 impl StorageContainer {
     /// Create a new instance for storing a `BeaconState`.
-    pub fn new<T: EthSpec>(state: &BeaconState<T>) -> Self {
+    pub fn new<T: EthSpec>(state: &PartialBeaconState<T>) -> Self {
         let mut committee_caches_bytes = vec![];
 
         for cache in state.committee_caches[..].iter() {
@@ -27,11 +27,11 @@ impl StorageContainer {
     }
 }
 
-impl<T: EthSpec> TryInto<BeaconState<T>> for StorageContainer {
+impl<T: EthSpec> TryInto<PartialBeaconState<T>> for StorageContainer {
     type Error = Error;
 
-    fn try_into(self) -> Result<BeaconState<T>, Error> {
-        let mut state: BeaconState<T> = BeaconState::from_ssz_bytes(&self.state_bytes)?;
+    fn try_into(self) -> Result<PartialBeaconState<T>, Error> {
+        let mut state = PartialBeaconState::from_ssz_bytes(&self.state_bytes)?;
 
         for i in 0..CACHED_EPOCHS {
             let bytes = &self.committee_caches_bytes.get(i).ok_or_else(|| {
@@ -47,7 +47,7 @@ impl<T: EthSpec> TryInto<BeaconState<T>> for StorageContainer {
     }
 }
 
-impl<T: EthSpec> StoreItem for BeaconState<T> {
+impl<T: EthSpec> SimpleStoreItem for PartialBeaconState<T> {
     fn db_column() -> DBColumn {
         DBColumn::BeaconState
     }
@@ -57,8 +57,8 @@ impl<T: EthSpec> StoreItem for BeaconState<T> {
         container.as_ssz_bytes()
     }
 
-    fn from_store_bytes(bytes: &mut [u8]) -> Result<(Self, usize), Error> {
+    fn from_store_bytes(bytes: &[u8]) -> Result<Self, Error> {
         let container = StorageContainer::from_ssz_bytes(bytes)?;
-        container.try_into().map(|x| (x, bytes.len()))
+        container.try_into()
     }
 }

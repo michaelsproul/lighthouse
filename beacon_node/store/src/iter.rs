@@ -1,4 +1,4 @@
-use crate::Store;
+use crate::{load_full_state, Store};
 use std::borrow::Cow;
 use std::sync::Arc;
 use types::{BeaconBlock, BeaconState, BeaconStateError, EthSpec, Hash256, Slot};
@@ -15,7 +15,7 @@ impl<'a, U: Store, E: EthSpec> AncestorIter<U, BestBlockRootsIterator<'a, E, U>>
     /// Iterates across all the prior block roots of `self`, starting at the most recent and ending
     /// at genesis.
     fn try_iter_ancestor_roots(&self, store: Arc<U>) -> Option<BestBlockRootsIterator<'a, E, U>> {
-        let state = store.get::<BeaconState<E>>(&self.state_root).ok()??;
+        let state = load_full_state(&*store, &self.state_root).ok()?;
 
         Some(BestBlockRootsIterator::owned(store, state, self.slot))
     }
@@ -63,7 +63,7 @@ impl<'a, T: EthSpec, U: Store> Iterator for StateRootsIterator<'a, T, U> {
                 let beacon_state: BeaconState<T> = {
                     let new_state_root = self.beacon_state.get_oldest_state_root().ok()?;
 
-                    self.store.get(&new_state_root).ok()?
+                    load_full_state(&*self.store, &new_state_root).ok()
                 }?;
 
                 self.beacon_state = Cow::Owned(beacon_state);
@@ -166,7 +166,7 @@ impl<'a, T: EthSpec, U: Store> Iterator for BlockRootsIterator<'a, T, U> {
                     // Load the earliest state from disk.
                     let new_state_root = self.beacon_state.get_oldest_state_root().ok()?;
 
-                    self.store.get(&new_state_root).ok()?
+                    load_full_state(&*self.store, &new_state_root).ok()
                 }?;
 
                 self.beacon_state = Cow::Owned(beacon_state);
@@ -264,7 +264,7 @@ impl<'a, T: EthSpec, U: Store> Iterator for BestBlockRootsIterator<'a, T, U> {
                     // Load the earliest state from disk.
                     let new_state_root = self.beacon_state.get_oldest_state_root().ok()?;
 
-                    self.store.get(&new_state_root).ok()?
+                    load_full_state(&*self.store, &new_state_root).ok()
                 }?;
 
                 self.beacon_state = Cow::Owned(beacon_state);

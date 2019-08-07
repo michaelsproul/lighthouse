@@ -2,7 +2,7 @@ use crate::{BeaconChain, BeaconChainTypes};
 use lmd_ghost::LmdGhost;
 use state_processing::common::get_attesting_indices;
 use std::sync::Arc;
-use store::{Error as StoreError, Store};
+use store::{load_full_state, Error as StoreError, Store};
 use types::{Attestation, BeaconBlock, BeaconState, BeaconStateError, Epoch, EthSpec, Hash256};
 
 type Result<T> = std::result::Result<T, Error>;
@@ -79,10 +79,8 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
                 block_root
             };
 
-            let state = chain
-                .store
-                .get::<BeaconState<T::EthSpec>>(&block.state_root)?
-                .ok_or_else(|| Error::MissingState(block.state_root))?;
+            let state: BeaconState<T::EthSpec> = load_full_state(&*chain.store, &block.state_root)
+                .map_err(|_| Error::MissingState(block.state_root))?;
 
             (state, block_root, block_slot)
         };

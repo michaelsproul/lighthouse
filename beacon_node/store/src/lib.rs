@@ -8,16 +8,21 @@
 //! Provides a simple API for storing/retrieving all types that sometimes needs type-hints. See
 //! tests for implementation examples.
 
+mod beacon_state;
 mod block_at_slot;
+mod chunked_vector;
 mod errors;
 mod impls;
 mod leveldb_store;
 mod memory_store;
+mod partial_beacon_state;
 
 pub mod iter;
 
+pub use self::beacon_state::{load_full_state, load_partial_state, store_state};
 pub use self::leveldb_store::{BytesKey, LevelDB as DiskStore};
 pub use self::memory_store::MemoryStore;
+pub use self::partial_beacon_state::PartialBeaconState;
 pub use errors::Error;
 pub use types::*;
 
@@ -78,24 +83,31 @@ pub enum DBColumn {
     BeaconBlock,
     BeaconState,
     BeaconChain,
+    BeaconBlockRoots,
+    BeaconStateRoots,
+    BeaconRandaoMixes,
+    BeaconActiveIndexRoots,
+    BeaconCompactCommitteesRoots,
 }
 
-impl<'a> Into<&'a str> for DBColumn {
+impl Into<&'static str> for DBColumn {
     /// Returns a `&str` that can be used for keying a key-value data base.
-    fn into(self) -> &'a str {
+    fn into(self) -> &'static str {
         match self {
-            DBColumn::BeaconBlock => &"blk",
-            DBColumn::BeaconState => &"ste",
-            DBColumn::BeaconChain => &"bch",
+            DBColumn::BeaconBlock => "blk",
+            DBColumn::BeaconState => "ste",
+            DBColumn::BeaconChain => "bch",
+            DBColumn::BeaconBlockRoots => "bbr",
+            DBColumn::BeaconStateRoots => "bsr",
+            DBColumn::BeaconRandaoMixes => "brm",
+            DBColumn::BeaconActiveIndexRoots => "bai",
+            DBColumn::BeaconCompactCommitteesRoots => "bcc",
         }
     }
 }
 
-/// An item that may be stored in a `Store`.
-///
-/// Provides default methods that are suitable for most applications, however when overridden they
-/// provide full customizability of `Store` operations.
-pub trait StoreItem: Sized {
+/// An item that may stored in a `Store` by serializing and deserializing from bytes.
+pub trait SimpleStoreItem: Sized {
     /// Identifies which column this item should be placed in.
     fn db_column() -> DBColumn;
 
@@ -103,8 +115,30 @@ pub trait StoreItem: Sized {
     fn as_store_bytes(&self) -> Vec<u8>;
 
     /// De-serialize `self` from bytes.
-    fn from_store_bytes(bytes: &mut [u8]) -> Result<(Self, usize), Error>;
+    ///
+    /// Return an instance of the type and the number of bytes that were read.
+    fn from_store_bytes(bytes: &[u8]) -> Result<Self, Error>;
+}
 
+/// An item that may be stored in a `Store`.
+pub trait StoreItem: Sized {
+    /// Store `self`.
+    fn db_put(&self, store: &impl Store, key: &Hash256) -> Result<(), Error>;
+
+    /// Retrieve an instance of `Self` from `store`.
+    fn db_get(store: &impl Store, key: &Hash256) -> Result<Option<Self>, Error>;
+
+    /// Return `true` if an instance of `Self` exists in `store`.
+    fn db_exists(store: &impl Store, key: &Hash256) -> Result<bool, Error>;
+
+    /// Delete an instance of `Self` from `store`.
+    fn db_delete(store: &impl Store, key: &Hash256) -> Result<(), Error>;
+}
+
+impl<T> StoreItem for T
+where
+    T: SimpleStoreItem,
+{
     /// Store `self`.
     fn db_put(&self, store: &impl Store, key: &Hash256) -> Result<(), Error> {
         let column = Self::db_column().into();
@@ -121,7 +155,7 @@ pub trait StoreItem: Sized {
         let key = key.as_bytes();
 
         match store.get_bytes(column, key)? {
-            Some(mut bytes) => Ok(Some(Self::from_store_bytes(&mut bytes[..])?.0)),
+            Some(mut bytes) => Ok(Some(Self::from_store_bytes(&mut bytes[..])?)),
             None => Ok(None),
         }
     }
@@ -140,24 +174,6 @@ pub trait StoreItem: Sized {
         let key = key.as_bytes();
 
         store.key_delete(column, key)
-    }
-
-    fn byte_size() -> usize {
-        unimplemented!()
-    }
-}
-
-impl StoreItem for Hash256 {
-    fn db_column() -> DBColumn {
-        DBColumn::BeaconState
-    }
-
-    fn as_store_bytes(&self) -> Vec<u8> {
-        self.as_bytes().to_vec()
-    }
-
-    fn from_store_bytes(bytes: &mut [u8]) -> Result<(Self, usize), Error> {
-        Ok((Hash256::from_slice(&bytes[..32]), 32))
     }
 }
 
@@ -183,8 +199,8 @@ mod tests {
             self.as_ssz_bytes()
         }
 
-        fn from_store_bytes(bytes: &mut [u8]) -> Result<Self, Error> {
-            (Self::from_ssz_bytes(bytes).map_err(Into::into), bytes.len())
+        fn from_store_bytes(bytes: &[u8]) -> Result<Self, Error> {
+            Self::from_ssz_bytes(bytes).map_err(Into::into)
         }
     }
 

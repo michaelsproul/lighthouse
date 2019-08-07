@@ -6,8 +6,8 @@ use slot_clock::TestingSlotClock;
 use state_processing::per_slot_processing;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use store::load_full_state;
 use store::MemoryStore;
-use store::Store;
 use tree_hash::{SignedRoot, TreeHash};
 use types::{
     test_utils::TestingBeaconStateBuilder, AggregateSignature, Attestation,
@@ -203,11 +203,7 @@ where
             .map(|(hash, _slot)| hash)
             .expect("could not find state root");
 
-        self.chain
-            .store
-            .get(&state_root)
-            .expect("should read db")
-            .expect("should find state root")
+        load_full_state(&*self.chain.store, &state_root).expect("should find state root")
     }
 
     /// Returns a newly created block, signed by the proposer for the given slot.

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use store::{iter::BlockRootsIterator, Error as StoreError, Store};
+use store::{iter::BlockRootsIterator, load_full_state, Error as StoreError, Store};
 use types::{BeaconBlock, BeaconState, EthSpec, Hash256, Slot};
 
 type Result<T> = std::result::Result<T, Error>;
@@ -680,9 +680,7 @@ where
     }
 
     fn get_state(&self, state_root: Hash256) -> Result<BeaconState<E>> {
-        self.store
-            .get::<BeaconState<E>>(&state_root)?
-            .ok_or_else(|| Error::MissingState(state_root))
+        load_full_state(&*self.store, &state_root).map_err(|_| Error::MissingState(state_root))
     }
 
     fn root_slot(&self) -> Slot {
