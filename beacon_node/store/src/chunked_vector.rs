@@ -13,7 +13,8 @@ pub enum UpdatePattern {
 }
 
 pub trait Field {
-    type Value: Decode + Encode;
+    /// The `Default` impl will be used to fill extra vector entries.
+    type Value: Decode + Encode + Default;
     type Length: Unsigned;
 
     fn update_pattern() -> UpdatePattern;
@@ -25,10 +26,27 @@ pub trait Field {
         8
     }
 
-    fn get_value<E: EthSpec>(
+    /// Get the most recently updated element of this vector from the state.
+    fn get_latest_value<E: EthSpec>(
         state: &BeaconState<E>,
         spec: &ChainSpec,
     ) -> Result<Self::Value, BeaconStateError>;
+}
+
+/// Implemented for `StateRoots` and `BlockRoots`.
+pub trait RootField {
+    fn column() -> DBColumn;
+
+    // TODO: tweak chunk size as appropriate
+    fn chunk_size() -> u8 {
+        8
+    }
+
+    /// Get the most recently updated element of this vector from the state.
+    fn get_latest_value<E: EthSpec>(
+        state: &BeaconState<E>,
+        spec: &ChainSpec,
+    ) -> Result<Hash256, BeaconStateError>;
 }
 
 pub struct BlockRoots<T: EthSpec>(PhantomData<T>);
@@ -53,11 +71,27 @@ where
         DBColumn::BeaconActiveIndexRoots
     }
 
-    fn get_value<E: EthSpec>(
+    fn get_latest_value<E: EthSpec>(
         state: &BeaconState<E>,
         spec: &ChainSpec,
     ) -> Result<Self::Value, BeaconStateError> {
         state.get_active_index_root(state.current_epoch(), spec)
+    }
+}
+
+impl<T> RootField for StateRoots<T>
+where
+    T: EthSpec,
+{
+    fn column() -> DBColumn {
+        DBColumn::BeaconStateRoots
+    }
+
+    fn get_latest_value<E: EthSpec>(
+        state: &BeaconState<E>,
+        spec: &ChainSpec,
+    ) -> Result<Hash256, BeaconStateError> {
+        state.get_state_root(state.slot).map(|x| *x)
     }
 }
 
@@ -79,12 +113,11 @@ pub fn store_updated_vector_entry<F: Field, E: EthSpec, S: Store>(
         OncePerEpoch => state.current_epoch().as_u64() / u64::from(chunk_size),
     };
 
-    // NOTE: using shorted 64-bit keys rather than 32 byte keys like everywhere else
-    let chunk_key = &table_index.to_be_bytes()[..];
+    // NOTE: using shorter 64-bit keys rather than 32 byte keys like everywhere else
+    let chunk_key = &integer_key(table_index)[..];
 
     // Look up existing chunks
-    // FIXME: hardcoded Hash256, should work around with type-level mapping
-    let mut chunks = Chunks::load::<F, _>(store, chunk_key)?.unwrap_or_else(Chunks::new);
+    let mut chunks = Chunks::load(store, F::column(), chunk_key)?.unwrap_or_else(Chunks::default);
 
     // Find the chunk stored for the previous slot/epoch
     let prev_chunk_id = match F::update_pattern() {
@@ -99,7 +132,7 @@ pub fn store_updated_vector_entry<F: Field, E: EthSpec, S: Store>(
 
     let chunk_id = *state_root;
 
-    let vector_value = F::get_value(state, spec)?;
+    let vector_value = F::get_latest_value(state, spec)?;
 
     match chunks.find_chunk_by_id(prev_chunk_id) {
         Some(existing_chunk) => {
@@ -108,26 +141,137 @@ pub fn store_updated_vector_entry<F: Field, E: EthSpec, S: Store>(
         }
         // At the chunk boundary, create the chunk
         None if state.slot % u64::from(chunk_size) == 0 => {
-            chunks.chunks.push(Chunk::new(chunk_id, vector_value));
+            chunks.chunks.push(Chunk::new(chunk_id, vec![vector_value]));
         }
         None => {
-            return Err(Error::from(ChunkError::MissingParentChunk));
+            return Err(Error::from(ChunkError::MissingChunk));
         }
     }
 
     // Store the updated chunks.
-    chunks.store::<F, _>(store, chunk_key)?;
+    chunks.store(store, F::column(), chunk_key)?;
 
     Ok(())
 }
 
-#[derive(Debug)]
+// FIXME: move
+fn integer_key(index: u64) -> [u8; 8] {
+    index.to_be_bytes()
+}
+
+// TODO: could be more efficient with RocksDB, and an iterator that streams in reverse order
+// Chunks at the end index are included.
+fn range_query<S: Store, T: Decode + Encode>(
+    store: &S,
+    column: DBColumn,
+    start_index: u64,
+    end_index: u64,
+) -> Result<Vec<Chunks<T>>, Error> {
+    let mut result = vec![];
+
+    for table_index in start_index..=end_index {
+        let key = &integer_key(table_index)[..];
+        let chunks = Chunks::load(store, column, key)?.ok_or(ChunkError::MissingChunk)?;
+        result.push(chunks);
+    }
+
+    Ok(result)
+}
+
+fn stitch(
+    all_chunks: Vec<Chunks<Hash256>>,
+    latest_state_root: Hash256,
+    start_slot: Slot,
+    end_slot: Slot,
+    chunk_size: usize,
+    length: usize,
+) -> Result<Vec<Hash256>, ChunkError> {
+    // We include both the start and end slot, so check we won't have too many values
+    if (end_slot - start_slot).as_usize() >= length {
+        return Err(ChunkError::SlotIntervalTooLarge);
+    }
+
+    let start_index = start_slot.as_usize() / chunk_size;
+    let end_index = end_slot.as_usize() / chunk_size;
+
+    let mut result = vec![Hash256::zero(); length];
+
+    let mut head = latest_state_root;
+
+    for (chunk_index, chunks) in (start_index..end_index + 1)
+        .zip(all_chunks.into_iter())
+        .rev()
+    {
+        // Select the matching chunk
+        let chunk = chunks
+            .find_chunk_by_element(&head)
+            .ok_or(ChunkError::MissingChunk)?;
+
+        // All chunks but the last chunk must be full-sized
+        if chunk_index != end_index && chunk.values.len() != chunk_size {
+            return Err(ChunkError::InvalidChunkSize);
+        }
+
+        // Copy the chunk entries into the result vector
+        for (i, value) in chunk.values.iter().enumerate() {
+            let slot = chunk_index * chunk_size + i;
+
+            if slot >= start_slot.as_usize() && slot <= end_slot.as_usize() {
+                result[slot % length] = *value;
+            }
+        }
+
+        // Backtrack via the previous pointer located in the chunk's ID
+        head = chunk.id;
+    }
+
+    Ok(result)
+}
+
+pub fn load_state_roots_from_db<F: RootField, E: EthSpec, S: Store>(
+    store: &S,
+    state_root: &Hash256,
+    slot: Slot,
+) -> Result<FixedVector<Hash256, E::SlotsPerHistoricalRoot>, Error> {
+    // Do a range query
+    let chunk_size = u64::from(F::chunk_size());
+    let start_slot = slot - (E::SlotsPerHistoricalRoot::to_u64() - 1);
+    let start_index = start_slot.as_u64() / chunk_size;
+    let end_index = slot.as_u64() / chunk_size;
+    let all_chunks = range_query(store, F::column(), start_index, end_index)?;
+
+    // Stitch together the right vector by backtracking through the previous pointers
+    let result = stitch(
+        all_chunks,
+        *state_root,
+        start_slot,
+        slot,
+        usize::from(F::chunk_size()),
+        E::SlotsPerHistoricalRoot::to_usize(),
+    )?;
+
+    Ok(result.into())
+}
+
+// TODO: load block roots from DB (reuse implementation above)
+
+pub fn load_vector_from_db<F: Field, E: EthSpec, S: Store>(
+    store: &S,
+    state_roots: &FixedVector<Hash256, E::SlotsPerHistoricalRoot>,
+) -> Result<FixedVector<F::Value, F::Length>, Error> {
+    // Do a range query
+    // Select the right fork
+    // Build a vector (doing the right modulo junk)
+    panic!()
+}
+
+#[derive(Debug, Clone)]
 pub struct Chunks<T: Decode + Encode> {
     chunks: Vec<Chunk<T>>,
 }
 
 /// A chunk of a fixed-size vector from the `BeaconState`, stored in the database.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Chunk<T: Decode + Encode> {
     /// Metadata that allows us to distinguish different short-lived forks, or backtrack.
     ///
@@ -137,29 +281,38 @@ pub struct Chunk<T: Decode + Encode> {
     pub values: Vec<T>,
 }
 
+impl<T> Default for Chunks<T>
+where
+    T: Decode + Encode,
+{
+    fn default() -> Self {
+        Chunks { chunks: vec![] }
+    }
+}
+
 impl<T> Chunks<T>
 where
     T: Decode + Encode,
 {
-    pub fn new() -> Self {
-        Chunks { chunks: vec![] }
+    pub fn new(chunks: Vec<Chunk<T>>) -> Self {
+        Chunks { chunks }
     }
 
-    pub fn load<F: Field, S: Store>(store: &S, key: &[u8]) -> Result<Option<Self>, Error> {
+    pub fn load<S: Store>(store: &S, column: DBColumn, key: &[u8]) -> Result<Option<Self>, Error> {
         store
-            .get_bytes(F::column().into(), key)?
+            .get_bytes(column.into(), key)?
             .map(|bytes| Self::decode(bytes))
             .transpose()
     }
 
-    pub fn store<F: Field, S: Store>(&self, store: &S, key: &[u8]) -> Result<(), Error> {
-        store.put_bytes(F::column().into(), key, &self.encode()?)?;
+    pub fn store<S: Store>(&self, store: &S, column: DBColumn, key: &[u8]) -> Result<(), Error> {
+        store.put_bytes(column.into(), key, &self.encode()?)?;
         Ok(())
     }
 
     pub fn decode(bytes: Vec<u8>) -> Result<Self, Error> {
         let mut offset = 0;
-        let mut result = Chunks::new();
+        let mut result = Chunks::default();
         while offset < bytes.len() {
             let (chunk, size) = Chunk::decode(&bytes[offset..])?;
             result.chunks.push(chunk);
@@ -187,15 +340,27 @@ where
     }
 }
 
+impl<T> Chunks<T>
+where
+    T: Decode + Encode + PartialEq,
+{
+    /// Find a chunk containing a given element, searching backwards through the chunk's values.
+    pub fn find_chunk_by_element(&self, elem: &T) -> Option<&Chunk<T>>
+    where
+        T: PartialEq,
+    {
+        self.chunks
+            .iter()
+            .find(|chunk| chunk.values.iter().rev().any(|val| val == elem))
+    }
+}
+
 impl<T> Chunk<T>
 where
     T: Decode + Encode,
 {
-    pub fn new(id: Hash256, value: T) -> Self {
-        Chunk {
-            id,
-            values: vec![value],
-        }
+    pub fn new(id: Hash256, values: Vec<T>) -> Self {
+        Chunk { id, values }
     }
 
     /// Attempt to decode a single chunk, returning the chunk and the number of bytes read.
@@ -278,6 +443,76 @@ where
 pub enum ChunkError {
     OutOfBounds { i: usize, len: usize },
     OversizedChunk,
-    MissingParentChunk,
+    InvalidChunkSize,
+    MissingChunk,
     ChunkTypeInvalid,
+    SlotIntervalTooLarge,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn stitch_basic() {
+        fn v(i: u64) -> Hash256 {
+            Hash256::from_low_u64_be(i)
+        }
+
+        let chunk_size = 4;
+
+        let all_chunks = vec![
+            Chunks::new(vec![
+                Chunk::new(v(0), vec![v(1), v(2), v(3), v(4)]),
+                Chunk::new(v(0), vec![v(1), v(2), v(5), v(6)]),
+            ]),
+            Chunks::new(vec![
+                Chunk::new(v(6), vec![v(11), v(12), v(13), v(14)]),
+                Chunk::new(v(4), vec![v(7), v(8), v(9), v(10)]),
+            ]),
+            Chunks::new(vec![
+                Chunk::new(v(10), vec![v(15), v(16), v(17), v(18)]),
+                Chunk::new(v(14), vec![v(19)]),
+            ]),
+        ];
+
+        assert_eq!(
+            stitch(
+                all_chunks.clone(),
+                v(18),
+                Slot::new(0),
+                Slot::new(11),
+                chunk_size,
+                12
+            )
+            .unwrap(),
+            vec![
+                v(1),
+                v(2),
+                v(3),
+                v(4),
+                v(7),
+                v(8),
+                v(9),
+                v(10),
+                v(15),
+                v(16),
+                v(17),
+                v(18)
+            ]
+        );
+
+        assert_eq!(
+            stitch(
+                all_chunks.clone(),
+                v(16),
+                Slot::new(2),
+                Slot::new(9),
+                chunk_size,
+                8
+            )
+            .unwrap(),
+            vec![v(15), v(16), v(3), v(4), v(7), v(8), v(9), v(10)]
+        );
+    }
 }
