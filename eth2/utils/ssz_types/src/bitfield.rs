@@ -8,12 +8,12 @@ use ssz::{Decode, Encode};
 use typenum::Unsigned;
 
 /// A marker trait applied to `Variable` and `Fixed` that defines the behaviour of a `Bitfield`.
-pub trait BitfieldBehaviour: Clone {}
+pub trait BitfieldBehaviour {}
 
 /// A marker struct used to declare SSZ `Variable` behaviour on a `Bitfield`.
 ///
 /// See the [`Bitfield`](struct.Bitfield.html) docs for usage.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct Variable<N> {
     _phantom: PhantomData<N>,
 }
@@ -21,13 +21,13 @@ pub struct Variable<N> {
 /// A marker struct used to declare SSZ `Fixed` behaviour on a `Bitfield`.
 ///
 /// See the [`Bitfield`](struct.Bitfield.html) docs for usage.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct Fixed<N> {
     _phantom: PhantomData<N>,
 }
 
-impl<N: Unsigned + Clone> BitfieldBehaviour for Variable<N> {}
-impl<N: Unsigned + Clone> BitfieldBehaviour for Fixed<N> {}
+impl<N: Unsigned> BitfieldBehaviour for Variable<N> {}
+impl<N: Unsigned> BitfieldBehaviour for Fixed<N> {}
 
 /// A heap-allocated, ordered, variable-length collection of `bool` values, limited to `N` bits.
 pub type BitList<N> = Bitfield<Variable<N>>;
@@ -86,14 +86,24 @@ pub type BitVector<N> = Bitfield<Fixed<N>>;
 /// The internal representation of the bitfield is the same as that required by SSZ. The lowest
 /// byte (by `Vec` index) stores the lowest bit-indices and the right-most bit stores the lowest
 /// bit-index. E.g., `vec![0b0000_0001, 0b0000_0010]` has bits `0, 9` set.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Bitfield<T> {
     bytes: Vec<u8>,
     len: usize,
     _phantom: PhantomData<T>,
 }
 
-impl<N: Unsigned + Clone> Bitfield<Variable<N>> {
+impl<T> Clone for Bitfield<T> {
+    fn clone(&self) -> Self {
+        Self {
+            bytes: self.bytes.clone(),
+            len: self.len,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<N: Unsigned> Bitfield<Variable<N>> {
     /// Instantiate with capacity for `num_bits` boolean values. The length cannot be grown or
     /// shrunk after instantiation.
     ///
@@ -226,7 +236,7 @@ impl<N: Unsigned + Clone> Bitfield<Variable<N>> {
     }
 }
 
-impl<N: Unsigned + Clone> Bitfield<Fixed<N>> {
+impl<N: Unsigned> Bitfield<Fixed<N>> {
     /// Instantiate a new `Bitfield` with a fixed-length of `N` bits.
     ///
     /// All bits are initialized to `false`.
@@ -268,7 +278,7 @@ impl<N: Unsigned + Clone> Bitfield<Fixed<N>> {
     }
 }
 
-impl<N: Unsigned + Clone> Default for Bitfield<Fixed<N>> {
+impl<N: Unsigned> Default for Bitfield<Fixed<N>> {
     fn default() -> Self {
         Self::new()
     }
@@ -471,7 +481,7 @@ impl<'a, T: BitfieldBehaviour> Iterator for BitIter<'a, T> {
     }
 }
 
-impl<N: Unsigned + Clone> Encode for Bitfield<Variable<N>> {
+impl<N: Unsigned> Encode for Bitfield<Variable<N>> {
     fn is_ssz_fixed_len() -> bool {
         false
     }
@@ -481,7 +491,7 @@ impl<N: Unsigned + Clone> Encode for Bitfield<Variable<N>> {
     }
 }
 
-impl<N: Unsigned + Clone> Decode for Bitfield<Variable<N>> {
+impl<N: Unsigned> Decode for Bitfield<Variable<N>> {
     fn is_ssz_fixed_len() -> bool {
         false
     }
@@ -493,7 +503,7 @@ impl<N: Unsigned + Clone> Decode for Bitfield<Variable<N>> {
     }
 }
 
-impl<N: Unsigned + Clone> Encode for Bitfield<Fixed<N>> {
+impl<N: Unsigned> Encode for Bitfield<Fixed<N>> {
     fn is_ssz_fixed_len() -> bool {
         true
     }
@@ -507,7 +517,7 @@ impl<N: Unsigned + Clone> Encode for Bitfield<Fixed<N>> {
     }
 }
 
-impl<N: Unsigned + Clone> Decode for Bitfield<Fixed<N>> {
+impl<N: Unsigned> Decode for Bitfield<Fixed<N>> {
     fn is_ssz_fixed_len() -> bool {
         true
     }
@@ -523,7 +533,7 @@ impl<N: Unsigned + Clone> Decode for Bitfield<Fixed<N>> {
     }
 }
 
-impl<N: Unsigned + Clone> Serialize for Bitfield<Variable<N>> {
+impl<N: Unsigned> Serialize for Bitfield<Variable<N>> {
     /// Serde serialization is compliant with the Ethereum YAML test format.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -533,7 +543,7 @@ impl<N: Unsigned + Clone> Serialize for Bitfield<Variable<N>> {
     }
 }
 
-impl<'de, N: Unsigned + Clone> Deserialize<'de> for Bitfield<Variable<N>> {
+impl<'de, N: Unsigned> Deserialize<'de> for Bitfield<Variable<N>> {
     /// Serde serialization is compliant with the Ethereum YAML test format.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -545,7 +555,7 @@ impl<'de, N: Unsigned + Clone> Deserialize<'de> for Bitfield<Variable<N>> {
     }
 }
 
-impl<N: Unsigned + Clone> Serialize for Bitfield<Fixed<N>> {
+impl<N: Unsigned> Serialize for Bitfield<Fixed<N>> {
     /// Serde serialization is compliant with the Ethereum YAML test format.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -555,7 +565,7 @@ impl<N: Unsigned + Clone> Serialize for Bitfield<Fixed<N>> {
     }
 }
 
-impl<'de, N: Unsigned + Clone> Deserialize<'de> for Bitfield<Fixed<N>> {
+impl<'de, N: Unsigned> Deserialize<'de> for Bitfield<Fixed<N>> {
     /// Serde serialization is compliant with the Ethereum YAML test format.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -567,7 +577,7 @@ impl<'de, N: Unsigned + Clone> Deserialize<'de> for Bitfield<Fixed<N>> {
     }
 }
 
-impl<N: Unsigned + Clone> tree_hash::TreeHash for Bitfield<Variable<N>> {
+impl<N: Unsigned> tree_hash::TreeHash for Bitfield<Variable<N>> {
     fn tree_hash_type() -> tree_hash::TreeHashType {
         tree_hash::TreeHashType::List
     }
@@ -588,7 +598,7 @@ impl<N: Unsigned + Clone> tree_hash::TreeHash for Bitfield<Variable<N>> {
     }
 }
 
-impl<N: Unsigned + Clone> tree_hash::TreeHash for Bitfield<Fixed<N>> {
+impl<N: Unsigned> tree_hash::TreeHash for Bitfield<Fixed<N>> {
     fn tree_hash_type() -> tree_hash::TreeHashType {
         tree_hash::TreeHashType::Vector
     }
