@@ -1,5 +1,6 @@
 //! Ethereum 2.0 types
 
+#![warn(clippy::integer_arithmetic_overflow)]
 // Required for big type-level numbers
 #![recursion_limit = "128"]
 

@@ -71,7 +71,9 @@ pub trait EthSpec: 'static + Default + Sync + Send + Clone + Debug + PartialEq {
                 shard_count / slots_per_epoch,
                 active_validator_count / slots_per_epoch / target_committee_size,
             ),
-        ) * slots_per_epoch
+        )
+        .checked_mul(slots_per_epoch)
+        .expect("committee count should never overflow")
     }
 
     /// Return the number of shards to increment `state.start_shard` by in a given epoch.

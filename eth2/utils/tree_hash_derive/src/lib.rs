@@ -55,6 +55,7 @@ pub fn tree_hash_derive(input: TokenStream) -> TokenStream {
     let idents = get_hashable_named_field_idents(&struct_data);
 
     let output = quote! {
+        #[allow(clippy::integer_arithmetic_overflow)]
         impl #impl_generics tree_hash::TreeHash for #name #ty_generics #where_clause {
             fn tree_hash_type() -> tree_hash::TreeHashType {
                 tree_hash::TreeHashType::Container
@@ -98,6 +99,7 @@ pub fn tree_hash_signed_root_derive(input: TokenStream) -> TokenStream {
     let num_elems = idents.len();
 
     let output = quote! {
+        #[allow(clippy::integer_arithmetic_overflow)]
         impl #impl_generics tree_hash::SignedRoot for #name #ty_generics #where_clause {
             fn signed_root(&self) -> Vec<u8> {
                 let mut leaves = Vec::with_capacity(#num_elems * tree_hash::HASHSIZE);
