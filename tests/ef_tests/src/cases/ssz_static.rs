@@ -5,6 +5,7 @@ use crate::decode::yaml_decode_file;
 use cached_tree_hash::CachedTreeHash;
 use serde_derive::Deserialize;
 use std::fs;
+use std::marker::PhantomData;
 use tree_hash::SignedRoot;
 use types::Hash256;
 
@@ -29,10 +30,11 @@ pub struct SszStaticSR<T> {
 }
 
 #[derive(Debug, Clone)]
-pub struct SszStaticTHC<T> {
+pub struct SszStaticTHC<T, C> {
     roots: SszStaticRoots,
     serialized: Vec<u8>,
     value: T,
+    _phantom: PhantomData<C>,
 }
 
 fn load_from_dir<T: SszStaticType>(path: &Path) -> Result<(SszStaticRoots, Vec<u8>, T), Error> {
@@ -63,12 +65,13 @@ impl<T: SszStaticType + SignedRoot> LoadCase for SszStaticSR<T> {
     }
 }
 
-impl<T: SszStaticType + CachedTreeHash> LoadCase for SszStaticTHC<T> {
+impl<T: SszStaticType + CachedTreeHash<C>, C: SszStaticType> LoadCase for SszStaticTHC<T, C> {
     fn load_from_dir(path: &Path) -> Result<Self, Error> {
         load_from_dir(path).map(|(roots, serialized, value)| Self {
             roots,
             serialized,
             value,
+            _phantom: PhantomData,
         })
     }
 }
@@ -118,7 +121,7 @@ impl<T: SszStaticType + SignedRoot> Case for SszStaticSR<T> {
     }
 }
 
-impl<T: SszStaticType + CachedTreeHash> Case for SszStaticTHC<T> {
+impl<T: SszStaticType + CachedTreeHash<C>, C: SszStaticType> Case for SszStaticTHC<T, C> {
     fn result(&self, _case_index: usize) -> Result<(), Error> {
         check_serialization(&self.value, &self.serialized)?;
         check_tree_hash(&self.roots.root, &self.value.tree_hash_root())?;

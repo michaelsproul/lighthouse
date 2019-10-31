@@ -95,7 +95,7 @@ pub struct SszStaticHandler<T, E>(PhantomData<(T, E)>);
 pub struct SszStaticSRHandler<T, E>(PhantomData<(T, E)>);
 
 /// Handler for SSZ types that implement `CachedTreeHash`.
-pub struct SszStaticTHCHandler<T, E>(PhantomData<(T, E)>);
+pub struct SszStaticTHCHandler<T, C, E>(PhantomData<(T, C, E)>);
 
 impl<T, E> Handler for SszStaticHandler<T, E>
 where
@@ -137,12 +137,13 @@ where
     }
 }
 
-impl<T, E> Handler for SszStaticTHCHandler<T, E>
+impl<T, C, E> Handler for SszStaticTHCHandler<T, C, E>
 where
-    T: cases::SszStaticType + CachedTreeHash + TypeName,
+    T: cases::SszStaticType + CachedTreeHash<C> + TypeName,
+    C: cases::SszStaticType,
     E: TypeName,
 {
-    type Case = cases::SszStaticTHC<T>;
+    type Case = cases::SszStaticTHC<T, C>;
 
     fn config_name() -> &'static str {
         E::name()

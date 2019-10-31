@@ -2,7 +2,7 @@ use self::committee_cache::get_active_validator_indices;
 use self::exit_cache::ExitCache;
 use crate::test_utils::TestRandom;
 use crate::*;
-use cached_tree_hash::{CachedTreeHash, TreeHashCache};
+use cached_tree_hash::{CachedTreeHash, MultiTreeHashCache, TreeHashCache};
 use compare_fields_derive::CompareFields;
 use eth2_hashing::hash;
 use int_to_bytes::{int_to_bytes32, int_to_bytes8};
@@ -80,10 +80,11 @@ impl AllowNextEpoch {
 
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct BeaconTreeHashCache {
-    initialized: bool,
+    pub initialized: bool,
     block_roots: TreeHashCache,
     state_roots: TreeHashCache,
     historical_roots: TreeHashCache,
+    validators: MultiTreeHashCache,
     balances: TreeHashCache,
     randao_mixes: TreeHashCache,
     active_index_roots: TreeHashCache,
@@ -136,6 +137,7 @@ where
 
     // Registry
     #[compare_fields(as_slice)]
+    #[cached_tree_hash(validators)]
     pub validators: VariableList<Validator, T::ValidatorRegistryLimit>,
     #[compare_fields(as_slice)]
     #[cached_tree_hash(balances)]
@@ -972,7 +974,7 @@ impl<T: EthSpec> BeaconState<T> {
     /// Initialize but don't fill the tree hash cache, if it isn't already initialized.
     pub fn initialize_tree_hash_cache(&mut self) {
         if !self.tree_hash_cache.initialized {
-            self.tree_hash_cache = self.new_tree_hash_cache();
+            self.tree_hash_cache = Self::new_tree_hash_cache();
         }
     }
 

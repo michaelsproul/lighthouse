@@ -23,6 +23,27 @@ impl TreeHashCache {
         }
     }
 
+    /// Create a new cache with the given `depth`, with each layer's capacity set to its full size.
+    ///
+    /// Saves on allocations later if you know the cache will be filled.
+    pub fn new_fully_allocated(depth: usize) -> Self {
+        TreeHashCache {
+            depth,
+            layers: (0..=depth)
+                .map(|i| Vec::with_capacity(2usize.pow(i as u32)))
+                .collect(),
+        }
+    }
+
+    pub fn new_zeroed(depth: usize) -> Self {
+        TreeHashCache {
+            depth,
+            layers: (0..=depth)
+                .map(|i| vec![Hash256::zero(); 2usize.pow(i as u32)])
+                .collect(),
+        }
+    }
+
     /// Compute the updated Merkle root for the given `leaves`.
     pub fn recalculate_merkle_root(
         &mut self,
@@ -33,7 +54,7 @@ impl TreeHashCache {
     }
 
     /// Phase 1 of the algorithm: compute the indices of all dirty leaves.
-    fn update_leaves(
+    pub fn update_leaves(
         &mut self,
         leaves: impl Iterator<Item = [u8; BYTES_PER_CHUNK]>,
     ) -> Result<Vec<usize>, Error> {
@@ -44,7 +65,7 @@ impl TreeHashCache {
             match self.leaves().get_mut(i) {
                 Some(leaf) => {
                     if leaf.as_bytes() != &new_leaf {
-                        *leaf = Hash256::from_slice(&new_leaf);
+                        leaf.assign_from_slice(&new_leaf);
                         dirty.push(i);
                     }
                 }
@@ -69,7 +90,7 @@ impl TreeHashCache {
     }
 
     /// Phase 2: propagate changes upwards from the leaves of the tree, and compute the root.
-    fn update_merkle_root(&mut self, mut dirty_indices: Vec<usize>) -> Hash256 {
+    pub fn update_merkle_root(&mut self, mut dirty_indices: Vec<usize>) -> Hash256 {
         if dirty_indices.is_empty() {
             return self.root();
         }
@@ -109,14 +130,14 @@ impl TreeHashCache {
         self.root()
     }
 
-    fn root(&self) -> Hash256 {
+    pub fn root(&self) -> Hash256 {
         self.layers[0]
             .get(0)
             .copied()
             .unwrap_or_else(|| Hash256::from_slice(&ZERO_HASHES[self.depth]))
     }
 
-    fn leaves(&mut self) -> &mut Vec<Hash256> {
+    pub fn leaves(&mut self) -> &mut Vec<Hash256> {
         &mut self.layers[self.depth]
     }
 }
