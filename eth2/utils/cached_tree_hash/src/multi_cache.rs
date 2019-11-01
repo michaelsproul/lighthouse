@@ -2,8 +2,13 @@ use crate::{int_log, CachedTreeHash, Error, Hash256, TreeHashCache};
 use ssz_types::{typenum::Unsigned, VariableList};
 use tree_hash::mix_in_length;
 
-/// Tree hash cache for the values.
-// TODO: could maybe make these composable?
+/// Multi-level tree hash cache.
+///
+/// Suitable for lists/vectors/containers holding values which themselves have caches.
+///
+/// Note: this cache could be made composable by replacing the hardcoded `Vec<TreeHashCache>` with
+/// `Vec<C>`, allowing arbitrary nesting, but for now we stick to 2-level nesting because that's all
+/// we need.
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct MultiTreeHashCache {
     list_cache: TreeHashCache,
@@ -23,38 +28,30 @@ where
     }
 
     fn recalculate_tree_hash_root(&self, cache: &mut MultiTreeHashCache) -> Result<Hash256, Error> {
-        // TODO: work out how to do this in a single pass (error handling is the only issue!)
-        let value_caches = &mut cache.value_caches;
-        let list_cache = &mut cache.list_cache;
-
-        if self.len() < value_caches.len() {
+        if self.len() < cache.value_caches.len() {
             return Err(Error::CannotShrink);
         }
 
         // Resize the value caches to the size of the list.
-        value_caches.resize(self.len(), T::new_tree_hash_cache());
+        cache
+            .value_caches
+            .resize(self.len(), T::new_tree_hash_cache());
 
-        // Update all individual value caches
-        let value_roots = self
-            .iter()
-            .zip(value_caches.iter_mut())
-            .map(|(value, cache)| {
-                value
-                    .recalculate_tree_hash_root(cache)
-                    .unwrap()
-                    .to_fixed_bytes()
-            });
+        // Update all individual value caches.
+        self.iter()
+            .zip(cache.value_caches.iter_mut())
+            .try_for_each(|(value, cache)| value.recalculate_tree_hash_root(cache).map(|_| ()))?;
 
-        // Pipe the value roots into the list cache, then mix in the length
-        let list_root = list_cache.recalculate_merkle_root(value_roots)?;
-        /*
+        // Pipe the value roots into the list cache, then mix in the length.
+        // Note: it's possible to avoid this 2nd iteration (or an allocation) by using
+        // `itertools::process_results`, but it requires removing the `ExactSizeIterator`
+        // bound from `recalculate_merkle_root`, and only saves about 5% in benchmarks.
         let list_root = cache.list_cache.recalculate_merkle_root(
             cache
                 .value_caches
                 .iter()
                 .map(|value_cache| value_cache.root().to_fixed_bytes()),
         )?;
-        */
 
         Ok(Hash256::from_slice(&mix_in_length(
             list_root.as_bytes(),

@@ -17,6 +17,8 @@ pub enum Error {
     /// Shrinking a Merkle tree cache by providing it with less leaves than it currently has is
     /// disallowed (for simplicity).
     CannotShrink,
+    /// Cache is inconsistent with the list of dirty indices provided.
+    CacheInconsistent,
 }
 
 /// Trait for types which can make use of a cache to accelerate calculation of their tree hash root.

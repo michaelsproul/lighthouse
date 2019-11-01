@@ -7,21 +7,23 @@ const NUM_VALIDATOR_FIELDS: usize = 8;
 
 impl CachedTreeHash<TreeHashCache> for Validator {
     fn new_tree_hash_cache() -> TreeHashCache {
-        TreeHashCache::new_zeroed(int_log(NUM_VALIDATOR_FIELDS))
+        TreeHashCache::new(int_log(NUM_VALIDATOR_FIELDS))
     }
 
     fn recalculate_tree_hash_root(&self, cache: &mut TreeHashCache) -> Result<Hash256, Error> {
-        // Just check the fields which might have changed.
-        let leaves = cache.leaves();
-        let first_run = leaves[0].is_zero();
+        // If the cache is empty, hash every field to fill it.
+        if cache.leaves().is_empty() {
+            return cache.recalculate_merkle_root(field_tree_hash_iter(self));
+        }
 
-        // (0..NUM_VALIDATOR_FIELDS)
-        let dirty_indices = leaves
+        // Otherwise just check the fields which might have changed.
+        let dirty_indices = cache
+            .leaves()
             .iter_mut()
             .enumerate()
             .flat_map(|(i, leaf)| {
                 // Fields pubkey and withdrawal_credentials are constant
-                if !first_run && (i == 0 || i == 1) {
+                if i == 0 || i == 1 {
                     None
                 } else {
                     let new_tree_hash = field_tree_hash_by_index(self, i);
@@ -35,10 +37,11 @@ impl CachedTreeHash<TreeHashCache> for Validator {
             })
             .collect();
 
-        Ok(cache.update_merkle_root(dirty_indices))
+        cache.update_merkle_root(dirty_indices)
     }
 }
 
+/// Get the tree hash root of a validator field by its position/index in the struct.
 fn field_tree_hash_by_index(v: &Validator, field_idx: usize) -> Vec<u8> {
     match field_idx {
         0 => v.pubkey.tree_hash_root(),
@@ -57,7 +60,9 @@ fn field_tree_hash_by_index(v: &Validator, field_idx: usize) -> Vec<u8> {
 }
 
 /// Iterator over the tree hash roots of `Validator` fields.
-fn field_tree_hash_iter<'a>(v: &'a Validator) -> impl Iterator<Item = [u8; 32]> + 'a {
+fn field_tree_hash_iter<'a>(
+    v: &'a Validator,
+) -> impl Iterator<Item = [u8; 32]> + ExactSizeIterator + 'a {
     (0..NUM_VALIDATOR_FIELDS)
         .map(move |i| field_tree_hash_by_index(v, i))
         .map(|tree_hash_root| {
@@ -71,11 +76,12 @@ fn field_tree_hash_iter<'a>(v: &'a Validator) -> impl Iterator<Item = [u8; 32]> 
 mod test {
     use super::*;
     use crate::test_utils::TestRandom;
+    use crate::Epoch;
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
 
     fn test_validator_tree_hash(v: &Validator) {
-        let mut cache = v.new_tree_hash_cache();
+        let mut cache = Validator::new_tree_hash_cache();
         // With a fresh cache
         assert_eq!(
             &v.tree_hash_root()[..],
@@ -95,6 +101,14 @@ mod test {
     #[test]
     fn default_validator() {
         test_validator_tree_hash(&Validator::default());
+    }
+
+    #[test]
+    fn zeroed_validator() {
+        let mut v = Validator::default();
+        v.activation_eligibility_epoch = Epoch::from(0u64);
+        v.activation_epoch = Epoch::from(0u64);
+        test_validator_tree_hash(&v);
     }
 
     #[test]

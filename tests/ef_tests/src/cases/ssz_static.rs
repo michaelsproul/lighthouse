@@ -126,8 +126,7 @@ impl<T: SszStaticType + CachedTreeHash<C>, C: SszStaticType> Case for SszStaticT
         check_serialization(&self.value, &self.serialized)?;
         check_tree_hash(&self.roots.root, &self.value.tree_hash_root())?;
 
-        // TODO(sproul): test with random cache as well
-        let mut cache = self.value.new_tree_hash_cache();
+        let mut cache = T::new_tree_hash_cache();
         let cached_tree_hash_root = self.value.recalculate_tree_hash_root(&mut cache).unwrap();
         check_tree_hash(&self.roots.root, cached_tree_hash_root.as_bytes())?;
 

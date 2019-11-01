@@ -13,11 +13,15 @@ pub fn int_log(n: usize) -> usize {
     }
 }
 
-pub fn hash256_iter<'a>(values: &'a [Hash256]) -> impl Iterator<Item = [u8; BYTES_PER_CHUNK]> + 'a {
+pub fn hash256_iter<'a>(
+    values: &'a [Hash256],
+) -> impl Iterator<Item = [u8; BYTES_PER_CHUNK]> + ExactSizeIterator + 'a {
     values.iter().copied().map(Hash256::to_fixed_bytes)
 }
 
-pub fn u64_iter<'a>(values: &'a [u64]) -> impl Iterator<Item = [u8; BYTES_PER_CHUNK]> + 'a {
+pub fn u64_iter<'a>(
+    values: &'a [u64],
+) -> impl Iterator<Item = [u8; BYTES_PER_CHUNK]> + ExactSizeIterator + 'a {
     let type_size = size_of::<u64>();
     let vals_per_chunk = BYTES_PER_CHUNK / type_size;
     values.chunks(vals_per_chunk).map(move |xs| {
