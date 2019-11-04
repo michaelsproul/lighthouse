@@ -80,7 +80,7 @@ impl AllowNextEpoch {
 
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct BeaconTreeHashCache {
-    pub initialized: bool,
+    initialized: bool,
     block_roots: TreeHashCache,
     state_roots: TreeHashCache,
     historical_roots: TreeHashCache,
@@ -90,6 +90,12 @@ pub struct BeaconTreeHashCache {
     active_index_roots: TreeHashCache,
     compact_committees_roots: TreeHashCache,
     slashings: TreeHashCache,
+}
+
+impl BeaconTreeHashCache {
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
 }
 
 /// The state of the `BeaconChain` at some slot.

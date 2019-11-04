@@ -65,8 +65,7 @@ pub struct Cases<T> {
 impl<T: Case> Cases<T> {
     pub fn test_results(&self) -> Vec<CaseResult> {
         self.test_cases
-            // .into_par_iter()
-            .iter()
+            .into_par_iter()
             .enumerate()
             .map(|(i, (ref path, ref tc))| CaseResult::new(i, path, tc, tc.result(i)))
             .collect()

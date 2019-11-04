@@ -65,7 +65,7 @@ impl<T: SszStaticType + SignedRoot> LoadCase for SszStaticSR<T> {
     }
 }
 
-impl<T: SszStaticType + CachedTreeHash<C>, C: SszStaticType> LoadCase for SszStaticTHC<T, C> {
+impl<T: SszStaticType + CachedTreeHash<C>, C: Debug + Sync> LoadCase for SszStaticTHC<T, C> {
     fn load_from_dir(path: &Path) -> Result<Self, Error> {
         load_from_dir(path).map(|(roots, serialized, value)| Self {
             roots,
@@ -121,7 +121,7 @@ impl<T: SszStaticType + SignedRoot> Case for SszStaticSR<T> {
     }
 }
 
-impl<T: SszStaticType + CachedTreeHash<C>, C: SszStaticType> Case for SszStaticTHC<T, C> {
+impl<T: SszStaticType + CachedTreeHash<C>, C: Debug + Sync + Sized> Case for SszStaticTHC<T, C> {
     fn result(&self, _case_index: usize) -> Result<(), Error> {
         check_serialization(&self.value, &self.serialized)?;
         check_tree_hash(&self.roots.root, &self.value.tree_hash_root())?;

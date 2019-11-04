@@ -2,6 +2,7 @@ use crate::cases::{self, Case, Cases, EpochTransition, LoadCase, Operation};
 use crate::type_name;
 use crate::type_name::TypeName;
 use cached_tree_hash::CachedTreeHash;
+use std::fmt::Debug;
 use std::fs;
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -140,7 +141,7 @@ where
 impl<T, C, E> Handler for SszStaticTHCHandler<T, C, E>
 where
     T: cases::SszStaticType + CachedTreeHash<C> + TypeName,
-    C: cases::SszStaticType,
+    C: Debug + Sync,
     E: TypeName,
 {
     type Case = cases::SszStaticTHC<T, C>;

@@ -1,9 +1,7 @@
-#[macro_use]
-extern crate lazy_static;
-
 use criterion::Criterion;
 use criterion::{black_box, criterion_group, criterion_main, Benchmark};
 use eth2_hashing::hash;
+use lazy_static::lazy_static;
 use tree_hash::TreeHash;
 use types::test_utils::{generate_deterministic_keypairs, TestingBeaconStateBuilder};
 use types::{BeaconState, EthSpec, Keypair, MainnetEthSpec, MinimalEthSpec, Validator};
@@ -40,7 +38,6 @@ fn bench_suite<T: EthSpec>(c: &mut Criterion, spec_desc: &str, validator_count: 
     let mut state3 = state1.clone();
     state3.build_tree_hash_cache().unwrap();
 
-    /*
     c.bench(
         &format!("{}/{}_validators/no_cache", spec_desc, validator_count),
         Benchmark::new("genesis_state", move |b| {
@@ -52,7 +49,6 @@ fn bench_suite<T: EthSpec>(c: &mut Criterion, spec_desc: &str, validator_count: 
         })
         .sample_size(10),
     );
-    */
 
     c.bench(
         &format!("{}/{}_validators/empty_cache", spec_desc, validator_count),
@@ -60,7 +56,7 @@ fn bench_suite<T: EthSpec>(c: &mut Criterion, spec_desc: &str, validator_count: 
             b.iter_batched_ref(
                 || state2.clone(),
                 |state| {
-                    assert!(!state.tree_hash_cache.initialized);
+                    assert!(!state.tree_hash_cache.is_initialized());
                     black_box(state.update_tree_hash_cache().unwrap())
                 },
                 criterion::BatchSize::SmallInput,
@@ -78,7 +74,7 @@ fn bench_suite<T: EthSpec>(c: &mut Criterion, spec_desc: &str, validator_count: 
             b.iter_batched_ref(
                 || state3.clone(),
                 |state| {
-                    assert!(state.tree_hash_cache.initialized);
+                    assert!(state.tree_hash_cache.is_initialized());
                     black_box(state.update_tree_hash_cache().unwrap())
                 },
                 criterion::BatchSize::SmallInput,
@@ -89,10 +85,10 @@ fn bench_suite<T: EthSpec>(c: &mut Criterion, spec_desc: &str, validator_count: 
 }
 
 fn all_benches(c: &mut Criterion) {
-    // bench_suite::<MinimalEthSpec>(c, "minimal", 100_000);
-    // bench_suite::<MinimalEthSpec>(c, "minimal", 300_000);
+    bench_suite::<MinimalEthSpec>(c, "minimal", 100_000);
+    bench_suite::<MinimalEthSpec>(c, "minimal", 300_000);
 
-    // bench_suite::<MainnetEthSpec>(c, "mainnet", 100_000);
+    bench_suite::<MainnetEthSpec>(c, "mainnet", 100_000);
     bench_suite::<MainnetEthSpec>(c, "mainnet", 300_000);
 }
 
