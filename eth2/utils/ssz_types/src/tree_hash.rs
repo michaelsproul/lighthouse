@@ -10,23 +10,15 @@ where
 {
     let (leaves, minimum_chunk_count) = match T::tree_hash_type() {
         TreeHashType::Basic => {
-            let bytes_per_value = BYTES_PER_CHUNK / T::tree_hash_packing_factor();
-            let values_per_chunk = T::tree_hash_packing_factor();
-            let minimum_chunk_count = (N::to_usize() + values_per_chunk - 1) / values_per_chunk;
-
-            // Evil optimization: short-circuit the copy if the input is "Just Bytes"
-            if bytes_per_value == 1 {
-                let bytes: &[u8] =
-                    unsafe { std::slice::from_raw_parts(vec.as_ptr() as *const u8, vec.len()) };
-
-                return merkle_root(bytes, minimum_chunk_count);
-            }
-
-            let mut leaves = Vec::with_capacity(bytes_per_value * vec.len());
+            let mut leaves =
+                Vec::with_capacity((BYTES_PER_CHUNK / T::tree_hash_packing_factor()) * vec.len());
 
             for item in vec {
                 leaves.append(&mut item.tree_hash_packed_encoding());
             }
+
+            let values_per_chunk = T::tree_hash_packing_factor();
+            let minimum_chunk_count = (N::to_usize() + values_per_chunk - 1) / values_per_chunk;
 
             (leaves, minimum_chunk_count)
         }
