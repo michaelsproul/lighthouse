@@ -1,6 +1,6 @@
 use crate::{metrics, BeaconChain, BeaconChainTypes};
 use lmd_ghost::LmdGhost;
-use state_processing::common::get_attesting_indices;
+use state_processing::{common::get_attesting_indices, per_slot_processing};
 use std::sync::Arc;
 use store::{Error as StoreError, Store};
 use types::{
@@ -50,26 +50,14 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
 
         let start_slot = |epoch: Epoch| epoch.start_slot(T::EthSpec::slots_per_epoch());
 
-        // From the specification:
-        //
-        // Let justified_head be the descendant of finalized_head with the highest epoch that has
-        // been justified for at least 1 epoch ... If no such descendant exists,
-        // set justified_head to finalized_head.
         let (start_state, start_block_root, start_block_slot) = {
             let state = &chain.head().beacon_state;
 
-            let (block_root, block_slot) =
-                if state.current_epoch() + 1 > state.current_justified_checkpoint.epoch {
-                    (
-                        state.current_justified_checkpoint.root,
-                        start_slot(state.current_justified_checkpoint.epoch),
-                    )
-                } else {
-                    (
-                        state.finalized_checkpoint.root,
-                        start_slot(state.finalized_checkpoint.epoch),
-                    )
-                };
+            // FIXME(sproul): begin from fork-choice's view of justified checkpoint
+            let (block_root, block_slot) = (
+                state.current_justified_checkpoint.root,
+                start_slot(state.current_justified_checkpoint.epoch),
+            );
 
             let block = chain
                 .store
@@ -77,16 +65,23 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
                 .ok_or_else(|| Error::MissingBlock(block_root))?;
 
             // Resolve the `0x00.. 00` alias back to genesis
+            // FIXME(sproul): why is this reachable after checking the DB?
+            // do we store the genesis block under the zero hash in the DB?
             let block_root = if block_root == Hash256::zero() {
                 self.genesis_block_root
             } else {
                 block_root
             };
 
-            let state = chain
+            let mut state = chain
                 .store
                 .get::<BeaconState<T::EthSpec>>(&block.state_root)?
                 .ok_or_else(|| Error::MissingState(block.state_root))?;
+
+            // Fast-forward the state to the start slot of the epoch where it was justified.
+            for _ in 0..block_slot.as_u64() {
+                per_slot_processing(&mut state, &chain.spec)?;
+            }
 
             (state, block_root, block_slot)
         };
@@ -111,7 +106,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
 
     /// Process all attestations in the given `block`.
     ///
-    /// Assumes the block (and therefore it's attestations) are valid. It is a logic error to
+    /// Assumes the block (and therefore its attestations) are valid. It is a logic error to
     /// provide an invalid block.
     pub fn process_block(
         &self,

@@ -871,20 +871,27 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
             Ok(AttestationProcessingOutcome::Invalid(e))
         } else {
-            // Provide the attestation to fork choice, updating the validator latest messages but
-            // _without_ finding and updating the head.
-            if let Err(e) = self
-                .fork_choice
-                .process_attestation(&state, &attestation, block)
+            // If the attestation is from the current or previous epoch, supply it to the fork
+            // choice. This is FMD GHOST.
+            let current_epoch = self.epoch()?;
+            if attestation.data.target.epoch == current_epoch
+                || attestation.data.target.epoch == current_epoch - 1
             {
-                error!(
-                    self.log,
-                    "Add attestation to fork choice failed";
-                    "fork_choice_integrity" => format!("{:?}", self.fork_choice.verify_integrity()),
-                    "beacon_block_root" =>  format!("{}", attestation.data.beacon_block_root),
-                    "error" => format!("{:?}", e)
-                );
-                return Err(e.into());
+                // Provide the attestation to fork choice, updating the validator latest messages but
+                // _without_ finding and updating the head.
+                if let Err(e) = self
+                    .fork_choice
+                    .process_attestation(&state, &attestation, block)
+                {
+                    error!(
+                        self.log,
+                        "Add attestation to fork choice failed";
+                        "fork_choice_integrity" => format!("{:?}", self.fork_choice.verify_integrity()),
+                        "beacon_block_root" =>  format!("{}", attestation.data.beacon_block_root),
+                        "error" => format!("{:?}", e)
+                    );
+                    return Err(e.into());
+                }
             }
 
             // Provide the valid attestation to op pool, which may choose to retain the

@@ -251,6 +251,8 @@ where
         }
     }
 
+    // Corresponds to the loop in `get_head` in the spec.
+    // TODO: check that the slot is greater than the justified slot
     fn find_head_from<'a>(&'a self, start_node: &'a Node) -> Result<&'a Node> {
         if start_node.does_not_have_children() {
             Ok(start_node)
@@ -261,16 +263,9 @@ where
                 .map(|hash| self.get_node(*hash))
                 .collect::<Result<Vec<&Node>>>()?;
 
-            // TODO: check if `max_by` is `O(n^2)`.
             let best_child = children
                 .iter()
-                .max_by(|a, b| {
-                    if a.weight != b.weight {
-                        a.weight.cmp(&b.weight)
-                    } else {
-                        a.block_hash.cmp(&b.block_hash)
-                    }
-                })
+                .max_by_key(|child| (child.weight, child.block_hash))
                 // There can only be no maximum if there are no children. This code path is guarded
                 // against that condition.
                 .expect("There must be a maximally weighted node.");
