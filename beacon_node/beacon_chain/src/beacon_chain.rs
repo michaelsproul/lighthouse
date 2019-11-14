@@ -326,6 +326,44 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         ReverseBlockRootIterator::new((head.beacon_block_root, head.beacon_block.slot), iter)
     }
 
+    /// Traverse backwards from `block_root` to find the block roots of its ancestors.
+    ///
+    /// ## Notes
+    ///
+    /// `slot` always decreases by `1`.
+    /// - Skipped slots contain the root of the closest prior
+    ///     non-skipped slot (identical to the way they are stored in `state.block_roots`) .
+    /// - Iterator returns `(Hash256, Slot)`.
+    /// - The provided `block_root` is included as the first item in the iterator.
+    pub fn rev_iter_block_roots_from(
+        &self,
+        block_root: Hash256,
+    ) -> Result<ReverseBlockRootIterator<T::EthSpec, T::Store>, Error> {
+        let block = self
+            .get_block(&block_root)?
+            .ok_or_else(|| Error::MissingBeaconBlock(block_root))?;
+        let state = self
+            .get_state(&block.state_root)?
+            .ok_or_else(|| Error::MissingBeaconState(block.state_root))?;
+        let iter = BlockRootsIterator::owned(self.store.clone(), state);
+        Ok(ReverseBlockRootIterator::new(
+            (block_root, block.slot),
+            iter,
+        ))
+    }
+
+    /// Traverse backwards from `block_root` to find the root of the ancestor block at `slot`.
+    pub fn get_ancestor_block_root(
+        &self,
+        block_root: Hash256,
+        slot: Slot,
+    ) -> Result<Option<Hash256>, Error> {
+        Ok(self
+            .rev_iter_block_roots_from(block_root)?
+            .find(|(_, ancestor_slot)| *ancestor_slot == slot)
+            .map(|(ancestor_block_root, _)| ancestor_block_root))
+    }
+
     /// Iterates across all `(state_root, slot)` pairs from the head of the chain (inclusive) to
     /// the earliest reachable ancestor (may or may not be genesis).
     ///
@@ -354,6 +392,18 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         block_root: &Hash256,
     ) -> Result<Option<BeaconBlock<T::EthSpec>>, Error> {
         Ok(self.store.get(block_root)?)
+    }
+
+    /// Returns the state at the given root, if any.
+    ///
+    /// ## Errors
+    ///
+    /// May return a database error.
+    pub fn get_state(
+        &self,
+        state_root: &Hash256,
+    ) -> Result<Option<BeaconState<T::EthSpec>>, Error> {
+        Ok(self.store.get(state_root)?)
     }
 
     /// Returns a `Checkpoint` representing the head block and state. Contains the "best block";
@@ -1201,7 +1251,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             metrics::start_timer(&metrics::BLOCK_PROCESSING_FORK_CHOICE_REGISTER);
 
         // Register the new block with the fork choice service.
-        if let Err(e) = self.fork_choice.process_block(&state, &block, block_root) {
+        if let Err(e) = self
+            .fork_choice
+            .process_block(self, &state, &block, block_root)
+        {
             error!(
                 self.log,
                 "Add block to fork choice failed";

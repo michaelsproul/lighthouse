@@ -252,7 +252,7 @@ where
     }
 
     // Corresponds to the loop in `get_head` in the spec.
-    // TODO: check that the slot is greater than the justified slot
+    // TODO(sproul): check that the slot is greater than the justified slot
     fn find_head_from<'a>(&'a self, start_node: &'a Node) -> Result<&'a Node> {
         if start_node.does_not_have_children() {
             Ok(start_node)
