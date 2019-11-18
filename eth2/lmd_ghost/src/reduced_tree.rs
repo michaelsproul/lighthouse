@@ -4,6 +4,7 @@
 //!
 //! This implementation is incomplete and has known bugs. Do not use in production.
 use super::{LmdGhost, Result as SuperResult};
+use itertools::Itertools;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::fmt;
@@ -20,6 +21,7 @@ pub enum Error {
     MissingBlock(Hash256),
     MissingState(Hash256),
     MissingChild(Hash256),
+    MissingSuccessor(Hash256, Hash256),
     NotInTree(Hash256),
     NoCommonAncestor((Hash256, Hash256)),
     StoreError(StoreError),
@@ -139,7 +141,6 @@ where
             genesis_root,
             Node {
                 block_hash: genesis_root,
-                block_slot: genesis_block.slot,
                 ..Node::default()
             },
         );
@@ -215,7 +216,7 @@ where
                 }),
             );
 
-            self.add_latest_message(validator_index, block_hash, slot)?;
+            self.add_latest_message(validator_index, block_hash)?;
         }
 
         Ok(())
@@ -258,15 +259,14 @@ where
         start_node: &'a Node,
         justified_slot: Slot,
     ) -> Result<&'a Node> {
-        let mut children = start_node
+        let children = start_node
             .children
             .iter()
+            // This check is primarily for the first iteration, where we must ensure that
+            // we only consider votes that were made after the last justified checkpoint.
+            .filter(|c| c.successor_slot > justified_slot)
             .map(|c| self.get_node(c.hash))
             .collect::<Result<Vec<&Node>>>()?;
-
-        // This check is primarily for the first iteration, where we must ensure that
-        // we only consider votes that were made after the last justified checkpoint.
-        children.retain(|child| child.block_slot > justified_slot);
 
         if children.is_empty() {
             Ok(start_node)
@@ -291,7 +291,7 @@ where
 
             let mut weight = 0;
 
-            for &child in &node.children {
+            for child in &node.children {
                 weight += self.update_weight(child.hash, weight_fn)?;
             }
 
@@ -332,7 +332,7 @@ where
                         // Graft the parent of this node to it's child.
                         if let Some(parent_hash) = node.parent_hash {
                             let parent = self.get_mut_node(parent_hash)?;
-                            parent.replace_child(node.block_hash, node.children[0])?;
+                            parent.replace_child_hash(node.block_hash, node.children[0].hash)?;
                         }
 
                         self.nodes.remove(&vote.hash);
@@ -380,7 +380,7 @@ where
 
                 if let Some(parent_hash) = node.parent_hash {
                     if node.children.len() == 1 && !node.has_votes() {
-                        let child = node.children[0];
+                        let child = &node.children[0];
 
                         // Graft the single descendant `node` to the `parent` of node.
                         self.get_mut_node(child.hash)?.parent_hash = Some(parent_hash);
@@ -411,18 +411,12 @@ where
         Ok(())
     }
 
-    fn add_latest_message(
-        &mut self,
-        validator_index: usize,
-        hash: Hash256,
-        slot: Slot,
-    ) -> Result<()> {
+    fn add_latest_message(&mut self, validator_index: usize, hash: Hash256) -> Result<()> {
         if let Ok(node) = self.get_mut_node(hash) {
             node.add_voter(validator_index);
         } else {
             let node = Node {
                 block_hash: hash,
-                block_slot: slot,
                 voters: vec![validator_index],
                 ..Node::default()
             };
@@ -437,7 +431,6 @@ where
         if slot > self.root_slot() && !self.nodes.contains_key(&hash) {
             let node = Node {
                 block_hash: hash,
-                block_slot: slot,
                 ..Node::default()
             };
 
@@ -453,14 +446,38 @@ where
         Ok(())
     }
 
-    /// Find the
-    fn find_ancestor_and_successor(&self, child: Hash256, ancestor_target: Hash256) -> Result<Option<>> {
-        self
-             .iter_ancestors(child.hash)?
-             .take_while(|(_, slot)| *slot >= self.root_slot())
-             .fold()
-             .any(|(ancestor, _slot)| ancestor == node.block_hash)
+    /// Find the direct successor block of `ancestor` if `descendant` is a descendant.
+    fn find_ancestor_successor_opt(
+        &self,
+        ancestor: Hash256,
+        descendant: Hash256,
+    ) -> Result<Option<Hash256>> {
+        Ok(std::iter::once(descendant)
+            .chain(
+                self.iter_ancestors(descendant)?
+                    .take_while(|(_, slot)| *slot >= self.root_slot())
+                    .map(|(block_hash, _)| block_hash),
+            )
+            .tuple_windows()
+            .find_map(|(successor, block_hash)| {
+                if block_hash == ancestor {
+                    Some(successor)
+                } else {
+                    None
+                }
+            }))
+    }
 
+    /// Same as `find_ancestor_successor_opt` but will return an error instead of an option.
+    fn find_ancestor_successor(&self, ancestor: Hash256, descendant: Hash256) -> Result<Hash256> {
+        self.find_ancestor_successor_opt(ancestor, descendant)?
+            .ok_or_else(|| Error::MissingSuccessor(ancestor, descendant))
+    }
+
+    /// Look up the successor of the given `ancestor`, returning the slot of that block.
+    fn find_ancestor_successor_slot(&self, ancestor: Hash256, descendant: Hash256) -> Result<Slot> {
+        let successor_hash = self.find_ancestor_successor(ancestor, descendant)?;
+        Ok(self.get_block(successor_hash)?.slot)
     }
 
     /// Add `node` to the reduced tree, returning an error if `node` is not rooted in the tree.
@@ -481,7 +498,9 @@ where
         //    `node` to it.
         // 3. Graft `node` to an existing node.
         if !prev_in_tree.children.is_empty() {
-            for child in &prev_in_tree.children {
+            for child_link in &prev_in_tree.children {
+                let child_hash = child_link.hash;
+
                 // 1. Graft the new node between two existing nodes.
                 //
                 // If `node` is a descendant of `prev_in_tree` but an ancestor of a child connected to
@@ -489,13 +508,18 @@ where
                 //
                 // This means that `node` can be grafted between `prev_in_tree` and the child that is a
                 // descendant of both `node` and `prev_in_tree`.
-                if {
-                    let child = self.get_mut_node(child.hash)?;
+                if let Some(successor) =
+                    self.find_ancestor_successor_opt(node.block_hash, child_hash)?
+                {
+                    let child = self.get_mut_node(child_hash)?;
 
                     // Graft `child` to `node`.
                     child.parent_hash = Some(node.block_hash);
                     // Graft `node` to `child`.
-                    node.children.push(child_hash);
+                    node.children.push(ChildLink {
+                        hash: child_hash,
+                        successor_slot: self.get_block(successor)?.slot,
+                    });
                     // Detach `child` from `prev_in_tree`, replacing it with `node`.
                     prev_in_tree.replace_child_hash(child_hash, node.block_hash)?;
                     // Graft `node` to `prev_in_tree`.
@@ -512,7 +536,8 @@ where
             // any of the children of `prev_in_tree`, we know that `node` is on a different fork to
             // all of the children of `prev_in_tree`.
             if node.parent_hash.is_none() {
-                for &child_hash in &prev_in_tree.children {
+                for child_link in &prev_in_tree.children {
+                    let child_hash = child_link.hash;
                     // Find the highest (by slot) common ancestor between `node` and `child`.
                     //
                     // The common ancestor is the last block before `node` and `child` forked.
@@ -523,24 +548,37 @@ where
                     // must add this new block into the tree (because it is a decision node
                     // between two forks).
                     if ancestor_hash != prev_in_tree.block_hash {
-                        let child = self.get_mut_node(child_hash)?;
-
                         // Create a new `common_ancestor` node which represents the `ancestor_hash`
                         // block, has `prev_in_tree` as the parent and has both `node` and `child`
                         // as children.
                         let common_ancestor = Node {
                             block_hash: ancestor_hash,
                             parent_hash: Some(prev_in_tree.block_hash),
-                            children: vec![node.block_hash, child_hash],
+                            children: vec![
+                                ChildLink {
+                                    hash: node.block_hash,
+                                    successor_slot: self.find_ancestor_successor_slot(
+                                        ancestor_hash,
+                                        node.block_hash,
+                                    )?,
+                                },
+                                ChildLink {
+                                    hash: child_hash,
+                                    successor_slot: self
+                                        .find_ancestor_successor_slot(ancestor_hash, child_hash)?,
+                                },
+                            ],
                             ..Node::default()
                         };
+
+                        let child = self.get_mut_node(child_hash)?;
 
                         // Graft `child` and `node` to `common_ancestor`.
                         child.parent_hash = Some(common_ancestor.block_hash);
                         node.parent_hash = Some(common_ancestor.block_hash);
 
                         // Detach `child` from `prev_in_tree`, replacing it with `common_ancestor`.
-                        prev_in_tree.replace_child(child_hash, common_ancestor.block_hash)?;
+                        prev_in_tree.replace_child_hash(child_hash, common_ancestor.block_hash)?;
 
                         // Store the new `common_ancestor` node.
                         self.nodes
@@ -557,7 +595,11 @@ where
             //
             // Graft `node` to `prev_in_tree` and `prev_in_tree` to `node`
             node.parent_hash = Some(prev_in_tree.block_hash);
-            prev_in_tree.children.push(node.block_hash);
+            prev_in_tree.children.push(ChildLink {
+                hash: node.block_hash,
+                successor_slot: self
+                    .find_ancestor_successor_slot(prev_in_tree.block_hash, node.block_hash)?,
+            });
         }
 
         // Update `prev_in_tree`. A mutable reference was not maintained to satisfy the borrow
@@ -672,7 +714,17 @@ where
 
                 node.children
                     .iter()
-                    .map(|child| verify_node_exists(*child, "child_must_exist".to_string()))
+                    .map(|child| {
+                        verify_node_exists(child.hash, "child_must_exist".to_string())?;
+
+                        if self.find_ancestor_successor_slot(node.block_hash, child.hash)?
+                            == child.successor_slot
+                        {
+                            Ok(())
+                        } else {
+                            Err("successor slot on child link is incorrect".to_string())
+                        }
+                    })
                     .collect::<std::result::Result<(), String>>()?;
 
                 verify_node_exists(node.block_hash, "block hash must exist".to_string())?;
@@ -720,7 +772,6 @@ pub struct Node {
     pub children: Vec<ChildLink>,
     pub weight: u64,
     pub block_hash: Hash256,
-    pub block_slot: Slot,
     pub voters: Vec<usize>,
 }
 
@@ -730,22 +781,14 @@ pub struct ChildLink {
     pub hash: Hash256,
     /// Slot of the block which is a direct descendant on the chain leading to `hash`.
     ///
-    /// Node <--- Direct Descendant <--- ... <--- Child
-    pub direct_descendant_slot: Slot,
+    /// Node <--- Successor <--- ... <--- Child
+    pub successor_slot: Slot,
 }
 
 impl Node {
-    pub fn replace_child(&mut self, old: Hash256, new: ChildLink) -> Result<()> {
-        let i = self
-            .children
-            .iter()
-            .position(|c| c.hash == old)
-            .ok_or_else(|| Error::MissingChild(old))?;
-        self.children[i] = new;
-
-        Ok(())
-    }
-
+    /// Replace a child with a new child, whilst preserving the successor slot.
+    ///
+    /// The new child should have the same ancestor successor block as the old one.
     pub fn replace_child_hash(&mut self, old: Hash256, new: Hash256) -> Result<()> {
         let i = self
             .children
@@ -761,7 +804,7 @@ impl Node {
         let i = self
             .children
             .iter()
-            .position(|&c| c.hash == child)
+            .position(|c| c.hash == child)
             .ok_or_else(|| Error::MissingChild(child))?;
 
         self.children.remove(i);
