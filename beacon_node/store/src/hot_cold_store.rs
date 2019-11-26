@@ -22,6 +22,8 @@ pub struct HotColdDB {
     /// Data for slots less than `split_slot` is in the cold DB, while data for slots
     /// greater than or equal is in the hot DB.
     split_slot: RwLock<Slot>,
+    /// Number of slots
+    slots_per_checkpoint: u64,
     /// Cold database containing compact historical data.
     cold_db: LevelDB,
     /// Hot database containing duplicated but quick-to-access recent data.
