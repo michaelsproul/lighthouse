@@ -7,6 +7,7 @@ use leveldb::database::kv::KV;
 use leveldb::database::Database;
 use leveldb::error::Error as LevelDBError;
 use leveldb::options::{Options, ReadOptions, WriteOptions};
+use leveldb_sys::Compression;
 use std::marker::PhantomData;
 use std::path::Path;
 
@@ -22,6 +23,7 @@ impl<E: EthSpec> LevelDB<E> {
         let mut options = Options::new();
 
         options.create_if_missing = true;
+        options.compression = Compression::Snappy;
 
         let db = Database::open(path, options)?;
 
