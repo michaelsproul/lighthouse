@@ -19,6 +19,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 use types::*;
+use crate::MemoryStore;
 
 /// 32-byte key for accessing the `split` of the freezer DB.
 pub const SPLIT_DB_KEY: &str = "FREEZERDBSPLITFREEZERDBSPLITFREE";
@@ -40,7 +41,7 @@ pub struct HotColdDB<E: EthSpec> {
     /// Hot database containing duplicated but quick-to-access recent data.
     ///
     /// The hot database also contains all blocks.
-    pub(crate) hot_db: LevelDB<E>,
+    pub(crate) hot_db: MemoryStore<E>,
     /// Chain spec.
     spec: ChainSpec,
     /// Logger.
@@ -226,7 +227,7 @@ impl<E: EthSpec> HotColdDB<E> {
             split: RwLock::new(Split::default()),
             slots_per_restore_point,
             cold_db: LevelDB::open(cold_path)?,
-            hot_db: LevelDB::open(hot_path)?,
+            hot_db: MemoryStore::open(),
             spec,
             log,
             _phantom: PhantomData,
