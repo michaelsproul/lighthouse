@@ -24,6 +24,7 @@ impl<E: EthSpec> LevelDB<E> {
 
         options.create_if_missing = true;
         options.compression = Compression::Snappy;
+        options.block_size = Some(5 * (2 << 20));
 
         let db = Database::open(path, options)?;
 
