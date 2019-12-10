@@ -2367,6 +2367,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "lmdb"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "bitflags 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc 0.2.66 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lmdb-sys 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "lmdb-sys"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "cc 1.0.48 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc 0.2.66 (registry+https://github.com/rust-lang/crates.io-index)",
+ "pkg-config 0.3.17 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3881,6 +3901,7 @@ dependencies = [
  "leveldb 0.8.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "leveldb-sys 2.0.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "lighthouse_metrics 0.1.0",
+ "lmdb 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.103 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -5242,6 +5263,8 @@ dependencies = [
 "checksum libsecp256k1 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)" = "2bd9a7c16c9487e710536b699c962f022266347c94201174aa0a7eb0546051aa"
 "checksum libz-sys 1.0.25 (registry+https://github.com/rust-lang/crates.io-index)" = "2eb5e43362e38e2bca2fd5f5134c4d4564a23a5c28e9b95411652021a8675ebe"
 "checksum linked-hash-map 0.5.2 (registry+https://github.com/rust-lang/crates.io-index)" = "ae91b68aebc4ddb91978b11a1b02ddd8602a05ec19002801c5666000e05e0f83"
+"checksum lmdb 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)" = "5b0908efb5d6496aa977d96f91413da2635a902e5e31dbef0bfb88986c248539"
+"checksum lmdb-sys 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)" = "d5b392838cfe8858e86fac37cf97a0e8c55cc60ba0a18365cadc33092f128ce9"
 "checksum lock_api 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "62ebf1391f6acad60e5c8b43706dde4582df75c06698ab44511d15016bc2442c"
 "checksum lock_api 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)" = "ed946d4529956a20f2d63ebe1b69996d5a2137c91913fe3ebbeff957f5bca7ff"
 "checksum lock_api 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)" = "e57b3997725d2b60dbec1297f6c2e2957cc383db1cebd6be812163f969c7d586"

@@ -16,6 +16,7 @@ rayon = "1.2.0"
 
 [dependencies]
 db-key = "0.0.5"
+lmdb = "0.8.0"
 leveldb = "0.8.4"
 leveldb-sys = "2.0.5"
 parking_lot = "0.9.0"

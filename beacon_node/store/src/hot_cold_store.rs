@@ -5,6 +5,7 @@ use crate::forwards_iter::HybridForwardsBlockRootsIterator;
 use crate::iter::{ParentRootBlockIterator, StateRootsIterator};
 use crate::{
     leveldb_store::LevelDB, DBColumn, Error, PartialBeaconState, SimpleStoreItem, Store, StoreItem,
+    LMDB,
 };
 use parking_lot::RwLock;
 use slog::{debug, trace, warn, Logger};
@@ -40,7 +41,7 @@ pub struct HotColdDB<E: EthSpec> {
     /// Hot database containing duplicated but quick-to-access recent data.
     ///
     /// The hot database also contains all blocks.
-    pub(crate) hot_db: LevelDB<E>,
+    pub(crate) hot_db: LMDB<E>,
     /// Chain spec.
     spec: ChainSpec,
     /// Logger.
@@ -222,11 +223,14 @@ impl<E: EthSpec> HotColdDB<E> {
     ) -> Result<Self, Error> {
         Self::verify_slots_per_restore_point(slots_per_restore_point)?;
 
+        // 4GiB default size for the HotDB
+        let default_hot_db_size = 4 * (2 << 30);
+
         let db = HotColdDB {
             split: RwLock::new(Split::default()),
             slots_per_restore_point,
             cold_db: LevelDB::open(cold_path)?,
-            hot_db: LevelDB::open(hot_path)?,
+            hot_db: LMDB::open(hot_path, default_hot_db_size)?,
             spec,
             log,
             _phantom: PhantomData,

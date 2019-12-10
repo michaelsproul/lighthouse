@@ -19,6 +19,7 @@ mod forwards_iter;
 mod hot_cold_store;
 mod impls;
 mod leveldb_store;
+mod lmdb_store;
 mod memory_store;
 mod metrics;
 mod partial_beacon_state;
@@ -31,6 +32,7 @@ use std::sync::Arc;
 pub use self::config::StoreConfig;
 pub use self::hot_cold_store::HotColdDB as DiskStore;
 pub use self::leveldb_store::LevelDB as SimpleDiskStore;
+pub use self::lmdb_store::LMDB;
 pub use self::memory_store::MemoryStore;
 pub use self::migrate::Migrate;
 pub use self::partial_beacon_state::PartialBeaconState;
@@ -311,6 +313,15 @@ mod tests {
         let path = dir.path();
         let store = SimpleDiskStore::open(&path).unwrap();
 
+        test_impl(store);
+    }
+
+    #[test]
+    fn lmdb() {
+        let dir = tempdir().unwrap();
+        let path = dir.path();
+        let db_size = 4 * (2 << 30);
+        let store = LMDB::open(&path, db_size).unwrap();
         test_impl(store);
     }
 

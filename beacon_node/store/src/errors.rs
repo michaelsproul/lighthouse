@@ -11,6 +11,7 @@ pub enum Error {
     PartialBeaconStateError,
     HotColdDbError(HotColdDbError),
     DBError { message: String },
+    LMDBError(lmdb::Error),
 }
 
 impl From<DecodeError> for Error {
