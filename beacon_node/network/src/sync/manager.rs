@@ -367,7 +367,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             match chain.process_block(block.clone()) {
                 Ok(outcome) => {
                     match outcome {
-                        BlockProcessingOutcome::Processed { block_root } => {
+                        BlockProcessingOutcome::Processed { block_root, .. } => {
                             info!(self.log, "Processed block"; "block" => format!("{}", block_root));
 
                             match chain.fork_choice() {

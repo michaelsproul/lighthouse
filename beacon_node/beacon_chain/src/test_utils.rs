@@ -260,7 +260,7 @@ where
 
             self.chain.fork_choice().expect("should find head");
 
-            if let BlockProcessingOutcome::Processed { block_root } = outcome {
+            if let BlockProcessingOutcome::Processed { block_root, .. } = outcome {
                 head_block_root = Some(block_root);
 
                 self.add_free_attestations(&attestation_strategy, &new_state, block_root, slot);

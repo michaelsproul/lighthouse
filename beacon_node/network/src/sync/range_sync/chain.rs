@@ -195,8 +195,8 @@ impl<T: BeaconChainTypes> SyncingChain<T> {
         if let Some(last_slot) = batch.downloaded_blocks.last().map(|b| b.slot) {
             // the batch is non-empty
             if batch.start_slot > batch.downloaded_blocks[0].slot || batch.end_slot < last_slot {
-                warn!(log, "BlocksByRange response returned out of range blocks"; 
-                          "response_initial_slot" => batch.downloaded_blocks[0].slot, 
+                warn!(log, "BlocksByRange response returned out of range blocks";
+                          "response_initial_slot" => batch.downloaded_blocks[0].slot,
                           "requested_initial_slot" => batch.start_slot);
                 network.downvote_peer(batch.current_peer);
                 self.to_be_processed_id = batch.id; // reset the id back to here, when incrementing, it will check against completed batches
@@ -551,7 +551,7 @@ fn process_batch<T: BeaconChainTypes>(
 
             if let Ok(outcome) = processing_result {
                 match outcome {
-                    BlockProcessingOutcome::Processed { block_root } => {
+                    BlockProcessingOutcome::Processed { block_root, .. } => {
                         // The block was valid and we processed it successfully.
                         trace!(
                             log, "Imported block from network";

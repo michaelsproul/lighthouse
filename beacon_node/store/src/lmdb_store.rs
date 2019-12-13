@@ -1,6 +1,6 @@
 use super::*;
 use crate::forwards_iter::SimpleForwardsBlockRootsIterator;
-use crate::impls::beacon_state::{get_full_state, store_full_state};
+use crate::impls::beacon_state::store_full_state;
 use crate::{metrics, Error, Store};
 use lmdb::{Database, DatabaseFlags, Environment, Transaction, WriteFlags};
 use std::fs;
@@ -9,8 +9,8 @@ use std::path::Path;
 use types::{BeaconState, EthSpec, Hash256};
 
 pub struct LMDB<E: EthSpec> {
-    env: Environment,
-    db: Database,
+    pub(crate) env: Environment,
+    pub(crate) db: Database,
     _phantom: PhantomData<E>,
 }
 
@@ -36,7 +36,7 @@ impl<E: EthSpec> LMDB<E> {
         })
     }
 
-    fn get_key_for_col(col: &str, key: &[u8]) -> Vec<u8> {
+    pub fn get_key_for_col(col: &str, key: &[u8]) -> Vec<u8> {
         let mut col = col.as_bytes().to_vec();
         col.extend_from_slice(key);
         col
@@ -81,8 +81,13 @@ impl<E: EthSpec> Store<E> for LMDB<E> {
 
     /// Return `true` if `key` exists in `column`.
     fn key_exists(&self, col: &str, key: &[u8]) -> Result<bool, Error> {
-        // FIXME(sproul): could avoid a clone by doing !bytes.is_empty()
-        self.get_bytes(col, key).map(|val| val.is_some())
+        let column_key = Self::get_key_for_col(col, key);
+
+        match self.env.begin_ro_txn()?.get(self.db, &column_key) {
+            Ok(_) => Ok(true),
+            Err(lmdb::Error::NotFound) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Removes `key` from `column`.
@@ -103,12 +108,37 @@ impl<E: EthSpec> Store<E> for LMDB<E> {
     }
 
     /// Fetch a state from the store.
+    ///
+    /// Optimized implementation that avoids cloning the bytes from the store.
     fn get_state(
         &self,
         state_root: &Hash256,
         _: Option<Slot>,
     ) -> Result<Option<BeaconState<E>>, Error> {
-        get_full_state(self, state_root)
+        use crate::impls::beacon_state::StorageContainer;
+        use ssz::Decode;
+        use std::convert::TryInto;
+
+        let total_timer = metrics::start_timer(&metrics::BEACON_STATE_READ_TIMES);
+
+        let key = Self::get_key_for_col(DBColumn::BeaconState.into(), &state_root.as_bytes());
+
+        match self.env.begin_ro_txn()?.get(self.db, &key) {
+            Ok(bytes) => {
+                let overhead_timer =
+                    metrics::start_timer(&metrics::BEACON_STATE_READ_OVERHEAD_TIMES);
+                let container = StorageContainer::from_ssz_bytes(bytes)?;
+
+                metrics::stop_timer(overhead_timer);
+                metrics::stop_timer(total_timer);
+                metrics::inc_counter(&metrics::BEACON_STATE_READ_COUNT);
+                metrics::inc_counter_by(&metrics::BEACON_STATE_READ_BYTES, bytes.len() as i64);
+
+                Ok(Some(container.try_into()?))
+            }
+            Err(lmdb::Error::NotFound) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn forwards_block_roots_iterator(

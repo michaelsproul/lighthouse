@@ -7,6 +7,7 @@ use crate::{
     leveldb_store::LevelDB, DBColumn, Error, PartialBeaconState, SimpleStoreItem, Store, StoreItem,
     LMDB,
 };
+use lmdb::Transaction;
 use slog::{debug, trace, warn, Logger};
 use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
@@ -184,11 +185,13 @@ impl<E: EthSpec> Store<E> for HotColdDB<E> {
         })?;
 
         // 3. Delete from the hot DB
+        let mut txn = store.hot_db.env.begin_rw_txn()?;
         for state_root in to_delete {
-            store
-                .hot_db
-                .key_delete(DBColumn::BeaconState.into(), state_root.as_bytes())?;
+            let column_key =
+                LMDB::<E>::get_key_for_col(DBColumn::BeaconState.into(), state_root.as_bytes());
+            txn.del(store.hot_db.db, &column_key, None)?;
         }
+        txn.commit()?;
 
         debug!(
             store.log,

@@ -242,7 +242,7 @@ pub fn publish_beacon_block<T: BeaconChainTypes>(
             .and_then(move |block: BeaconBlock<T::EthSpec>| {
                 let slot = block.slot;
                 match beacon_chain.process_block(block.clone()) {
-                    Ok(BlockProcessingOutcome::Processed { block_root }) => {
+                    Ok(BlockProcessingOutcome::Processed { block_root, .. }) => {
                         // Block was processed, publish via gossipsub
                         info!(
                             log,
