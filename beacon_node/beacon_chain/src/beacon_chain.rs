@@ -1281,7 +1281,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             &mut state,
             &block,
             Some(block_root),
-            BlockSignatureStrategy::VerifyIndividual,
+            BlockSignatureStrategy::NoVerification,
             &self.spec,
         ) {
             Err(BlockProcessingError::BeaconStateError(e)) => {
@@ -1293,6 +1293,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
         metrics::stop_timer(core_timer);
 
+        /*
         let state_root_timer = metrics::start_timer(&metrics::BLOCK_PROCESSING_STATE_ROOT);
 
         let state_root = state.update_tree_hash_cache()?;
@@ -1311,6 +1312,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 local: state_root,
             });
         }
+        */
 
         let db_write_timer = metrics::start_timer(&metrics::BLOCK_PROCESSING_DB_WRITE);
 
@@ -1336,7 +1338,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // solution would be to use a database transaction (once our choice of database and API
         // settles down).
         // See: https://github.com/sigp/lighthouse/issues/692
-        self.store.put_state(&state_root, &state)?;
+        self.store.put_state(&block.state_root, &state)?;
         self.store.put(&block_root, &block)?;
 
         metrics::stop_timer(db_write_timer);
@@ -1373,10 +1375,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // A block that was just imported is likely to be referenced by the next block that we
         // import.
         self.checkpoint_cache.insert(&CheckPoint {
+            beacon_state_root: block.state_root,
+            beacon_state: state,
             beacon_block_root: block_root,
             beacon_block: block,
-            beacon_state_root: state_root,
-            beacon_state: state,
         });
 
         metrics::stop_timer(full_timer);
