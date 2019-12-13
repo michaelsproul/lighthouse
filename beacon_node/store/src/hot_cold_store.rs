@@ -7,7 +7,6 @@ use crate::{
     leveldb_store::LevelDB, DBColumn, Error, PartialBeaconState, SimpleStoreItem, Store, StoreItem,
     LMDB,
 };
-use parking_lot::RwLock;
 use slog::{debug, trace, warn, Logger};
 use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
@@ -29,11 +28,13 @@ pub const SPLIT_DB_KEY: &str = "FREEZERDBSPLITFREEZERDBSPLITFREE";
 /// Stores vector fields like the `block_roots` and `state_roots` separately, and only stores
 /// intermittent "restore point" states pre-finalization.
 pub struct HotColdDB<E: EthSpec> {
+    /*
     /// The slot and state root at the point where the database is split between hot and cold.
     ///
     /// States with slots less than `split.slot` are in the cold DB, while states with slots
     /// greater than or equal are in the hot DB.
     split: RwLock<Split>,
+    */
     /// Number of slots per restore point state in the freezer database.
     slots_per_restore_point: u64,
     /// Cold database containing compact historical data.
@@ -177,11 +178,10 @@ impl<E: EthSpec> Store<E> for HotColdDB<E> {
         }
 
         // 2. Update the split slot
-        *store.split.write() = Split {
+        store.store_split(Split {
             slot: frozen_head.slot,
             state_root: frozen_head_root,
-        };
-        store.store_split()?;
+        })?;
 
         // 3. Delete from the hot DB
         for state_root in to_delete {
@@ -227,7 +227,6 @@ impl<E: EthSpec> HotColdDB<E> {
         let default_hot_db_size = 4 * (2 << 30);
 
         let db = HotColdDB {
-            split: RwLock::new(Split::default()),
             slots_per_restore_point,
             cold_db: LevelDB::open(cold_path)?,
             hot_db: LMDB::open(hot_path, default_hot_db_size)?,
@@ -236,10 +235,8 @@ impl<E: EthSpec> HotColdDB<E> {
             _phantom: PhantomData,
         };
 
-        // Load the previous split slot from the database (if any). This ensures we can
-        // stop and restart correctly.
-        if let Some(split) = db.load_split()? {
-            *db.split.write() = split;
+        if db.load_split()?.is_none() {
+            db.store_split(Split::default())?;
         }
         Ok(db)
     }
@@ -331,12 +328,15 @@ impl<E: EthSpec> HotColdDB<E> {
         state_root: &Hash256,
         slot: Slot,
     ) -> Result<BeaconState<E>, Error> {
+        trace!(self.log, "Loading an intermediate state");
+
         // 1. Load the restore points either side of the intermediate state.
         let low_restore_point_idx = slot.as_u64() / self.slots_per_restore_point;
         let high_restore_point_idx = low_restore_point_idx + 1;
 
         // Acquire the read lock, so that the split can't change while this is happening.
-        let split = self.split.read();
+        // FIXME(sproul)
+        let split = self.load_split()?.expect("split exists");
 
         let low_restore_point = self.load_restore_point_by_index(low_restore_point_idx)?;
         // If the slot of the high point lies outside the freezer, use the split state
@@ -451,7 +451,11 @@ impl<E: EthSpec> HotColdDB<E> {
 
     /// Fetch a copy of the current split slot from memory.
     pub fn get_split_slot(&self) -> Slot {
-        self.split.read().slot
+        self.load_split()
+            .ok()
+            .and_then(|x| x)
+            .map(|split| split.slot)
+            .unwrap_or(Slot::new(0))
     }
 
     /// Fetch the slot of the most recently stored restore point.
@@ -467,9 +471,9 @@ impl<E: EthSpec> HotColdDB<E> {
     }
 
     /// Store the split point on disk.
-    fn store_split(&self) -> Result<(), Error> {
+    fn store_split(&self, split: Split) -> Result<(), Error> {
         let key = Hash256::from_slice(SPLIT_DB_KEY.as_bytes());
-        self.hot_db.put(&key, &*self.split.read())?;
+        self.hot_db.put(&key, &split)?;
         Ok(())
     }
 
