@@ -130,6 +130,14 @@ pub trait Store<E: EthSpec>: Sync + Send + Sized + 'static {
         end_block_root: Hash256,
         spec: &ChainSpec,
     ) -> Self::ForwardsBlockRootsIterator;
+
+    fn bulk_write(
+        &self,
+        blocks: Vec<(Hash256, BeaconBlock<E>)>,
+        states: Vec<(Hash256, BeaconState<E>)>,
+    ) -> Result<(), Error> {
+        panic!("TODO(sproul): default implementation")
+    }
 }
 
 /// A unique column identifier.
