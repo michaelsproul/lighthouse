@@ -1,6 +1,6 @@
-use super::{Error, Store};
 use crate::forwards_iter::SimpleForwardsBlockRootsIterator;
 use crate::impls::beacon_state::{get_full_state, store_full_state};
+use crate::{Error, NullTransaction, Store};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -42,6 +42,8 @@ impl<E: EthSpec> MemoryStore<E> {
 
 impl<E: EthSpec> Store<E> for MemoryStore<E> {
     type ForwardsBlockRootsIterator = SimpleForwardsBlockRootsIterator;
+    type ReadTransaction = NullTransaction;
+    // type WriteTransaction = NullTransaction;
 
     /// Get the value of some key from the database. Returns `None` if the key does not exist.
     fn get_bytes(&self, col: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {

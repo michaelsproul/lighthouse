@@ -23,6 +23,7 @@ mod lmdb_store;
 mod memory_store;
 mod metrics;
 mod partial_beacon_state;
+mod transaction;
 
 pub mod iter;
 pub mod migrate;
@@ -36,6 +37,7 @@ pub use self::lmdb_store::LMDB;
 pub use self::memory_store::MemoryStore;
 pub use self::migrate::Migrate;
 pub use self::partial_beacon_state::PartialBeaconState;
+pub use self::transaction::{NullTransaction, ReadTransaction};
 pub use errors::Error;
 pub use impls::beacon_state::StorageContainer as BeaconStateStorageContainer;
 pub use metrics::scrape_for_metrics;
@@ -46,8 +48,13 @@ pub use types::*;
 /// A `Store` is fundamentally backed by a key-value database, however it provides support for
 /// columns. A simple column implementation might involve prefixing a key with some bytes unique to
 /// each column.
-pub trait Store<E: EthSpec>: Sync + Send + Sized + 'static {
+pub trait Store<E: EthSpec>: Sync + Send + Sized + 'static
+where
+    for<'a> Self::ReadTransaction: ReadTransaction<'a, Self, E>,
+{
     type ForwardsBlockRootsIterator: Iterator<Item = (Hash256, Slot)>;
+    type ReadTransaction;
+    // type WriteTransaction: WriteTransaction<S>;
 
     /// Retrieve some bytes in `column` with `key`.
     fn get_bytes(&self, column: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error>;
@@ -130,6 +137,42 @@ pub trait Store<E: EthSpec>: Sync + Send + Sized + 'static {
         end_block_root: Hash256,
         spec: &ChainSpec,
     ) -> Self::ForwardsBlockRootsIterator;
+
+    fn begin_read_transaction<'a>(&'a self) -> Result<Self::ReadTransaction, Error>;
+
+    /*
+    fn begin_write_txn(&self) -> Result<Self::WriteTransaction, Error> {
+        Self::WriteTransaction::begin(self)
+    }
+    */
+
+    fn get_key_for_col(col: DBColumn, key: &[u8]) -> DBKey {
+        let mut db_key = col.into::<&str>().as_bytes().to_vec();
+        db_key.extend_from_slice(key);
+        DBKey { key: db_key }
+    }
+}
+
+/// Struct for keying the database, with column included.
+// Somewhat unnecessary, but required by LevelDB and provides a modicum of type safety
+pub struct DBKey {
+    key: Vec<u8>,
+}
+
+impl AsRef<[u8]> for DBKey {
+    fn as_ref(&self) -> &[u8] {
+        &self.key
+    }
+}
+
+impl db_key::Key for DBKey {
+    fn from_u8(key: &[u8]) -> Self {
+        Self { key: key.to_vec() }
+    }
+
+    fn as_slice<T, F: Fn(&[u8]) -> T>(&self, f: F) -> T {
+        f(self.key.as_slice())
+    }
 }
 
 /// A unique column identifier.
@@ -182,6 +225,7 @@ pub trait SimpleStoreItem: Sized {
     fn from_store_bytes(bytes: &[u8]) -> Result<Self, Error>;
 }
 
+// FIXME(sproul): recombine StoreItem and SimpleStoreItem
 /// An item that may be stored in a `Store`.
 pub trait StoreItem: Sized {
     /// Store `self`.

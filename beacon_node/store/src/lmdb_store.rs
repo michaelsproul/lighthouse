@@ -2,7 +2,9 @@ use super::*;
 use crate::forwards_iter::SimpleForwardsBlockRootsIterator;
 use crate::impls::beacon_state::store_full_state;
 use crate::{metrics, Error, Store};
-use lmdb::{Database, DatabaseFlags, Environment, Transaction, WriteFlags};
+use lmdb::{
+    Database, DatabaseFlags, Environment, RoTransaction, RwTransaction, Transaction, WriteFlags,
+};
 use std::fs;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -35,16 +37,11 @@ impl<E: EthSpec> LMDB<E> {
             _phantom: PhantomData,
         })
     }
-
-    pub fn get_key_for_col(col: &str, key: &[u8]) -> Vec<u8> {
-        let mut col = col.as_bytes().to_vec();
-        col.extend_from_slice(key);
-        col
-    }
 }
 
 impl<E: EthSpec> Store<E> for LMDB<E> {
     type ForwardsBlockRootsIterator = SimpleForwardsBlockRootsIterator;
+    type ReadTransaction = ReadTxn;
 
     /// Retrieve some bytes in `column` with `key`.
     fn get_bytes(&self, col: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
@@ -149,6 +146,27 @@ impl<E: EthSpec> Store<E> for LMDB<E> {
         _: &ChainSpec,
     ) -> Self::ForwardsBlockRootsIterator {
         SimpleForwardsBlockRootsIterator::new(store, start_slot, end_state, end_block_root)
+    }
+
+    fn begin_read_transaction(&self) -> Result<Self::ReadTransaction, Error> {
+        self.env
+            .begin_ro_txn()
+            .map(|txn| ReadTxn { txn, db: self.db })
+            .map_err(Into::into)
+    }
+}
+
+pub struct ReadTxn<'a> {
+    txn: RoTransaction<'a>,
+    db: Database,
+}
+
+impl<'a, E: EthSpec> ReadTransaction<'a, LMDB<E>, E> for ReadTxn<'a> {
+    fn get<T: SimpleStoreItem>(&self, key: &[u8]) -> Result<Self, Error> {
+        self.txn
+            .get(self.db, LMDB::get_key_for_col(T::db_column().into(), key))
+            .map_err(Into::into)
+            .and_then(T::from_store_bytes)
     }
 }
 
