@@ -140,8 +140,8 @@ pub enum DBColumn {
     BeaconChain,
     /// For the table mapping restore point numbers to state roots.
     BeaconRestorePoint,
-    /// For the mapping from state roots to their slots.
-    BeaconStateSlot,
+    /// For the mapping from state roots to their slots or summaries.
+    BeaconStateSummary,
     BeaconBlockRoots,
     BeaconStateRoots,
     BeaconHistoricalRoots,
@@ -157,7 +157,7 @@ impl Into<&'static str> for DBColumn {
             DBColumn::BeaconState => "ste",
             DBColumn::BeaconChain => "bch",
             DBColumn::BeaconRestorePoint => "brp",
-            DBColumn::BeaconStateSlot => "bss",
+            DBColumn::BeaconStateSummary => "bss",
             DBColumn::BeaconBlockRoots => "bbr",
             DBColumn::BeaconStateRoots => "bsr",
             DBColumn::BeaconHistoricalRoots => "bhr",
