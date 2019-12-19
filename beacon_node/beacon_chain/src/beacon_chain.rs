@@ -431,6 +431,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     /// ## Errors
     ///
     /// May return a database error.
+    #[allow(unused)]
     fn get_state_caching_only_with_committee_caches(
         &self,
         state_root: &Hash256,
@@ -858,27 +859,18 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         let result = if let Some(attestation_head_block) =
             self.get_block_caching(&attestation.data.beacon_block_root)?
         {
-            // Use the `data.beacon_block_root` to load the state from the latest non-skipped
-            // slot preceding the attestation's creation.
-            //
-            // This state is guaranteed to be in the same chain as the attestation, but it's
-            // not guaranteed to be from the same slot or epoch as the attestation.
-            let mut state: BeaconState<T::EthSpec> = self
-                .get_state_caching_only_with_committee_caches(
-                    &attestation_head_block.state_root,
-                    Some(attestation_head_block.slot),
-                )?
+            // Load the state at the closest epoch boundary to the attestation's head state.
+            // Under ideal conditions this state will be at the start of the epoch in which
+            // the attestation was made. However, in the case of many skipped slots, it could
+            // be in any previous epoch.
+            let mut state = self
+                .store
+                .load_epoch_boundary_state(&attestation_head_block.state_root)?
                 .ok_or_else(|| Error::MissingBeaconState(attestation_head_block.state_root))?;
 
-            // Ensure the state loaded from the database matches the state of the attestation
-            // head block.
-            //
-            // The state needs to be advanced from the current slot through to the epoch in
-            // which the attestation was created in. It would be an error to try and use
-            // `state.get_attestation_data_slot(..)` because the state matching the
-            // `data.beacon_block_root` isn't necessarily in a nearby epoch to the attestation
-            // (e.g., if there were lots of skip slots since the head of the chain and the
-            // epoch creation epoch).
+            // Fastforward the state to the epoch in which the attestation was made.
+            // NOTE: this looks like a potential DoS vector, we should probably limit
+            // the amount we're willing to fastforward (without a valid signature).
             for _ in state.slot.as_u64()
                 ..attestation
                     .data
@@ -982,9 +974,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // A helper function to allow attestation processing to be metered.
         let verify_attestation_for_state = |state, attestation, spec, verify_signatures| {
             let timer = metrics::start_timer(&metrics::ATTESTATION_PROCESSING_CORE);
-
             let result = verify_attestation_for_state(state, attestation, spec, verify_signatures);
-
             metrics::stop_timer(timer);
             result
         };
