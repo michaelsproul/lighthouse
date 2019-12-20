@@ -181,7 +181,7 @@ impl<E: EthSpec, U: Store<E>> AncestorRoots<E, U> {
     }
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct AncestorRootsSsz {
     roots: Vec<Hash256>,
     next_state: (Hash256, Slot),

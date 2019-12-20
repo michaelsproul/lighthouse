@@ -164,7 +164,7 @@ where
 }
 
 /// Intermediate representation of a `ReducedTree` `LmdGhost` fork choice.
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, PartialEq, Encode, Decode)]
 struct ReducedTreeSsz {
     pub node_hashes: Vec<Hash256>,
     pub nodes: Vec<NodeSsz>,
@@ -579,9 +579,12 @@ where
         ancestor: Hash256,
         descendant: Hash256,
     ) -> Result<Option<Hash256>> {
+        let mut descendant_ancestors = self.get_node(descendant)?.prev_block_roots.clone();
+
         Ok(std::iter::once(descendant)
             .chain(
-                self.iter_ancestors(descendant)?
+                descendant_ancestors
+                    .iter()
                     .take_while(|(_, slot)| *slot >= self.root_slot())
                     .map(|(block_hash, _)| block_hash),
             )
@@ -613,7 +616,7 @@ where
         //
         // If this node has no ancestor in the tree, exit early.
         let mut prev_in_tree = self
-            .find_prev_in_tree(node.block_hash)
+            .find_prev_in_tree(&node)
             .ok_or_else(|| Error::NotInTree(node.block_hash))
             .and_then(|hash| self.get_node(hash))?
             .clone();
@@ -741,22 +744,25 @@ where
 
     /// For the given block `hash`, find it's highest (by slot) ancestor that exists in the reduced
     /// tree.
-    fn find_prev_in_tree(&mut self, hash: Hash256) -> Option<Hash256> {
-        self.iter_ancestors(hash)
-            .ok()?
+    fn find_prev_in_tree(&self, node: &Node<E, T>) -> Option<Hash256> {
+        node.prev_block_roots
+            .clone()
+            .iter()
             .take_while(|(_, slot)| *slot >= self.root_slot())
             .find(|(root, _slot)| self.nodes.contains_key(root))
-            .and_then(|(root, _slot)| Some(root))
+            .map(|(root, _slot)| root)
     }
 
     /// For the two given block roots (`a_root` and `b_root`), find the first block they share in
     /// the tree. Viz, find the block that these two distinct blocks forked from.
     fn find_highest_common_ancestor(&self, a_root: Hash256, b_root: Hash256) -> Result<Hash256> {
-        let mut a_iter = self
-            .iter_ancestors(a_root)?
+        let mut a_roots = self.get_node(a_root)?.prev_block_roots.clone();
+        let mut a_iter = a_roots
+            .iter()
             .take_while(|(_, slot)| *slot >= self.root_slot());
-        let mut b_iter = self
-            .iter_ancestors(b_root)?
+        let mut b_roots = self.get_node(b_root)?.prev_block_roots.clone();
+        let mut b_iter = b_roots
+            .iter()
             .take_while(|(_, slot)| *slot >= self.root_slot());
 
         // Combines the `next()` fns on the `a_iter` and `b_iter` and returns the roots of two
@@ -794,12 +800,14 @@ where
         }
     }
 
+    /*
     fn iter_ancestors(&self, child: Hash256) -> Result<BlockRootsIterator<E, T>> {
         let block = self.get_block(child)?;
         let state = self.get_state(block.state_root, block.slot)?;
 
         Ok(BlockRootsIterator::owned(self.store.clone(), state))
     }
+    */
 
     /// Verify the integrity of `self`. Returns `Ok(())` if the tree has integrity, otherwise returns `Err(description)`.
     ///
@@ -904,7 +912,6 @@ where
     }
 }
 
-// FIXME(sproul): PartialEq
 #[derive(Debug)]
 pub struct Node<E: EthSpec, S: Store<E>> {
     /// Hash of the parent node in the reduced tree (not necessarily parent block).
@@ -917,7 +924,7 @@ pub struct Node<E: EthSpec, S: Store<E>> {
     pub prev_block_roots: AncestorRoots<E, S>,
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, PartialEq, Encode, Decode)]
 struct NodeSsz {
     parent_hash: Option<Hash256>,
     children: Vec<ChildLink>,
