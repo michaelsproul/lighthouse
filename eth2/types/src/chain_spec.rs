@@ -186,7 +186,7 @@ impl ChainSpec {
             /*
              * Time parameters
              */
-            milliseconds_per_slot: 12_000,
+            milliseconds_per_slot: 2_000,
             min_attestation_inclusion_delay: 1,
             min_seed_lookahead: Epoch::new(1),
             max_seed_lookahead: Epoch::new(4),
