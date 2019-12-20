@@ -1643,13 +1643,16 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 new_epoch: new_finalized_epoch,
             })
         } else {
-            self.fork_choice
-                .process_finalization(&finalized_block, finalized_block_root)?;
-
             let finalized_state = self
                 .store
                 .get_state(&finalized_block.state_root, Some(finalized_block.slot))?
                 .ok_or_else(|| Error::MissingBeaconState(finalized_block.state_root))?;
+
+            self.fork_choice.process_finalization(
+                &finalized_state,
+                &finalized_block,
+                finalized_block_root,
+            )?;
 
             self.op_pool.prune_all(&finalized_state, &self.spec);
 

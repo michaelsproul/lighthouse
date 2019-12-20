@@ -173,7 +173,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
 
         let result = self
             .backend
-            .find_head(start_block_slot, start_block_root, weight)
+            .find_head(&start_state, start_block_slot, start_block_root, weight)
             .map_err(Into::into);
 
         metrics::stop_timer(timer);
@@ -222,7 +222,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
         //
         // A case where a block without any votes can be the head is where it is the only child of
         // a block that has the majority of votes applied to it.
-        self.backend.process_block(block, block_root)?;
+        self.backend.process_block(block, block_root, &state)?;
 
         metrics::stop_timer(timer);
 
@@ -263,7 +263,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
 
             for validator_index in validator_indices {
                 self.backend
-                    .process_attestation(validator_index, block_hash, block.slot)?;
+                    .process_attestation(validator_index, state, block_hash, block.slot)?;
             }
         }
 
@@ -293,11 +293,12 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
     /// `finalized_block_root` must be the root of `finalized_block`.
     pub fn process_finalization(
         &self,
+        finalized_state: &BeaconState<T::EthSpec>,
         finalized_block: &BeaconBlock<T::EthSpec>,
         finalized_block_root: Hash256,
     ) -> Result<()> {
         self.backend
-            .update_finalized_root(finalized_block, finalized_block_root)
+            .update_finalized_root(finalized_state, finalized_block, finalized_block_root)
             .map_err(Into::into)
     }
 

@@ -1,4 +1,5 @@
 use crate::Store;
+use ssz_derive::{Decode, Encode};
 use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -21,13 +22,28 @@ use types::{
 ///  It does not presently take advantage of the freezer DB, it just loads states in their
 ///  entirety. However, the fundamental design of this struct should make it rather partial to this
 ///  optimization in the future.
+#[derive(Debug)]
 pub struct AncestorRoots<E: EthSpec, U: Store<E>> {
     roots: Vec<Hash256>,
     next_state: (Hash256, Slot),
     prev_slot: Slot,
     store: Arc<U>,
-    target: AncestorRootsTarget,
+    /// True for block roots, false for state roots.
+    yield_block_roots: bool,
     _phantom: PhantomData<E>,
+}
+
+impl<E: EthSpec, U: Store<E>> Clone for AncestorRoots<E, U> {
+    fn clone(&self) -> Self {
+        Self {
+            roots: self.roots.clone(),
+            next_state: self.next_state,
+            prev_slot: self.prev_slot,
+            store: self.store.clone(),
+            yield_block_roots: self.yield_block_roots,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<E: EthSpec, U: Store<E>> AncestorRoots<E, U> {
@@ -53,26 +69,26 @@ impl<E: EthSpec, U: Store<E>> AncestorRoots<E, U> {
             prev_slot: Slot::new(0),
             store,
             // This field should be meaningless if the iter always returns `None`.
-            target: AncestorRootsTarget::BlockRoots,
+            yield_block_roots: false,
             _phantom: PhantomData,
         }
     }
 
     /// Returns an iterator over all `state.block_roots` for all slots _prior_ to the given `state.slot` till genesis.
     pub fn block_roots(store: Arc<U>, state: &BeaconState<E>, len: usize) -> Option<Self> {
-        Self::new(store, state, len, AncestorRootsTarget::BlockRoots)
+        Self::new(store, state, len, true)
     }
 
     /// Returns an iterator over all `state.state_roots` for all slots _prior_ to the given `state.slot` till genesis.
     pub fn state_roots(store: Arc<U>, state: &BeaconState<E>, len: usize) -> Option<Self> {
-        Self::new(store, state, len, AncestorRootsTarget::StateRoots)
+        Self::new(store, state, len, false)
     }
 
     fn new(
         store: Arc<U>,
         state: &BeaconState<E>,
         max_len: usize,
-        target: AncestorRootsTarget,
+        yield_block_roots: bool,
     ) -> Option<Self> {
         if max_len > E::SlotsPerHistoricalRoot::to_usize() || max_len == 0 {
             return None;
@@ -112,9 +128,10 @@ impl<E: EthSpec, U: Store<E>> AncestorRoots<E, U> {
 
                 // This one-by-one copying of roots is not ideal, however it simplifies the
                 // routine greatly.
-                let root = match target {
-                    AncestorRootsTarget::BlockRoots => state.get_block_root(slot),
-                    AncestorRootsTarget::StateRoots => state.get_state_root(slot),
+                let root = if yield_block_roots {
+                    state.get_block_root(slot)
+                } else {
+                    state.get_state_root(slot)
                 }
                 .ok()?;
 
@@ -129,18 +146,90 @@ impl<E: EthSpec, U: Store<E>> AncestorRoots<E, U> {
             next_state: (next_state_root, next_state_slot),
             prev_slot: state.slot,
             store,
-            target,
+            yield_block_roots,
             _phantom: PhantomData,
         })
     }
+
+    /// Number of elements stashed in the cache.
+    pub fn len(&self) -> usize {
+        self.roots.len()
+    }
+
+    pub fn into_ssz(&self) -> AncestorRootsSsz {
+        AncestorRootsSsz {
+            roots: self.roots.clone(),
+            next_state: self.next_state,
+            prev_slot: self.prev_slot,
+            yield_block_roots: self.yield_block_roots,
+        }
+    }
+
+    pub fn from_ssz(ssz: AncestorRootsSsz, store: Arc<U>) -> Self {
+        Self {
+            roots: ssz.roots,
+            next_state: ssz.next_state,
+            prev_slot: ssz.prev_slot,
+            yield_block_roots: ssz.yield_block_roots,
+            store,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn into_store(self) -> Arc<U> {
+        self.store
+    }
 }
 
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct AncestorRootsSsz {
+    roots: Vec<Hash256>,
+    next_state: (Hash256, Slot),
+    prev_slot: Slot,
+    yield_block_roots: bool,
+}
+
+/* FIXME(sproul): delete?
 /// Specifies whether or not the `AncestorRoots` should store block or state roots.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
 enum AncestorRootsTarget {
     BlockRoots,
     StateRoots,
 }
+
+impl ssz::Encode for AncestorRootsTarget {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        (*self as u8).ssz_append(buf);
+    }
+
+    fn ssz_fixed_len() -> usize {
+        <u8 as ssz::Encode>::ssz_fixed_len()
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        (*self as u8).ssz_bytes_len()
+    }
+}
+
+impl ssz::Decode for AncestorRootsTarget {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    fn ssz_fixed_len() -> usize {
+        <u8 as ssz::Decode>::ssz_fixed_len()
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
+        u8::from_ssz_bytes(bytes).map(|v| v as Self)
+    }
+}
+*/
 
 /// An iterator that consumes values from the `cache` and/or replaces it with a new, replenished
 /// cache which the present one is exhausted.
@@ -180,7 +269,7 @@ impl<'a, E: EthSpec, U: Store<E>> Iterator for AncestorRootsIter<'a, E, U> {
                     // always has the full length. This will consume more memory for short
                     // iterations but involve less DB reads for long iterations.
                     E::SlotsPerHistoricalRoot::to_usize(),
-                    cache.target,
+                    cache.yield_block_roots,
                 )?,
             );
 

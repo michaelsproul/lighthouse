@@ -2,7 +2,7 @@ mod reduced_tree;
 
 use std::sync::Arc;
 use store::Store;
-use types::{BeaconBlock, EthSpec, Hash256, Slot};
+use types::{BeaconBlock, BeaconState, EthSpec, Hash256, Slot};
 
 pub use reduced_tree::ThreadSafeReducedTree;
 
@@ -19,17 +19,24 @@ pub trait LmdGhost<S: Store<E>, E: EthSpec>: PartialEq + Send + Sync + Sized {
     fn process_attestation(
         &self,
         validator_index: usize,
+        state: &BeaconState<E>,
         block_hash: Hash256,
         block_slot: Slot,
     ) -> Result<()>;
 
     /// Process a block that was seen on the network.
-    fn process_block(&self, block: &BeaconBlock<E>, block_hash: Hash256) -> Result<()>;
+    fn process_block(
+        &self,
+        block: &BeaconBlock<E>,
+        block_hash: Hash256,
+        state: &BeaconState<E>,
+    ) -> Result<()>;
 
     /// Returns the head of the chain, starting the search at `start_block_root` and moving upwards
     /// (in block height).
     fn find_head<F>(
         &self,
+        start_state: &BeaconState<E>,
         start_block_slot: Slot,
         start_block_root: Hash256,
         weight: F,
@@ -42,6 +49,7 @@ pub trait LmdGhost<S: Store<E>, E: EthSpec>: PartialEq + Send + Sync + Sized {
     /// `finalized_block_root` must be the root of `finalized_block`.
     fn update_finalized_root(
         &self,
+        finalized_state: &BeaconState<E>,
         finalized_block: &BeaconBlock<E>,
         finalized_block_root: Hash256,
     ) -> Result<()>;
