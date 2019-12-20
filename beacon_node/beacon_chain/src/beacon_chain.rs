@@ -394,7 +394,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     /// ## Errors
     ///
     /// May return a database error.
-    fn get_block_caching(
+    pub fn get_block_caching(
         &self,
         block_root: &Hash256,
     ) -> Result<Option<BeaconBlock<T::EthSpec>>, Error> {
@@ -859,28 +859,40 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         let result = if let Some(attestation_head_block) =
             self.get_block_caching(&attestation.data.beacon_block_root)?
         {
-            // Load the state at the closest epoch boundary to the attestation's head state.
-            // Under ideal conditions this state will be at the start of the epoch in which
-            // the attestation was made. However, in the case of many skipped slots, it could
-            // be in any previous epoch.
-            let mut state = self
-                .store
-                .load_epoch_boundary_state(&attestation_head_block.state_root)?
-                .ok_or_else(|| Error::MissingBeaconState(attestation_head_block.state_root))?;
-
-            // Fastforward the state to the epoch in which the attestation was made.
-            // NOTE: this looks like a potential DoS vector, we should probably limit
-            // the amount we're willing to fastforward (without a valid signature).
-            for _ in state.slot.as_u64()
-                ..attestation
-                    .data
-                    .target
-                    .epoch
-                    .start_slot(T::EthSpec::slots_per_epoch())
-                    .as_u64()
+            // If the attestation points to a block in the same epoch in which it was made,
+            // then it is sufficient to load the state from that epoch's boundary, because
+            // the epoch-variable fields like the justified checkpoints cannot have changed
+            // between the epoch boundary and when the attestation was made. If conversely,
+            // the attestation points to a block in a prior epoch, then it is necessary to
+            // load the full state corresponding to its block, and transition it to the
+            // attestation's epoch.
+            let attestation_epoch = attestation.data.target.epoch;
+            let slots_per_epoch = T::EthSpec::slots_per_epoch();
+            let mut state = if attestation_epoch
+                == attestation_head_block.slot.epoch(slots_per_epoch)
             {
-                per_slot_processing(&mut state, &self.spec)?;
-            }
+                self.store
+                    .load_epoch_boundary_state(&attestation_head_block.state_root)?
+                    .ok_or_else(|| Error::MissingBeaconState(attestation_head_block.state_root))?
+            } else {
+                let mut state = self
+                    .store
+                    .get_state(
+                        &attestation_head_block.state_root,
+                        Some(attestation_head_block.slot),
+                    )?
+                    .ok_or_else(|| Error::MissingBeaconState(attestation_head_block.state_root))?;
+
+                // Fastforward the state to the epoch in which the attestation was made.
+                // NOTE: this looks like a potential DoS vector, we should probably limit
+                // the amount we're willing to fastforward without a valid signature.
+                for _ in state.slot.as_u64()..attestation_epoch.start_slot(slots_per_epoch).as_u64()
+                {
+                    per_slot_processing(&mut state, &self.spec)?;
+                }
+
+                state
+            };
 
             state.build_committee_cache(RelativeEpoch::Current, &self.spec)?;
 

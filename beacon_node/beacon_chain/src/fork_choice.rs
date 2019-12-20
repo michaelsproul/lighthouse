@@ -22,6 +22,7 @@ pub enum Error {
 }
 
 pub struct ForkChoice<T: BeaconChainTypes> {
+    // FIXME(sproul): remove store
     store: Arc<T::Store>,
     backend: T::LmdGhost,
     /// Used for resolving the `0x00..00` alias back to genesis.
@@ -201,10 +202,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
         for attestation in &block.body.attestations {
             // If the `data.beacon_block_root` block is not known to us, simply ignore the latest
             // vote.
-            if let Some(block) = self
-                .store
-                .get::<BeaconBlock<T::EthSpec>>(&attestation.data.beacon_block_root)?
-            {
+            if let Some(block) = chain.get_block_caching(&attestation.data.beacon_block_root)? {
                 self.process_attestation(state, attestation, &block)?;
             }
         }
