@@ -19,9 +19,9 @@ pub trait LmdGhost<S: Store<E>, E: EthSpec>: PartialEq + Send + Sync + Sized {
     fn process_attestation(
         &self,
         validator_index: usize,
-        state: &BeaconState<E>,
         block_hash: Hash256,
         block_slot: Slot,
+        state: &BeaconState<E>,
     ) -> Result<()>;
 
     /// Process a block that was seen on the network.

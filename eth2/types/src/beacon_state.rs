@@ -464,6 +464,23 @@ impl<T: EthSpec> BeaconState<T> {
         Ok(hash(&preimage))
     }
 
+    pub fn get_latest_block_root(&self, current_state_root: Hash256) -> Hash256 {
+        // Fill in the state root on the latest block header if necessary (this happens on all
+        // slots where there isn't a skip).
+        if self.latest_block_header.state_root.is_zero() {
+            let mut latest_block_header = self.latest_block_header.clone();
+            latest_block_header.state_root = current_state_root;
+            latest_block_header.canonical_root()
+        } else {
+            self.latest_block_header.canonical_root()
+        }
+    }
+
+    pub fn get_latest_block_root_rehash(&mut self) -> Result<Hash256, Error> {
+        let state_root = self.update_tree_hash_cache()?;
+        Ok(self.get_latest_block_root(state_root))
+    }
+
     /// Safely obtains the index for latest block roots, given some `slot`.
     ///
     /// Spec v0.9.1

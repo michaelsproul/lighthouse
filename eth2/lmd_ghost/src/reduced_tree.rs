@@ -13,8 +13,8 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use store::{
-    iter::BlockRootsIterator,
     iter::{AncestorRoots, AncestorRootsSsz},
+    iter::{BlockRootsIterator, ParentRootBlockRootIterator},
     Error as StoreError, Store,
 };
 use types::{BeaconBlock, BeaconState, EthSpec, Hash256, Slot};
@@ -80,9 +80,9 @@ where
     fn process_attestation(
         &self,
         validator_index: usize,
-        state: &BeaconState<E>,
         block_hash: Hash256,
         block_slot: Slot,
+        state: &BeaconState<E>,
     ) -> SuperResult<()> {
         self.core
             .write()
@@ -230,7 +230,7 @@ struct ReducedTree<T: Store<E>, E: EthSpec> {
 }
 
 impl<T: Store<E>, E: EthSpec> fmt::Debug for ReducedTree<T, E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         panic!("FIXME(sproul) fix this later")
         // self.nodes.fmt(f)
     }
@@ -558,16 +558,27 @@ where
         hash: Hash256,
         state: &BeaconState<E>,
     ) -> Result<()> {
-        if slot > self.root_slot() && !self.nodes.contains_key(&hash) {
-            let node = Node::with_state_block_roots(hash, state, self.store.clone())?;
+        use std::time::Instant;
 
+        if slot > self.root_slot() && !self.nodes.contains_key(&hash) {
+            let node_timer = Instant::now();
+            let node = Node::with_state_block_roots(hash, state, self.store.clone())?;
+            println!(
+                "Node::with_state_block_roots: {}us",
+                node_timer.elapsed().as_micros()
+            );
+
+            let add_node_timer = Instant::now();
             self.add_node(node)?;
+            println!("add_node: {}us", add_node_timer.elapsed().as_micros());
 
             // Read the `parent_hash` from the newly created node. If it has a parent (i.e., it's
             // not the root), see if it is superfluous.
+            let maybe_del_timer = Instant::now();
             if let Some(parent_hash) = self.get_node(hash)?.parent_hash {
                 self.maybe_delete_node(parent_hash)?;
             }
+            println!("maybe_delete: {}us", maybe_del_timer.elapsed().as_micros());
         }
 
         Ok(())
@@ -579,12 +590,9 @@ where
         ancestor: Hash256,
         descendant: Hash256,
     ) -> Result<Option<Hash256>> {
-        let mut descendant_ancestors = self.get_node(descendant)?.prev_block_roots.clone();
-
         Ok(std::iter::once(descendant)
             .chain(
-                descendant_ancestors
-                    .iter()
+                self.iter_ancestors(descendant)?
                     .take_while(|(_, slot)| *slot >= self.root_slot())
                     .map(|(block_hash, _)| block_hash),
             )
@@ -617,7 +625,15 @@ where
         // If this node has no ancestor in the tree, exit early.
         let mut prev_in_tree = self
             .find_prev_in_tree(&node)
-            .ok_or_else(|| Error::NotInTree(node.block_hash))
+            .ok_or_else(|| {
+                println!(
+                    "Couldn't find previous in tree:\n{:#?}\n{:#?}\n{:#?}",
+                    node.block_hash,
+                    self.nodes.keys().collect::<Vec<_>>(),
+                    node.prev_block_roots.clone().collect::<Vec<_>>()
+                );
+                Error::NotInTree(node.block_hash)
+            })
             .and_then(|hash| self.get_node(hash))?
             .clone();
 
@@ -655,6 +671,7 @@ where
                     // Graft `node` to `prev_in_tree`.
                     node.parent_hash = Some(prev_in_tree.block_hash);
 
+                    println!("Case #1!");
                     break;
                 }
             }
@@ -716,6 +733,7 @@ where
                         self.nodes
                             .insert(common_ancestor.block_hash, common_ancestor);
 
+                        println!("Case #2!");
                         break;
                     }
                 }
@@ -732,6 +750,7 @@ where
                 successor_slot: self
                     .find_ancestor_successor_slot(prev_in_tree.block_hash, node.block_hash)?,
             });
+            println!("Case #3");
         }
 
         // Update `prev_in_tree`. A mutable reference was not maintained to satisfy the borrow
@@ -742,27 +761,25 @@ where
         Ok(())
     }
 
-    /// For the given block `hash`, find it's highest (by slot) ancestor that exists in the reduced
+    /// For the given block `hash`, find its highest (by slot) ancestor that exists in the reduced
     /// tree.
-    fn find_prev_in_tree(&self, node: &Node<E, T>) -> Option<Hash256> {
+    fn find_prev_in_tree(&mut self, node: &Node<E, T>) -> Option<Hash256> {
         node.prev_block_roots
             .clone()
             .iter()
             .take_while(|(_, slot)| *slot >= self.root_slot())
-            .find(|(root, _slot)| self.nodes.contains_key(root))
-            .map(|(root, _slot)| root)
+            .find(|(root, _)| self.nodes.contains_key(root))
+            .map(|(root, _)| root)
     }
 
     /// For the two given block roots (`a_root` and `b_root`), find the first block they share in
     /// the tree. Viz, find the block that these two distinct blocks forked from.
     fn find_highest_common_ancestor(&self, a_root: Hash256, b_root: Hash256) -> Result<Hash256> {
-        let mut a_roots = self.get_node(a_root)?.prev_block_roots.clone();
-        let mut a_iter = a_roots
-            .iter()
+        let mut a_iter = self
+            .iter_ancestors(a_root)?
             .take_while(|(_, slot)| *slot >= self.root_slot());
-        let mut b_roots = self.get_node(b_root)?.prev_block_roots.clone();
-        let mut b_iter = b_roots
-            .iter()
+        let mut b_iter = self
+            .iter_ancestors(b_root)?
             .take_while(|(_, slot)| *slot >= self.root_slot());
 
         // Combines the `next()` fns on the `a_iter` and `b_iter` and returns the roots of two
@@ -800,14 +817,20 @@ where
         }
     }
 
-    /*
-    fn iter_ancestors(&self, child: Hash256) -> Result<BlockRootsIterator<E, T>> {
-        let block = self.get_block(child)?;
-        let state = self.get_state(block.state_root, block.slot)?;
-
-        Ok(BlockRootsIterator::owned(self.store.clone(), state))
+    pub fn iter_ancestors<'a>(
+        &'a self,
+        block_root: Hash256,
+    ) -> Result<Box<dyn Iterator<Item = (Hash256, Slot)> + 'a>> {
+        // Try to look up an existing node in the tree to use its block root cache.
+        match self.get_node(block_root) {
+            Ok(node) => Ok(Box::new(node.prev_block_roots.clone())),
+            Err(Error::MissingNode(_)) => Ok(Box::new(ParentRootBlockRootIterator::new(
+                &*self.store,
+                block_root,
+            ))),
+            Err(e) => Err(e),
+        }
     }
-    */
 
     /// Verify the integrity of `self`. Returns `Ok(())` if the tree has integrity, otherwise returns `Err(description)`.
     ///
@@ -975,22 +998,30 @@ impl<E: EthSpec, S: Store<E>> Node<E, S> {
         store: Arc<S>,
     ) -> Result<Self> {
         let max_cache_len = Self::max_cache_len();
+        // FIXME(sproul): error
         let mut prev_block_roots = AncestorRoots::block_roots(store, state, max_cache_len)
             .expect("can create ancestor roots");
 
         // Search for the `block_hash` of this node. If it's not in the history of the provided
         // state, we will have to load a different state.
         let cache_len = prev_block_roots.len();
-        let block_hash_found = prev_block_roots
-            .iter()
-            .take(cache_len)
-            .find(|(state_block_root, _)| state_block_root == &block_hash)
-            .is_some();
+        let block_hash_found = dbg!(state
+            .clone()
+            .get_latest_block_root_rehash()
+            .expect("whatevs"))
+            == block_hash
+            || prev_block_roots
+                .iter()
+                .take(cache_len)
+                .find(|(state_block_root, _)| state_block_root == &block_hash)
+                .is_some();
 
         if block_hash_found {
+            println!("Block hash FOUND: {:?}", block_hash);
             // FIXME(sproul): iterator starts from block root before target block root?
             Ok(Self::new(block_hash, prev_block_roots))
         } else {
+            println!("Block hash not found: {:?}", block_hash);
             Self::with_new_block_roots(block_hash, prev_block_roots.into_store())
         }
     }

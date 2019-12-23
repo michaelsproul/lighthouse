@@ -11,7 +11,7 @@ use lmd_ghost::{LmdGhost, ThreadSafeReducedTree as BaseThreadSafeReducedTree};
 use rand::{prelude::*, rngs::StdRng};
 use std::sync::Arc;
 use store::{iter::AncestorIter, MemoryStore, Store};
-use types::{BeaconBlock, EthSpec, Hash256, MinimalEthSpec, Slot};
+use types::{BeaconBlock, BeaconState, EthSpec, Hash256, MinimalEthSpec, Slot};
 
 // Should ideally be divisible by 3.
 pub const VALIDATOR_COUNT: usize = 3 * 8;
@@ -147,6 +147,27 @@ impl ForkedHarness {
     pub fn weight_function(_validator_index: usize) -> Option<u64> {
         Some(1)
     }
+
+    pub fn head_state(&self) -> BeaconState<TestEthSpec> {
+        self.harness.chain.head().beacon_state
+    }
+
+    pub fn finalized_state(&self) -> BeaconState<TestEthSpec> {
+        let block_root = self.harness.chain.head_info().finalized_checkpoint.root;
+        let block: BeaconBlock<TestEthSpec> = self
+            .harness
+            .chain
+            .store
+            .get(&block_root)
+            .unwrap()
+            .expect("finalized block exists");
+        self.harness
+            .chain
+            .store
+            .get_state(&block.state_root, Some(block.slot))
+            .unwrap()
+            .expect("finalized state exists")
+    }
 }
 
 /// Helper: returns all the ancestor roots and slots for a given block_root.
@@ -186,6 +207,7 @@ fn random_scenario() {
     let block_roots = harness.all_block_roots();
     let validators: Vec<usize> = (0..VALIDATOR_COUNT).collect();
     let mut rng = StdRng::seed_from_u64(9375205782030385); // Keyboard mash.
+    let state = &harness.head_state();
 
     for _ in 0..RANDOM_ITERATIONS {
         let lmd = harness.new_fork_choice();
@@ -194,7 +216,7 @@ fn random_scenario() {
             let (root, slot) = block_roots[rng.next_u64() as usize % block_roots.len()];
             let validator_index = validators[rng.next_u64() as usize % validators.len()];
 
-            lmd.process_attestation(validator_index, root, slot)
+            lmd.process_attestation(validator_index, root, slot, state)
                 .expect("fork choice should accept randomly-placed attestations");
 
             assert_eq!(
@@ -211,7 +233,7 @@ fn random_scenario() {
 #[test]
 fn single_voter_persistent_instance_reverse_order() {
     let harness = &FORKED_HARNESS;
-
+    let state = &harness.head_state();
     let lmd = harness.new_fork_choice();
 
     assert_eq!(
@@ -221,7 +243,7 @@ fn single_voter_persistent_instance_reverse_order() {
     );
 
     for (root, slot) in &harness.honest_roots {
-        lmd.process_attestation(0, *root, *slot)
+        lmd.process_attestation(0, *root, *slot, state)
             .expect("fork choice should accept attestations to honest roots in reverse");
 
         assert_eq!(
@@ -234,9 +256,11 @@ fn single_voter_persistent_instance_reverse_order() {
     // The honest head should be selected.
     let (head_root, _) = harness.honest_roots.first().unwrap();
     let (finalized_root, finalized_slot) = harness.honest_roots.last().unwrap();
+    let finalized_state = &harness.finalized_state();
 
     assert_eq!(
         lmd.find_head(
+            finalized_state,
             *finalized_slot,
             *finalized_root,
             ForkedHarness::weight_function
@@ -251,10 +275,11 @@ fn single_voter_persistent_instance_reverse_order() {
 #[test]
 fn single_voter_many_instance_honest_blocks_voting_forwards() {
     let harness = &FORKED_HARNESS;
+    let state = &harness.head_state();
 
     for (root, slot) in harness.honest_roots.iter().rev() {
         let lmd = harness.new_fork_choice();
-        lmd.process_attestation(0, *root, *slot)
+        lmd.process_attestation(0, *root, *slot, state)
             .expect("fork choice should accept attestations to honest roots");
 
         assert_eq!(
@@ -269,11 +294,12 @@ fn single_voter_many_instance_honest_blocks_voting_forwards() {
 #[test]
 fn single_voter_many_instance_honest_blocks_voting_in_reverse() {
     let harness = &FORKED_HARNESS;
+    let state = &harness.head_state();
 
     // Same as above, but in reverse order (votes on the highest honest block first).
     for (root, slot) in &harness.honest_roots {
         let lmd = harness.new_fork_choice();
-        lmd.process_attestation(0, *root, *slot)
+        lmd.process_attestation(0, *root, *slot, state)
             .expect("fork choice should accept attestations to honest roots in reverse");
 
         assert_eq!(
@@ -289,10 +315,11 @@ fn single_voter_many_instance_honest_blocks_voting_in_reverse() {
 #[test]
 fn single_voter_many_instance_faulty_blocks_voting_forwards() {
     let harness = &FORKED_HARNESS;
+    let state = &harness.head_state();
 
     for (root, slot) in harness.faulty_roots.iter().rev() {
         let lmd = harness.new_fork_choice();
-        lmd.process_attestation(0, *root, *slot)
+        lmd.process_attestation(0, *root, *slot, state)
             .expect("fork choice should accept attestations to faulty roots");
 
         assert_eq!(
@@ -307,10 +334,11 @@ fn single_voter_many_instance_faulty_blocks_voting_forwards() {
 #[test]
 fn single_voter_many_instance_faulty_blocks_voting_in_reverse() {
     let harness = &FORKED_HARNESS;
+    let state = &harness.head_state();
 
     for (root, slot) in &harness.faulty_roots {
         let lmd = harness.new_fork_choice();
-        lmd.process_attestation(0, *root, *slot)
+        lmd.process_attestation(0, *root, *slot, state)
             .expect("fork choice should accept attestations to faulty roots in reverse");
 
         assert_eq!(
@@ -325,21 +353,37 @@ fn single_voter_many_instance_faulty_blocks_voting_in_reverse() {
 #[test]
 fn discard_votes_before_justified_slot() {
     let harness = &FORKED_HARNESS;
-
+    let state = &harness.head_state();
     let lmd = harness.new_fork_choice();
 
     let (genesis_root, genesis_slot) = *harness.honest_roots.last().unwrap();
+    let genesis_state = &harness.finalized_state();
+    assert_eq!(genesis_state.slot, genesis_slot);
+    /* sproul
+    let genesis_state = &harness
+        .harness
+        .chain
+        .store
+        .get_state(&Hash256::zero(), Some(genesis_slot))
+        .unwrap()
+        .expect("genesis state exists");
+    */
 
     // Add attestations from all validators for all honest blocks.
     for (root, slot) in harness.honest_roots.iter().rev() {
         for i in 0..VALIDATOR_COUNT {
-            lmd.process_attestation(i, *root, *slot)
+            lmd.process_attestation(i, *root, *slot, state)
                 .expect("should accept attestations in increasing order");
         }
 
         // Head starting from 0 checkpoint (genesis) should be current root
         assert_eq!(
-            lmd.find_head(genesis_slot, genesis_root, ForkedHarness::weight_function),
+            lmd.find_head(
+                genesis_state,
+                genesis_slot,
+                genesis_root,
+                ForkedHarness::weight_function
+            ),
             Ok(*root),
             "Honest head should be selected"
         );
@@ -350,6 +394,7 @@ fn discard_votes_before_justified_slot() {
         // describe.
         assert_eq!(
             lmd.find_head(
+                genesis_state,
                 genesis_slot + 1,
                 genesis_root,
                 ForkedHarness::weight_function
@@ -362,16 +407,19 @@ fn discard_votes_before_justified_slot() {
 /// Ensures that the finalized root can be set to all values in `roots`.
 fn test_update_finalized_root(roots: &[(Hash256, Slot)]) {
     let harness = &FORKED_HARNESS;
-
+    let store = &harness.harness.chain.store;
     let lmd = harness.new_fork_choice();
 
     for (root, _slot) in roots.iter().rev() {
-        let block = harness
-            .store_clone()
+        let block = store
             .get::<BeaconBlock<TestEthSpec>>(root)
-            .expect("block should exist")
-            .expect("db should not error");
-        lmd.update_finalized_root(&block, *root)
+            .expect("db should not error")
+            .expect("block should exist");
+        let state = store
+            .get_state(&block.state_root, Some(block.slot))
+            .expect("db should not error")
+            .expect("state should exist");
+        lmd.update_finalized_root(&state, &block, *root)
             .expect("finalized root should update for faulty fork");
 
         assert_eq!(

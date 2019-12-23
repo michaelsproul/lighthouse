@@ -472,6 +472,7 @@ impl<E: EthSpec> HotColdDB<E> {
         end_block_hash: Hash256,
     ) -> Result<Vec<BeaconBlock<E>>, Error> {
         let mut blocks = ParentRootBlockIterator::new(self, end_block_hash)
+            .map(|(_, block)| block)
             // Include the block at the end slot (if any), it needs to be
             // replayed in order to construct the canonical state at `end_slot`.
             .filter(|block| block.slot <= end_slot)
@@ -596,13 +597,7 @@ impl<E: EthSpec> HotColdDB<E> {
     ) -> Result<(), Error> {
         // Fill in the state root on the latest block header if necessary (this happens on all
         // slots where there isn't a skip).
-        let latest_block_root = if state.latest_block_header.state_root.is_zero() {
-            let mut latest_block_header = state.latest_block_header.clone();
-            latest_block_header.state_root = *state_root;
-            latest_block_header.canonical_root()
-        } else {
-            state.latest_block_header.canonical_root()
-        };
+        let latest_block_root = state.get_latest_block_root(*state_root);
         let epoch_boundary_slot = state.slot / E::slots_per_epoch() * E::slots_per_epoch();
         let epoch_boundary_state_root = if epoch_boundary_slot == state.slot {
             *state_root

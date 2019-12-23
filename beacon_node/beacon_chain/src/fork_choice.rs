@@ -23,7 +23,7 @@ pub enum Error {
 
 pub struct ForkChoice<T: BeaconChainTypes> {
     // FIXME(sproul): remove store
-    store: Arc<T::Store>,
+    _store: Arc<T::Store>,
     backend: T::LmdGhost,
     /// Used for resolving the `0x00..00` alias back to genesis.
     ///
@@ -62,7 +62,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
             root: genesis_block_root,
         };
         Self {
-            store: store.clone(),
+            _store: store.clone(),
             backend,
             genesis_block_root,
             justified_checkpoint: RwLock::new(justified_checkpoint.clone()),
@@ -192,7 +192,6 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
         block: &BeaconBlock<T::EthSpec>,
         block_root: Hash256,
     ) -> Result<()> {
-        let timer = metrics::start_timer(&metrics::FORK_CHOICE_PROCESS_BLOCK_TIMES);
         // Note: we never count the block as a latest message, only attestations.
         //
         // I (Paul H) do not have an explicit reference to this, but I derive it from this
@@ -222,8 +221,8 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
         //
         // A case where a block without any votes can be the head is where it is the only child of
         // a block that has the majority of votes applied to it.
+        let timer = metrics::start_timer(&metrics::FORK_CHOICE_PROCESS_BLOCK_TIMES);
         self.backend.process_block(block, block_root, &state)?;
-
         metrics::stop_timer(timer);
 
         Ok(())
@@ -263,7 +262,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
 
             for validator_index in validator_indices {
                 self.backend
-                    .process_attestation(validator_index, state, block_hash, block.slot)?;
+                    .process_attestation(validator_index, block_hash, block.slot, state)?;
             }
         }
 
@@ -319,7 +318,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
         let backend = LmdGhost::from_bytes(&ssz_container.backend_bytes, store.clone())?;
 
         Ok(Self {
-            store,
+            _store: store,
             backend,
             genesis_block_root: ssz_container.genesis_block_root,
             justified_checkpoint: RwLock::new(ssz_container.justified_checkpoint),
