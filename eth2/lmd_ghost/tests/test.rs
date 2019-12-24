@@ -246,6 +246,7 @@ fn single_voter_persistent_instance_reverse_order() {
         lmd.process_attestation(0, *root, *slot, state)
             .expect("fork choice should accept attestations to honest roots in reverse");
 
+        println!("Attestation processed: {:?}, {:?}", root, slot);
         assert_eq!(
             lmd.verify_integrity(),
             Ok(()),

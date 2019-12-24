@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Instant;
 use store::{
     iter::{AncestorRoots, AncestorRootsSsz},
     iter::{BlockRootsIterator, ParentRootBlockRootIterator},
@@ -316,6 +317,8 @@ where
         state: &BeaconState<E>,
     ) -> Result<()> {
         if slot >= self.root_slot() {
+            println!("processing an attestation for {:?}", block_hash);
+            let remove_t = Instant::now();
             if let Some(previous_vote) = self.latest_votes.get(validator_index) {
                 // Note: it is possible to do a cheap equivocation check here:
                 //
@@ -327,6 +330,10 @@ where
                     return Ok(());
                 }
             }
+            println!(
+                "remove_latest_message: {}us",
+                remove_t.elapsed().as_micros()
+            );
 
             self.latest_votes.insert(
                 validator_index,
@@ -336,7 +343,9 @@ where
                 }),
             );
 
+            let add_t = Instant::now();
             self.add_latest_message(validator_index, block_hash, state)?;
+            println!("add_latest_message: {}us", add_t.elapsed().as_micros());
         }
 
         Ok(())
@@ -541,9 +550,10 @@ where
         if let Ok(node) = self.get_mut_node(hash) {
             node.add_voter(validator_index);
         } else {
+            let node_t = Instant::now();
             let node = Node {
                 voters: vec![validator_index],
-                ..Node::with_state_block_roots(hash, state, self.store.clone())?
+                ..Node::new(hash, AncestorRoots::empty(self.store.clone()))
             };
 
             self.add_node(node)?;
@@ -558,19 +568,19 @@ where
         hash: Hash256,
         state: &BeaconState<E>,
     ) -> Result<()> {
-        use std::time::Instant;
-
         if slot > self.root_slot() && !self.nodes.contains_key(&hash) {
             let node_timer = Instant::now();
             let node = Node::with_state_block_roots(hash, state, self.store.clone())?;
+            /*
             println!(
                 "Node::with_state_block_roots: {}us",
                 node_timer.elapsed().as_micros()
             );
+            */
 
             let add_node_timer = Instant::now();
             self.add_node(node)?;
-            println!("add_node: {}us", add_node_timer.elapsed().as_micros());
+            // println!("add_node: {}us", add_node_timer.elapsed().as_micros());
 
             // Read the `parent_hash` from the newly created node. If it has a parent (i.e., it's
             // not the root), see if it is superfluous.
@@ -578,7 +588,7 @@ where
             if let Some(parent_hash) = self.get_node(hash)?.parent_hash {
                 self.maybe_delete_node(parent_hash)?;
             }
-            println!("maybe_delete: {}us", maybe_del_timer.elapsed().as_micros());
+            // println!("maybe_delete: {}us", maybe_del_timer.elapsed().as_micros());
         }
 
         Ok(())
@@ -593,7 +603,9 @@ where
         Ok(std::iter::once(descendant)
             .chain(
                 self.iter_ancestors(descendant)?
-                    .take_while(|(_, slot)| *slot >= self.root_slot())
+                    .take_while(|(block_hash, slot)| {
+                        dbg!((block_hash, *slot)).1 >= self.root_slot()
+                    })
                     .map(|(block_hash, _)| block_hash),
             )
             .tuple_windows()
@@ -644,6 +656,7 @@ where
         //    `node` to it.
         // 3. Graft `node` to an existing node.
         if !prev_in_tree.children.is_empty() {
+            println!("Num chillins: {}", prev_in_tree.children.len());
             for child_link in &prev_in_tree.children {
                 let child_hash = child_link.hash;
 
@@ -654,9 +667,15 @@ where
                 //
                 // This means that `node` can be grafted between `prev_in_tree` and the child that is a
                 // descendant of both `node` and `prev_in_tree`.
+                let succ_t = Instant::now();
                 if let Some(successor) =
                     self.find_ancestor_successor_opt(node.block_hash, child_hash)?
                 {
+                    println!(
+                        "find_ancestor_successor_opt: {}us",
+                        succ_t.elapsed().as_micros()
+                    );
+                    let successor_slot = self.get_block(successor)?.slot;
                     let child = self.get_mut_node(child_hash)?;
 
                     // Graft `child` to `node`.
@@ -664,12 +683,18 @@ where
                     // Graft `node` to `child`.
                     node.children.push(ChildLink {
                         hash: child_hash,
-                        successor_slot: self.get_block(successor)?.slot,
+                        successor_slot,
                     });
                     // Detach `child` from `prev_in_tree`, replacing it with `node`.
                     prev_in_tree.replace_child_hash(child_hash, node.block_hash)?;
                     // Graft `node` to `prev_in_tree`.
                     node.parent_hash = Some(prev_in_tree.block_hash);
+                    // Fill in `node`'s cache of block roots using the child's cache.
+                    let mut prev_block_roots = child.prev_block_roots.clone();
+                    assert!(prev_block_roots
+                        .find(|(block_root, _)| block_root == &node.block_hash)
+                        .is_some());
+                    node.prev_block_roots = prev_block_roots;
 
                     println!("Case #1!");
                     break;
@@ -750,6 +775,8 @@ where
                 successor_slot: self
                     .find_ancestor_successor_slot(prev_in_tree.block_hash, node.block_hash)?,
             });
+            // FIXME(sproul): with recent change to *sometimes* pass empty AncestorRoots,
+            // we need to set them here (and in case 2).
             println!("Case #3");
         }
 
@@ -764,9 +791,14 @@ where
     /// For the given block `hash`, find its highest (by slot) ancestor that exists in the reduced
     /// tree.
     fn find_prev_in_tree(&mut self, node: &Node<E, T>) -> Option<Hash256> {
-        node.prev_block_roots
-            .clone()
-            .iter()
+        // FIXME(sproul): not using the prev block roots is perhaps unwise?
+        self.iter_ancestors(node.block_hash)
+            .ok()?
+            /*
+            node.prev_block_roots
+                .clone()
+                .iter()
+            */
             .take_while(|(_, slot)| *slot >= self.root_slot())
             .find(|(root, _)| self.nodes.contains_key(root))
             .map(|(root, _)| root)
@@ -824,10 +856,13 @@ where
         // Try to look up an existing node in the tree to use its block root cache.
         match self.get_node(block_root) {
             Ok(node) => Ok(Box::new(node.prev_block_roots.clone())),
-            Err(Error::MissingNode(_)) => Ok(Box::new(ParentRootBlockRootIterator::new(
-                &*self.store,
-                block_root,
-            ))),
+            Err(Error::MissingNode(_)) => {
+                println!("Missing the child? {}", block_root);
+                Ok(Box::new(ParentRootBlockRootIterator::new(
+                    &*self.store,
+                    block_root,
+                )))
+            }
             Err(e) => Err(e),
         }
     }
@@ -1005,15 +1040,12 @@ impl<E: EthSpec, S: Store<E>> Node<E, S> {
         // Search for the `block_hash` of this node. If it's not in the history of the provided
         // state, we will have to load a different state.
         let cache_len = prev_block_roots.len();
-        let block_hash_found = dbg!(state
-            .clone()
-            .get_latest_block_root_rehash()
-            .expect("whatevs"))
+        let block_hash_found = dbg!(state.clone().get_latest_block_root_rehash().unwrap())
             == block_hash
             || prev_block_roots
                 .iter()
                 .take(cache_len)
-                .find(|(state_block_root, _)| state_block_root == &block_hash)
+                .find(|(state_block_root, slot)| dbg!((state_block_root, slot)).0 == &block_hash)
                 .is_some();
 
         if block_hash_found {
