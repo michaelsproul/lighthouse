@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use store::iter::{
     BlockRootsIterator, ReverseBlockRootIterator, ReverseStateRootIterator, StateRootsIterator,
 };
-use store::{Error as DBError, Migrate, Store};
+use store::{BlockTree, Error as DBError, Migrate, Store};
 use tree_hash::TreeHash;
 use types::*;
 
@@ -143,6 +143,8 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     pub(crate) head_tracker: HeadTracker,
     /// Provides a small cache of `BeaconState` and `BeaconBlock`.
     pub(crate) checkpoint_cache: CheckPointCache<T::EthSpec>,
+    /// Cache of block roots for all known forks post-finalization.
+    pub block_root_tree: Arc<BlockTree>,
     /// Logging to CLI, etc.
     pub(crate) log: Logger,
 }
@@ -1345,6 +1347,20 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         self.store.put(&block_root, &block)?;
 
         metrics::stop_timer(db_write_timer);
+
+        // FIXME(sproul)
+        if let Err(e) =
+            self.block_root_tree
+                .add_block_root(block_root, block.parent_root, block.slot)
+        {
+            warn!(
+                self.log,
+                "Parent block root not found in block root tree";
+                "block_root" => format!("{:?}", block_root),
+                "parent_root" => format!("{:?}", block.parent_root),
+            );
+            panic!("Shouldn't happen");
+        }
 
         self.head_tracker.register_block(block_root, &block);
 

@@ -1,7 +1,7 @@
 mod reduced_tree;
 
 use std::sync::Arc;
-use store::Store;
+use store::{BlockTree, Store};
 use types::{BeaconBlock, BeaconState, EthSpec, Hash256, Slot};
 
 pub use reduced_tree::ThreadSafeReducedTree;
@@ -12,7 +12,12 @@ pub type Result<T> = std::result::Result<T, String>;
 // can remove it.
 pub trait LmdGhost<S: Store<E>, E: EthSpec>: PartialEq + Send + Sync + Sized {
     /// Create a new instance, with the given `store` and `finalized_root`.
-    fn new(store: Arc<S>, finalized_block: &BeaconBlock<E>, finalized_root: Hash256) -> Self;
+    fn new(
+        store: Arc<S>,
+        block_root_tree: Arc<BlockTree>,
+        finalized_block: &BeaconBlock<E>,
+        finalized_root: Hash256,
+    ) -> Self;
 
     /// Process an attestation message from some validator that attests to some `block_hash`
     /// representing a block at some `block_slot`.

@@ -11,6 +11,7 @@
 extern crate lazy_static;
 
 mod block_at_slot;
+pub mod block_tree;
 pub mod chunked_iter;
 pub mod chunked_vector;
 pub mod config;
@@ -28,6 +29,7 @@ pub mod migrate;
 
 use std::sync::Arc;
 
+pub use self::block_tree::BlockTree;
 pub use self::config::StoreConfig;
 pub use self::hot_cold_store::HotColdDB as DiskStore;
 pub use self::leveldb_store::LevelDB as SimpleDiskStore;
