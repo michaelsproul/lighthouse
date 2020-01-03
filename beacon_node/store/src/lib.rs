@@ -29,7 +29,7 @@ pub mod migrate;
 
 use std::sync::Arc;
 
-pub use self::block_tree::BlockTree;
+pub use self::block_tree::{BlockTree, SszBlockTree};
 pub use self::config::StoreConfig;
 pub use self::hot_cold_store::HotColdDB as DiskStore;
 pub use self::leveldb_store::LevelDB as SimpleDiskStore;

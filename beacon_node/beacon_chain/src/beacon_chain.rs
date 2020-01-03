@@ -185,6 +185,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             genesis_block_root: self.genesis_block_root,
             ssz_head_tracker: self.head_tracker.to_ssz_container(),
             fork_choice: self.fork_choice.as_ssz_container(),
+            block_root_tree: self.block_root_tree.as_ssz_container(),
         };
 
         let key = Hash256::from_slice(&BEACON_CHAIN_DB_KEY.as_bytes());
@@ -1218,13 +1219,15 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             });
         }
 
+        // Check if the block is already known. We know it is post-finalization, so it is
+        // sufficient to check the block root tree.
+        if self.block_root_tree.is_known_block_root(&block_root) {
+            return Ok(BlockProcessingOutcome::BlockIsAlreadyKnown);
+        }
+
         // Records the time taken to load the block and state from the database during block
         // processing.
         let db_read_timer = metrics::start_timer(&metrics::BLOCK_PROCESSING_DB_READ);
-
-        if self.store.exists::<BeaconBlock<T::EthSpec>>(&block_root)? {
-            return Ok(BlockProcessingOutcome::BlockIsAlreadyKnown);
-        }
 
         // Load the blocks parent block from the database, returning invalid if that block is not
         // found.
@@ -1350,19 +1353,8 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
         metrics::stop_timer(db_write_timer);
 
-        // FIXME(sproul)
-        if let Err(e) =
-            self.block_root_tree
-                .add_block_root(block_root, block.parent_root, block.slot)
-        {
-            warn!(
-                self.log,
-                "Parent block root not found in block root tree";
-                "block_root" => format!("{:?}", block_root),
-                "parent_root" => format!("{:?}", block.parent_root),
-            );
-            panic!("Shouldn't happen");
-        }
+        self.block_root_tree
+            .add_block_root(block_root, block.parent_root, block.slot)?;
 
         self.head_tracker.register_block(block_root, &block);
 
@@ -1677,6 +1669,12 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 finalized_block.state_root,
                 finalized_state,
                 max_finality_distance,
+            );
+
+            // Prune in-memory block root tree.
+            self.block_root_tree.prune_to(
+                finalized_block_root,
+                self.heads().into_iter().map(|(block_root, _)| block_root),
             );
 
             let _ = self.event_handler.register(EventKind::BeaconFinalization {

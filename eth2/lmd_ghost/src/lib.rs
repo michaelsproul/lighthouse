@@ -64,5 +64,5 @@ pub trait LmdGhost<S: Store<E>, E: EthSpec>: PartialEq + Send + Sync + Sized {
     fn as_bytes(&self) -> Vec<u8>;
 
     /// Create a new `LmdGhost` instance given a `store` and encoded bytes.
-    fn from_bytes(bytes: &[u8], store: Arc<S>) -> Result<Self>;
+    fn from_bytes(bytes: &[u8], store: Arc<S>, block_root_tree: Arc<BlockTree>) -> Result<Self>;
 }

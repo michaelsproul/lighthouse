@@ -146,10 +146,14 @@ where
     /// encoded ssz bytes representation.
     ///
     /// Returns an error if ssz bytes are not a valid `ReducedTreeSsz` object.
-    fn from_bytes(bytes: &[u8], store: Arc<T>) -> SuperResult<Self> {
+    fn from_bytes(
+        bytes: &[u8],
+        store: Arc<T>,
+        block_root_tree: Arc<BlockTree>,
+    ) -> SuperResult<Self> {
         Ok(ThreadSafeReducedTree {
             core: RwLock::new(
-                ReducedTree::from_bytes(bytes, store)
+                ReducedTree::from_bytes(bytes, store, block_root_tree)
                     .map_err(|e| format!("Cannot decode ssz bytes {:?}", e))?,
             ),
         })
@@ -178,7 +182,11 @@ impl ReducedTreeSsz {
         }
     }
 
-    pub fn to_reduced_tree<T, E>(self, store: Arc<T>) -> Result<ReducedTree<T, E>> {
+    pub fn to_reduced_tree<T, E>(
+        self,
+        store: Arc<T>,
+        block_root_tree: Arc<BlockTree>,
+    ) -> Result<ReducedTree<T, E>> {
         if self.node_hashes.len() != self.nodes.len() {
             Error::InvalidReducedTreeSsz("node_hashes and nodes should have equal length".into());
         }
@@ -191,12 +199,11 @@ impl ReducedTreeSsz {
         let root = (self.root_hash, self.root_slot);
         Ok(ReducedTree {
             store,
+            block_root_tree,
             nodes,
             latest_votes,
             root,
             _phantom: PhantomData,
-            // FIXME(sproul):
-            block_root_tree: panic!("oops"),
         })
     }
 }
@@ -762,6 +769,7 @@ where
         }
     }
 
+    // FIXME(sproul): remove result/box, use impl trait
     pub fn iter_ancestors<'a>(
         &'a self,
         block_root: Hash256,
@@ -860,9 +868,9 @@ where
         reduced_tree_ssz.as_ssz_bytes()
     }
 
-    fn from_bytes(bytes: &[u8], store: Arc<T>) -> Result<Self> {
+    fn from_bytes(bytes: &[u8], store: Arc<T>, block_root_tree: Arc<BlockTree>) -> Result<Self> {
         let reduced_tree_ssz = ReducedTreeSsz::from_ssz_bytes(bytes)?;
-        Ok(reduced_tree_ssz.to_reduced_tree(store)?)
+        Ok(reduced_tree_ssz.to_reduced_tree(store, block_root_tree)?)
     }
 }
 
@@ -993,13 +1001,14 @@ mod tests {
         let block_root_tree = Arc::new(BlockTree::new(Hash256::zero(), Slot::new(0)));
         let tree = ReducedTree::new(
             store.clone(),
-            block_root_tree,
+            block_root_tree.clone(),
             &BeaconBlock::empty(&MinimalEthSpec::default_spec()),
             Hash256::zero(),
         );
         let ssz_tree = ReducedTreeSsz::from_reduced_tree(&tree);
         let bytes = tree.as_bytes();
-        let recovered_tree = ReducedTree::from_bytes(&bytes, store.clone()).unwrap();
+        let recovered_tree =
+            ReducedTree::from_bytes(&bytes, store.clone(), block_root_tree).unwrap();
 
         let recovered_ssz = ReducedTreeSsz::from_reduced_tree(&recovered_tree);
         assert_eq!(ssz_tree, recovered_ssz);

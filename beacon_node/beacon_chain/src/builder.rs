@@ -226,6 +226,7 @@ where
             HeadTracker::from_ssz_container(&p.ssz_head_tracker)
                 .map_err(|e| format!("Failed to decode head tracker for database: {:?}", e))?,
         );
+        self.block_root_tree = Some(Arc::new(p.block_root_tree.clone().into()));
         self.persisted_beacon_chain = Some(p);
 
         Ok(self)
@@ -440,6 +441,7 @@ where
             ForkChoice::from_ssz_container(
                 persisted_beacon_chain.fork_choice.clone(),
                 store.clone(),
+                block_root_tree,
             )
             .map_err(|e| format!("Unable to decode fork choice from db: {:?}", e))?
         } else {
@@ -458,7 +460,7 @@ where
                 finalized_checkpoint.beacon_block_root,
             );
 
-            ForkChoice::new(store, backend, genesis_block_root, self.spec.genesis_slot)
+            ForkChoice::new(backend, genesis_block_root, self.spec.genesis_slot)
         };
 
         self.fork_choice = Some(fork_choice);
