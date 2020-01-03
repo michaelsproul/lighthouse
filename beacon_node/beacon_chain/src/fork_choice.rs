@@ -22,7 +22,8 @@ pub enum Error {
 }
 
 pub struct ForkChoice<T: BeaconChainTypes> {
-    store: Arc<T::Store>,
+    // FIXME(sproul): remove store
+    _store: Arc<T::Store>,
     backend: T::LmdGhost,
     /// Used for resolving the `0x00..00` alias back to genesis.
     ///
@@ -61,7 +62,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
             root: genesis_block_root,
         };
         Self {
-            store: store.clone(),
+            _store: store.clone(),
             backend,
             genesis_block_root,
             justified_checkpoint: RwLock::new(justified_checkpoint.clone()),
@@ -201,10 +202,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
         for attestation in &block.body.attestations {
             // If the `data.beacon_block_root` block is not known to us, simply ignore the latest
             // vote.
-            if let Some(block) = self
-                .store
-                .get::<BeaconBlock<T::EthSpec>>(&attestation.data.beacon_block_root)?
-            {
+            if let Some(block) = chain.get_block_caching(&attestation.data.beacon_block_root)? {
                 self.process_attestation(state, attestation, &block)?;
             }
         }
@@ -320,7 +318,7 @@ impl<T: BeaconChainTypes> ForkChoice<T> {
         let backend = LmdGhost::from_bytes(&ssz_container.backend_bytes, store.clone())?;
 
         Ok(Self {
-            store,
+            _store: store,
             backend,
             genesis_block_root: ssz_container.genesis_block_root,
             justified_checkpoint: RwLock::new(ssz_container.justified_checkpoint),
