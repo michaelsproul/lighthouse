@@ -405,7 +405,7 @@ impl<T: SlotClock + 'static, E: EthSpec> DutiesService<T, E> {
                 let log = service_3.context.log.clone();
 
                 let future: Box<dyn Future<Item = (), Error = ()> + Send> =
-                    if beacon_head_epoch + 1 < current_epoch {
+                    if false && beacon_head_epoch + 1 < current_epoch {
                         error!(
                             log,
                             "Beacon node is not synced";

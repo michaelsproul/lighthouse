@@ -24,7 +24,10 @@ impl Clone for BlockRootTree {
 
 #[derive(Debug, PartialEq)]
 pub enum BlockRootTreeError {
-    PrevUnknown(Hash256),
+    PrevUnknown {
+        previous: Hash256,
+        current: Hash256,
+    },
 }
 
 /// Data for a single `block_root` in the tree.
@@ -79,7 +82,11 @@ impl BlockRootTree {
             );
             Ok(())
         } else {
-            Err(BlockRootTreeError::PrevUnknown(prev_block_root))
+            println!("PrevUnknown: {:#?}", self);
+            Err(BlockRootTreeError::PrevUnknown {
+                previous: prev_block_root,
+                current: block_root,
+            })
         }
     }
 
