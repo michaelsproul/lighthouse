@@ -24,10 +24,9 @@ impl Clone for BlockRootTree {
 
 #[derive(Debug, PartialEq)]
 pub enum BlockRootTreeError {
-    PrevUnknown {
-        previous: Hash256,
-        current: Hash256,
-    },
+    PrevUnknown { previous: Hash256, current: Hash256 },
+    InvalidPruningNoHeads,
+    InvalidPruningWouldEmpty,
 }
 
 /// Data for a single `block_root` in the tree.
@@ -82,7 +81,6 @@ impl BlockRootTree {
             );
             Ok(())
         } else {
-            println!("PrevUnknown: {:#?}", self);
             Err(BlockRootTreeError::PrevUnknown {
                 previous: prev_block_root,
                 current: block_root,
@@ -128,7 +126,17 @@ impl BlockRootTree {
     ///
     /// Only keep block roots descended from `finalized_root`, which lie on a chain leading
     /// to one of the heads contained in `heads`.
-    pub fn prune_to(&self, finalized_root: Hash256, heads: impl IntoIterator<Item = Hash256>) {
+    pub fn prune_to(
+        &self,
+        finalized_root: Hash256,
+        heads: Vec<Hash256>,
+    ) -> Result<(), BlockRootTreeError> {
+        // Don't accept a list of heads of len 0, as this would clean out the tree completely.
+        // FIXME(sproul): unit tests for both emptiness cases
+        if heads.is_empty() {
+            return Err(BlockRootTreeError::InvalidPruningNoHeads);
+        }
+
         let mut keep = HashSet::new();
         keep.insert(finalized_root);
 
@@ -154,9 +162,19 @@ impl BlockRootTree {
             }
         }
 
-        self.nodes
-            .write()
-            .retain(|block_root, _| keep.contains(block_root));
+        if keep.len() > 1 {
+            self.nodes
+                .write()
+                .retain(|block_root, _| keep.contains(block_root));
+            Ok(())
+        } else {
+            Err(BlockRootTreeError::InvalidPruningWouldEmpty)
+        }
+    }
+
+    /// Total number of block roots stored in the tree.
+    pub fn len(&self) -> usize {
+        self.nodes.read().len()
     }
 
     pub fn as_ssz_container(&self) -> SszBlockRootTree {
@@ -253,7 +271,9 @@ mod test {
             check_every_slot_iter_from(&block_tree, int_hash(i), &expected);
 
             // Still OK after pruning.
-            block_tree.prune_to(int_hash(1), vec![int_hash(i)]);
+            block_tree
+                .prune_to(int_hash(1), vec![int_hash(i)])
+                .expect("prune ok");
 
             check_iter_from(&block_tree, int_hash(i), &expected);
             check_every_slot_iter_from(&block_tree, int_hash(i), &expected);
@@ -286,7 +306,9 @@ mod test {
             check_every_slot_iter_from(&block_tree, int_hash(i), &every_slot_expected);
 
             // Still OK after pruning.
-            block_tree.prune_to(int_hash(1), vec![int_hash(i)]);
+            block_tree
+                .prune_to(int_hash(1), vec![int_hash(i)])
+                .expect("prune ok");
 
             check_iter_from(&block_tree, int_hash(i), &sparse_expected);
             check_every_slot_iter_from(&block_tree, int_hash(i), &every_slot_expected);
@@ -333,18 +355,24 @@ mod test {
 
         // Check that pruning with both heads preserves both chains.
         let both_tree = tree.clone();
-        both_tree.prune_to(root.0, vec![fork1_head, fork2_head]);
+        both_tree
+            .prune_to(root.0, vec![fork1_head, fork2_head])
+            .expect("prune ok");
         check_iter_from(&both_tree, fork1_head, &all_fork1_blocks);
         check_iter_from(&both_tree, fork2_head, &all_fork2_blocks);
 
         // Check that pruning to either of the single chains leaves just that chain in the tree.
         let fork1_tree = tree.clone();
-        fork1_tree.prune_to(root.0, vec![fork1_head]);
+        fork1_tree
+            .prune_to(root.0, vec![fork1_head])
+            .expect("prune ok");
         check_iter_from(&fork1_tree, fork1_head, &all_fork1_blocks);
         check_iter_from(&fork1_tree, fork2_head, &[]);
 
         let fork2_tree = tree.clone();
-        fork2_tree.prune_to(root.0, vec![fork2_head]);
+        fork2_tree
+            .prune_to(root.0, vec![fork2_head])
+            .expect("prune ok");
         check_iter_from(&fork2_tree, fork1_head, &[]);
         check_iter_from(&fork2_tree, fork2_head, &all_fork2_blocks);
 
@@ -357,7 +385,9 @@ mod test {
             .into_iter()
             .take_while(|(_, slot)| *slot >= prune_point)
             .collect_vec();
-        fin_tree.prune_to(int_hash(prune_point), vec![fork1_head, fork2_head]);
+        fin_tree
+            .prune_to(int_hash(prune_point), vec![fork1_head, fork2_head])
+            .expect("prune ok");
         check_iter_from(&fin_tree, fork1_head, &remaining_fork1_blocks);
         check_iter_from(&fin_tree, fork2_head, &[]);
     }

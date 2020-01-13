@@ -1719,10 +1719,25 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             );
 
             // Prune in-memory block root tree.
-            self.block_root_tree.prune_to(
-                finalized_block_root,
-                self.heads().into_iter().map(|(block_root, _)| block_root),
+            let heads = self
+                .heads()
+                .into_iter()
+                .map(|(block_root, _)| block_root)
+                .collect::<Vec<_>>();
+            trace!(
+                self.log,
+                "Pruning block root tree";
+                "len" => self.block_root_tree.len(),
+                "finalized_block" => format!("{:?}", finalized_block_root),
+                "heads" => format!("{:?}", heads)
             );
+            if let Err(e) = self.block_root_tree.prune_to(finalized_block_root, heads) {
+                error!(
+                    self.log,
+                    "Block root pruning error";
+                    "error" => format!("{:?}", e)
+                );
+            }
 
             let _ = self.event_handler.register(EventKind::BeaconFinalization {
                 epoch: new_finalized_epoch,
