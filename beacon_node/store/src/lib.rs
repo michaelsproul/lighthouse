@@ -131,24 +131,24 @@ pub trait Store<E: EthSpec>: Sync + Send + Sized + 'static {
         spec: &ChainSpec,
     ) -> Self::ForwardsBlockRootsIterator;
 
-    /// Load the most recent ancestor state of `state_root` which lies on an epoch boundary.
+    /// Get the state root of the state on the epoch boundary preceding `state_root`.
     ///
-    /// If `state_root` corresponds to an epoch boundary state, then that state itself should be
-    /// returned.
-    fn load_epoch_boundary_state(
+    /// If `state_root` corresponds to an epoch boundary state, then that root itself will be
+    /// returned. The slot returned is the slot of the epoch boundary state.
+    fn get_epoch_boundary_state_root(
         &self,
         state_root: &Hash256,
-    ) -> Result<Option<BeaconState<E>>, Error> {
-        // The default implementation is not very efficient, but isn't used in prod.
+    ) -> Result<Option<(Hash256, Slot)>, Error> {
+        // The default implementation is not very efficient, but is only used by the freezer DB.
         // See `HotColdDB` for the optimized implementation.
         if let Some(state) = self.get_state(state_root, None)? {
             let epoch_boundary_slot = state.slot / E::slots_per_epoch() * E::slots_per_epoch();
-            if state.slot == epoch_boundary_slot {
-                Ok(Some(state))
+            let epoch_boundary_root = if state.slot == epoch_boundary_slot {
+                *state_root
             } else {
-                let epoch_boundary_state_root = state.get_state_root(epoch_boundary_slot)?;
-                self.get_state(epoch_boundary_state_root, Some(epoch_boundary_slot))
-            }
+                *state.get_state_root(epoch_boundary_slot)?
+            };
+            Ok(Some((epoch_boundary_root, epoch_boundary_slot)))
         } else {
             Ok(None)
         }

@@ -219,29 +219,31 @@ impl<E: EthSpec> Store<E> for HotColdDB<E> {
     /// Load an epoch boundary state by using the hot state summary look-up.
     ///
     /// Will fall back to the cold DB if a hot state summary is not found.
-    fn load_epoch_boundary_state(
+    fn get_epoch_boundary_state_root(
         &self,
         state_root: &Hash256,
-    ) -> Result<Option<BeaconState<E>>, Error> {
+    ) -> Result<Option<(Hash256, Slot)>, Error> {
         if let Some(HotStateSummary {
             epoch_boundary_state_root,
+            slot,
             ..
         }) = self.load_hot_state_summary(state_root)?
         {
-            let state = self
-                .hot_db
-                .get_state(&epoch_boundary_state_root, None)?
-                .ok_or_else(|| {
-                    HotColdDBError::MissingEpochBoundaryState(epoch_boundary_state_root)
-                })?;
-            Ok(Some(state))
+            let epoch_boundary_slot = slot / E::slots_per_epoch() * E::slots_per_epoch();
+            Ok(Some((epoch_boundary_state_root, epoch_boundary_slot)))
         } else {
-            // Try the cold DB
-            match self.load_cold_state_slot(state_root)? {
-                Some(state_slot) => {
+            // Try the cold DB. This isn't the most efficient strategy if you also want
+            // the boundary state, as it could be looked up by slot directly.
+            match self.load_cold_state(state_root)? {
+                Some(state) => {
                     let epoch_boundary_slot =
-                        state_slot / E::slots_per_epoch() * E::slots_per_epoch();
-                    self.load_cold_state_by_slot(epoch_boundary_slot).map(Some)
+                        state.slot / E::slots_per_epoch() * E::slots_per_epoch();
+                    let epoch_boundary_root = if state.slot == epoch_boundary_slot {
+                        *state_root
+                    } else {
+                        *state.get_state_root(epoch_boundary_slot)?
+                    };
+                    Ok(Some((epoch_boundary_root, epoch_boundary_slot)))
                 }
                 None => Ok(None),
             }

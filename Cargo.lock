@@ -2362,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "account_manager 0.0.1",
  "beacon_node 0.1.0",

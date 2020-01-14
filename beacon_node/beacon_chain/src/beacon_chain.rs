@@ -465,6 +465,25 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         }
     }
 
+    /// Returns the epoch boundary state, as used in attestation processing.
+    ///
+    /// Will do at least one small DB read, but will try to fetch the state from the cache.
+    pub fn get_epoch_boundary_state(
+        &self,
+        state_root: &Hash256,
+    ) -> Result<Option<BeaconState<T::EthSpec>>, Error> {
+        if let Some((epoch_boundary_root, epoch_boundary_slot)) =
+            self.store.get_epoch_boundary_state_root(state_root)?
+        {
+            self.get_state_caching_only_with_committee_caches(
+                &epoch_boundary_root,
+                Some(epoch_boundary_slot),
+            )
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Returns a `Checkpoint` representing the head block and state. Contains the "best block";
     /// the head of the canonical `BeaconChain`.
     ///
@@ -902,13 +921,11 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             let mut state = if attestation_epoch
                 == attestation_head_block.slot.epoch(slots_per_epoch)
             {
-                self.store
-                    .load_epoch_boundary_state(&attestation_head_block.state_root)?
+                self.get_epoch_boundary_state(&attestation_head_block.state_root)?
                     .ok_or_else(|| Error::MissingBeaconState(attestation_head_block.state_root))?
             } else {
                 let mut state = self
-                    .store
-                    .get_state(
+                    .get_state_caching_only_with_committee_caches(
                         &attestation_head_block.state_root,
                         Some(attestation_head_block.slot),
                     )?

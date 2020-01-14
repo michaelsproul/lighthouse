@@ -240,7 +240,7 @@ fn split_slot_restore() {
     assert_eq!(store.get_split_slot(), split_slot);
 }
 
-// Check attestation processing and `load_epoch_boundary_state` in the presence of a split DB.
+// Check attestation processing and `get_epoch_boundary_state` in the presence of a split DB.
 // This is a bit of a monster test in that it tests lots of different things, but until they're
 // tested elsewhere, this is as good a place as any.
 #[test]
@@ -281,15 +281,20 @@ fn epoch_boundary_state_attestation_processing() {
     let mut checked_pre_fin = false;
 
     for attestation in late_attestations {
-        // load_epoch_boundary_state is idempotent!
+        // get_epoch_boundary_state is idempotent!
         let block_root = attestation.data.beacon_block_root;
         let block: BeaconBlock<E> = store.get(&block_root).unwrap().expect("block exists");
-        let epoch_boundary_state = store
-            .load_epoch_boundary_state(&block.state_root)
+        let epoch_boundary_state = harness
+            .chain
+            .get_epoch_boundary_state(&block.state_root)
             .expect("no error")
-            .expect("epoch boundary state exists");
-        let ebs_of_ebs = store
-            .load_epoch_boundary_state(&epoch_boundary_state.canonical_root())
+            .expect(&format!(
+                "epoch boundary state exists for {:?}",
+                block.state_root
+            ));
+        let ebs_of_ebs = harness
+            .chain
+            .get_epoch_boundary_state(&epoch_boundary_state.canonical_root())
             .expect("no error")
             .expect("ebs of ebs exists");
         assert_eq!(epoch_boundary_state, ebs_of_ebs);
@@ -390,6 +395,10 @@ fn check_chain_dump(harness: &TestHarness, expected_len: u64) {
                 .expect("state exists")
                 .slot,
             checkpoint.beacon_state.slot
+        );
+        println!(
+            "slot {}, state: {:?}",
+            checkpoint.beacon_state.slot, checkpoint.beacon_block.state_root
         );
     }
 
