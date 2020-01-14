@@ -4,7 +4,7 @@ use parking_lot::RwLock;
 use std::borrow::Cow;
 use types::{BeaconBlock, BeaconState, EthSpec, Hash256};
 
-const CACHE_SIZE: usize = 4;
+const CACHE_SIZE: usize = 70;
 
 struct Inner<T: EthSpec> {
     oldest: usize,
