@@ -93,10 +93,8 @@ impl AllowNextEpoch {
     }
 }
 
-
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct BeaconStateHash(Hash256);
-
 
 impl From<Hash256> for BeaconStateHash {
     fn from(hash: Hash256) -> BeaconStateHash {
@@ -104,13 +102,11 @@ impl From<Hash256> for BeaconStateHash {
     }
 }
 
-
 impl From<BeaconStateHash> for Hash256 {
     fn from(beacon_state_hash: BeaconStateHash) -> Hash256 {
         beacon_state_hash.0
     }
 }
-
 
 /// The state of the `BeaconChain` at some slot.
 ///
