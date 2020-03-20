@@ -425,6 +425,39 @@ fn delete_blocks_and_states() {
     check_chain_dump(&harness, unforked_blocks + fork_blocks + 1);
 }
 
+// Ensure blocks from abandoned forks are pruned from the Hot DB
+#[test]
+fn prunes_abandoned_forks() {
+    let db_path = tempdir().unwrap();
+    let store = get_store(&db_path);
+    let harness = get_harness(Arc::clone(&store), VALIDATOR_COUNT);
+    const SUPERMAJORITY: usize = (VALIDATOR_COUNT / 3) * 2;
+    let honest_validator_count = SUPERMAJORITY;
+    let honest_validators: Vec<usize> = (0..honest_validator_count).collect();
+    let faulty_validators: Vec<usize> = (honest_validator_count..VALIDATOR_COUNT).collect();
+    let honest_blocks = (MinimalEthSpec::slots_per_epoch() * 5 + 1) as usize;
+    let faulty_blocks = 2;
+
+    let (_, faulty_head) = harness.fork_chain(
+        &honest_validators,
+        &faulty_validators,
+        honest_blocks,
+        faulty_blocks,
+    );
+
+    harness.advance_slot();
+    harness.add_canonical_chain_blocks(MinimalEthSpec::slots_per_epoch() as usize);
+
+    assert!(
+        harness
+            .chain
+            .get_block(&faulty_head.into())
+            .unwrap()
+            .is_none(),
+        "abandoned blocks should have been pruned"
+    );
+}
+
 /// Check that the head state's slot matches `expected_slot`.
 fn check_slot(harness: &TestHarness, expected_slot: u64) {
     let state = &harness.chain.head().expect("should get head").beacon_state;
