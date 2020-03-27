@@ -464,7 +464,7 @@ fn prunes_abandoned_fork_between_two_finalized_checkpoints() {
     // Precondition: Only genesis is finalized
     let chain_dump = harness.chain.chain_dump().unwrap();
     assert_eq!(
-        get_finalized_blocks(&chain_dump),
+        get_finalized_epoch_boundary_blocks(&chain_dump),
         vec![Hash256::zero().into()].into_iter().collect(),
     );
 
@@ -476,7 +476,7 @@ fn prunes_abandoned_fork_between_two_finalized_checkpoints() {
 
     // Postcondition: New blocks got finalized
     let chain_dump = harness.chain.chain_dump().unwrap();
-    let finalized_blocks = get_finalized_blocks(&chain_dump);
+    let finalized_blocks = get_finalized_epoch_boundary_blocks(&chain_dump);
     assert_eq!(
         finalized_blocks,
         vec![
@@ -544,7 +544,7 @@ fn pruning_does_not_touch_abandoned_block_shared_with_canonical_chain() {
 
     let chain_dump = harness.chain.chain_dump().unwrap();
     assert_eq!(
-        get_finalized_blocks(&chain_dump),
+        get_finalized_epoch_boundary_blocks(&chain_dump),
         vec![Hash256::zero().into()].into_iter().collect(),
     );
 
@@ -560,7 +560,7 @@ fn pruning_does_not_touch_abandoned_block_shared_with_canonical_chain() {
 
     // Postconditions
     let chain_dump = harness.chain.chain_dump().unwrap();
-    let finalized_blocks = get_finalized_blocks(&chain_dump);
+    let finalized_blocks = get_finalized_epoch_boundary_blocks(&chain_dump);
     assert_eq!(
         finalized_blocks,
         vec![
@@ -621,7 +621,7 @@ fn pruning_does_not_touch_blocks_prior_to_finalization() {
 
     let chain_dump = harness.chain.chain_dump().unwrap();
     assert_eq!(
-        get_finalized_blocks(&chain_dump),
+        get_finalized_epoch_boundary_blocks(&chain_dump),
         vec![Hash256::zero().into()].into_iter().collect(),
     );
 
@@ -631,7 +631,7 @@ fn pruning_does_not_touch_blocks_prior_to_finalization() {
 
     // Postconditions
     let chain_dump = harness.chain.chain_dump().unwrap();
-    let finalized_blocks = get_finalized_blocks(&chain_dump);
+    let finalized_blocks = get_finalized_epoch_boundary_blocks(&chain_dump);
     assert_eq!(
         finalized_blocks,
         vec![
@@ -709,7 +709,7 @@ fn prunes_fork_running_past_finalized_checkpoint() {
     // Precondition: Only genesis is finalized
     let chain_dump = harness.chain.chain_dump().unwrap();
     assert_eq!(
-        get_finalized_blocks(&chain_dump),
+        get_finalized_epoch_boundary_blocks(&chain_dump),
         vec![Hash256::zero().into()].into_iter().collect(),
     );
 
@@ -732,7 +732,7 @@ fn prunes_fork_running_past_finalized_checkpoint() {
 
     // Postcondition: New blocks got finalized
     let chain_dump = harness.chain.chain_dump().unwrap();
-    let finalized_blocks = get_finalized_blocks(&chain_dump);
+    let finalized_blocks = get_finalized_epoch_boundary_blocks(&chain_dump);
     assert_eq!(
         finalized_blocks,
         vec![
@@ -883,7 +883,9 @@ fn check_iterators(harness: &TestHarness) {
     );
 }
 
-fn get_finalized_blocks(dump: &[CheckPoint<MinimalEthSpec>]) -> HashSet<SignedBeaconBlockHash> {
+fn get_finalized_epoch_boundary_blocks(
+    dump: &[CheckPoint<MinimalEthSpec>],
+) -> HashSet<SignedBeaconBlockHash> {
     dump.iter()
         .cloned()
         .map(|checkpoint| checkpoint.beacon_state.finalized_checkpoint.root.into())
