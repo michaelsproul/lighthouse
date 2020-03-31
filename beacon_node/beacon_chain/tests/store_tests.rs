@@ -450,11 +450,11 @@ fn prunes_abandoned_fork_between_two_finalized_checkpoints() {
     );
 
     // Precondition: Ensure all stray_blocks blocks are still known
-    for (_, block_hash) in &stray_blocks {
+    for &block_hash in stray_blocks.values() {
         assert!(
             harness
                 .chain
-                .get_block(&((*block_hash).into()))
+                .get_block(&block_hash.into())
                 .unwrap()
                 .is_some(),
             "stray blocks should be still present",
@@ -489,11 +489,11 @@ fn prunes_abandoned_fork_between_two_finalized_checkpoints() {
     );
 
     // Postcondition: Ensure all stray_blocks blocks have been pruned
-    for (_, block_hash) in &stray_blocks {
+    for &block_hash in stray_blocks.values() {
         assert!(
             harness
                 .chain
-                .get_block(&((*block_hash).into()))
+                .get_block(&block_hash.into())
                 .unwrap()
                 .is_none(),
             "abandoned blocks should have been pruned",
@@ -531,11 +531,11 @@ fn pruning_does_not_touch_abandoned_block_shared_with_canonical_chain() {
     );
 
     // Preconditions
-    for (_, block_hash) in &stray_blocks {
+    for &block_hash in stray_blocks.values() {
         assert!(
             harness
                 .chain
-                .get_block(&((*block_hash).into()))
+                .get_block(&block_hash.into())
                 .unwrap()
                 .is_some(),
             "stray blocks should be still present",
@@ -572,11 +572,11 @@ fn pruning_does_not_touch_abandoned_block_shared_with_canonical_chain() {
         .collect()
     );
 
-    for (_, block_hash) in &stray_blocks {
+    for &block_hash in stray_blocks.values() {
         assert!(
             harness
                 .chain
-                .get_block(&((*block_hash).into()))
+                .get_block(&block_hash.into())
                 .unwrap()
                 .is_none(),
             "stray blocks should have been pruned",
@@ -608,11 +608,11 @@ fn pruning_does_not_touch_blocks_prior_to_finalization() {
         harness.add_stray_blocks(state.clone(), slot, slots_per_epoch - 1, &faulty_validators);
 
     // Preconditions
-    for (_, block_hash) in &stray_blocks {
+    for &block_hash in stray_blocks.values() {
         assert!(
             harness
                 .chain
-                .get_block(&((*block_hash).into()))
+                .get_block(&block_hash.into())
                 .unwrap()
                 .is_some(),
             "stray blocks should be still present",
@@ -642,11 +642,11 @@ fn pruning_does_not_touch_blocks_prior_to_finalization() {
         .collect()
     );
 
-    for (_, block_hash) in &stray_blocks {
+    for &block_hash in stray_blocks.values() {
         assert!(
             harness
                 .chain
-                .get_block(&((*block_hash).into()))
+                .get_block(&block_hash.into())
                 .unwrap()
                 .is_some(),
             "stray blocks should be still present",
@@ -692,11 +692,12 @@ fn prunes_fork_running_past_finalized_checkpoint() {
         .into_iter()
         .chain(stray_blocks_second_epoch.into_iter())
         .collect();
-    for (_, block_hash) in &stray_blocks {
+
+    for &block_hash in stray_blocks.values() {
         assert!(
             harness
                 .chain
-                .get_block(&((*block_hash).into()))
+                .get_block(&block_hash.into())
                 .unwrap()
                 .is_some(),
             "stray blocks should be still present",
@@ -742,11 +743,11 @@ fn prunes_fork_running_past_finalized_checkpoint() {
     );
 
     // Postcondition: Ensure all stray_blocks blocks have been pruned
-    for (_, block_hash) in &stray_blocks {
+    for &block_hash in stray_blocks.values() {
         assert!(
             harness
                 .chain
-                .get_block(&((*block_hash).into()))
+                .get_block(&block_hash.into())
                 .unwrap()
                 .is_none(),
             "abandoned blocks should have been pruned",
