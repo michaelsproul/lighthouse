@@ -75,6 +75,8 @@ pub enum Error {
         deposit_count: u64,
         deposit_index: u64,
     },
+    MissingBeaconBlock(SignedBeaconBlockHash),
+    MissingBeaconState(BeaconStateHash),
 }
 
 /// Control whether an epoch-indexed field can be indexed at the next epoch or not.
@@ -618,6 +620,14 @@ impl<T: EthSpec> BeaconState<T> {
     pub fn get_oldest_block_root(&self) -> Result<&Hash256, Error> {
         let i = self.get_latest_block_roots_index(self.slot - self.block_roots.len() as u64)?;
         Ok(&self.block_roots[i])
+    }
+
+    pub fn get_block_state_roots(
+        &self,
+        slot: Slot,
+    ) -> Result<(SignedBeaconBlockHash, BeaconStateHash), Error> {
+        let i = self.get_latest_block_roots_index(slot)?;
+        Ok((self.block_roots[i].into(), self.state_roots[i].into()))
     }
 
     /// Sets the latest state root for slot.
