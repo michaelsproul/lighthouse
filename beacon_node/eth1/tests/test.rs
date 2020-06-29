@@ -4,7 +4,6 @@ use eth1::http::{get_deposit_count, get_deposit_logs_in_range, get_deposit_root,
 use eth1::{Config, Service};
 use eth1::{DepositCache, DepositLog};
 use eth1_test_rig::GanacheEth1Instance;
-use futures::compat::Future01CompatExt;
 use merkle_proof::verify_merkle_proof;
 use slog::Logger;
 use sloggers::{null::NullLoggerBuilder, Build};
@@ -91,7 +90,6 @@ async fn blocking_deposit_count(eth1: &GanacheEth1Instance, block_number: u64) -
 async fn get_block_number(web3: &Web3<Http>) -> u64 {
     web3.eth()
         .block_number()
-        .compat()
         .await
         .map(|v| v.as_u64())
         .expect("should get block number")

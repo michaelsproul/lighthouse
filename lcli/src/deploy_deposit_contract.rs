@@ -5,23 +5,21 @@ use deposit_contract::{
     CONTRACT_DEPLOY_GAS,
 };
 use environment::Environment;
-use futures::compat::Future01CompatExt;
-use std::path::PathBuf;
 use types::EthSpec;
 use web3::{
     contract::{Contract, Options},
-    transports::Ipc,
+    transports::Http,
     types::{Address, U256},
     Web3,
 };
 
 pub fn run<T: EthSpec>(mut env: Environment<T>, matches: &ArgMatches<'_>) -> Result<(), String> {
-    let eth1_ipc_path: PathBuf = clap_utils::parse_required(matches, "eth1-ipc")?;
+    let eth1_http_path: String = clap_utils::parse_required(matches, "eth1-http")?;
     let from_address: Address = clap_utils::parse_required(matches, "from-address")?;
     let confirmations: usize = clap_utils::parse_required(matches, "confirmations")?;
 
-    let (_event_loop_handle, transport) =
-        Ipc::new(eth1_ipc_path).map_err(|e| format!("Unable to connect to eth1 IPC: {:?}", e))?;
+    let transport = Http::new(&eth1_http_path)
+        .map_err(|e| format!("Unable to connect to eth1 HTTP RPC: {:?}", e))?;
     let web3 = Web3::new(transport);
 
     let bytecode = String::from_utf8(BYTECODE.to_vec()).map_err(|e| {
@@ -40,7 +38,6 @@ pub fn run<T: EthSpec>(mut env: Environment<T>, matches: &ArgMatches<'_>) -> Res
         let deploy_block = web3
             .eth()
             .block_number()
-            .compat()
             .await
             .map_err(|e| format!("Failed to get block number: {}", e))?;
 
@@ -55,7 +52,6 @@ pub fn run<T: EthSpec>(mut env: Environment<T>, matches: &ArgMatches<'_>) -> Res
             .map_err(|e| format!("Unable to execute deployment: {:?}", e))?;
 
         let address = pending_contract
-            .compat()
             .await
             .map_err(|e| format!("Unable to await pending contract: {:?}", e))?
             .address();

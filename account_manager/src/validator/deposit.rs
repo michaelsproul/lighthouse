@@ -3,7 +3,6 @@ use clap::{App, Arg, ArgMatches};
 use clap_utils;
 use deposit_contract::DEPOSIT_GAS;
 use environment::Environment;
-use futures::compat::Future01CompatExt;
 use slog::{info, Logger};
 use std::path::PathBuf;
 use tokio::time::{delay_until, Duration, Instant};
@@ -11,7 +10,6 @@ use types::EthSpec;
 use validator_dir::{Eth1DepositData, Manager as ValidatorManager, ValidatorDir};
 use web3::{
     transports::Http,
-    transports::Ipc,
     types::{Address, SyncInfo, SyncState, TransactionRequest, U256},
     Transport, Web3,
 };
@@ -120,7 +118,6 @@ where
                     nonce: None,
                     condition: None,
                 })
-                .compat()
                 .await
                 .map_err(|e| format!("Failed to send transaction: {:?}", e))?;
 
@@ -241,7 +238,8 @@ pub fn cli_run<T: EthSpec>(
             "error: Must supply one of --{} or --{}",
             ETH1_IPC_FLAG, ETH1_HTTP_FLAG
         )),
-        (Some(ipc_path), None) => {
+        (Some(_ipc_path), None) => {
+            /*
             let (_event_loop_handle, ipc_transport) = Ipc::new(ipc_path)
                 .map_err(|e| format!("Unable to connect to eth1 IPC: {:?}", e))?;
             send_deposit_transactions(
@@ -252,9 +250,13 @@ pub fn cli_run<T: EthSpec>(
                 deposit_contract,
                 ipc_transport,
             )
+            */
+            Err(format!(
+                "error: IPC is disabled until the web3 crate updates to support it again"
+            ))
         }
         (None, Some(http_url)) => {
-            let (_event_loop_handle, http_transport) = Http::new(http_url.as_str())
+            let http_transport = Http::new(http_url.as_str())
                 .map_err(|e| format!("Unable to connect to eth1 http RPC: {:?}", e))?;
             send_deposit_transactions(
                 env,
@@ -284,7 +286,6 @@ where
             .clone()
             .eth()
             .syncing()
-            .compat()
             .await
             .map_err(|e| format!("Unable to read syncing state from eth1 node: {:?}", e))?;
 
@@ -304,13 +305,10 @@ where
                 delay_until(Instant::now() + SYNCING_STATE_RETRY_DELAY).await;
             }
             SyncState::NotSyncing => {
-                let block_number = web3
-                    .clone()
-                    .eth()
-                    .block_number()
-                    .compat()
-                    .await
-                    .map_err(|e| format!("Unable to read block number from eth1 node: {:?}", e))?;
+                let block_number =
+                    web3.clone().eth().block_number().await.map_err(|e| {
+                        format!("Unable to read block number from eth1 node: {:?}", e)
+                    })?;
 
                 if block_number > 0.into() {
                     info!(
