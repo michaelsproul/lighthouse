@@ -1897,6 +1897,34 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         }
     }
 
+    pub fn manual_db_prune(&self) -> Result<(), Error> {
+        // Load finalized block and state.
+        let head_info = self.head_info()?;
+        let finalized_block_root = head_info.finalized_checkpoint.root;
+        let finalized_block = self
+            .get_block(&finalized_block_root)?
+            .expect("block exists!");
+        let finalized_slot = finalized_block.slot();
+        let previous_finalized_block_root = Hash256::zero();
+
+        info!(
+            self.log,
+            "Attempting a manual prune";
+            "finalized_root" => format!("{:?}", finalized_block_root),
+            "finalized_slot" => format!("{}", finalized_slot),
+            "previous_finalized_root" => format!("{:?}", previous_finalized_block_root),
+        );
+        T::StoreMigrator::prune_abandoned_forks(
+            self.store.clone(),
+            self.head_tracker.clone(),
+            previous_finalized_block_root.into(),
+            finalized_block_root.into(),
+            finalized_slot,
+            &self.log,
+        )?;
+        Ok(())
+    }
+
     /// Called after `self` has had a new block finalized.
     ///
     /// Performs pruning and finality-based optimizations.
@@ -1947,12 +1975,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 .prune_all(&finalized_state, self.head_info()?.fork);
 
             // TODO: configurable max finality distance
-            let max_finality_distance = 0;
             self.store_migrator.process_finalization(
                 finalized_block.state_root,
                 finalized_state,
-                max_finality_distance,
-                Arc::clone(&self.head_tracker),
+                self.head_tracker.clone(),
                 old_finalized_root,
                 finalized_block_root.into(),
             );

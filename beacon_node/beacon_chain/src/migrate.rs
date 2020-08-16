@@ -1,7 +1,7 @@
 use crate::errors::BeaconChainError;
 use crate::head_tracker::HeadTracker;
 use parking_lot::Mutex;
-use slog::{debug, warn, Logger};
+use slog::{debug, info, warn, Logger};
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::mpsc;
@@ -20,11 +20,13 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
 {
     fn new(db: Arc<HotColdDB<E, Hot, Cold>>, log: Logger) -> Self;
 
+    // FIXME(sprouL): delete
+    fn log(&self) -> &Logger;
+
     fn process_finalization(
         &self,
         _state_root: Hash256,
         _new_finalized_state: BeaconState<E>,
-        _max_finality_distance: u64,
         _head_tracker: Arc<HeadTracker>,
         _old_finalized_block_hash: SignedBeaconBlockHash,
         _new_finalized_block_hash: SignedBeaconBlockHash,
@@ -43,11 +45,13 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
         old_finalized_block_hash: SignedBeaconBlockHash,
         new_finalized_block_hash: SignedBeaconBlockHash,
         new_finalized_slot: Slot,
+        log: &Logger,
     ) -> Result<(), BeaconChainError> {
         // There will never be any blocks to prune if there is only a single head in the chain.
         if head_tracker.heads().len() == 1 {
             return Ok(());
         }
+        info!(log, "Pruning {} heads", head_tracker.heads().len());
 
         let old_finalized_slot = store
             .get_block(&old_finalized_block_hash.into())?
@@ -72,6 +76,12 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
                 .map(|result| result.map(|(block_hash, block)| (block_hash.into(), block.slot())))
                 .collect::<Result<_, _>>()?;
 
+        info!(
+            log,
+            "Considering non-descendants of {} finalized blocks",
+            newly_finalized_blocks.len()
+        );
+
         // We don't know which blocks are shared among abandoned chains, so we buffer and delete
         // everything in one fell swoop.
         let mut abandoned_blocks: HashSet<SignedBeaconBlockHash> = HashSet::new();
@@ -79,6 +89,12 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
         let mut abandoned_heads: HashSet<Hash256> = HashSet::new();
 
         for (head_hash, head_slot) in head_tracker.heads() {
+            info!(
+                log,
+                "Pruning head";
+                "head_block_root" => format!("{:?}", head_hash),
+                "head_slot" => format!("{}", head_slot),
+            );
             let mut potentially_abandoned_head: Option<Hash256> = Some(head_hash);
             let mut potentially_abandoned_blocks: Vec<(
                 Slot,
@@ -152,6 +168,12 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
             }
         }
 
+        info!(
+            log,
+            "Found {} blocks and {} states to prune total",
+            abandoned_blocks.len(),
+            abandoned_states.len()
+        );
         let batch: Vec<StoreOp<E>> = abandoned_blocks
             .into_iter()
             .map(StoreOp::DeleteBlock)
@@ -171,11 +193,17 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
 }
 
 /// Migrator that does nothing, for stores that don't need migration.
-pub struct NullMigrator;
+pub struct NullMigrator {
+    log: Logger,
+}
 
 impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> Migrate<E, Hot, Cold> for NullMigrator {
-    fn new(_: Arc<HotColdDB<E, Hot, Cold>>, _: Logger) -> Self {
-        NullMigrator
+    fn new(_: Arc<HotColdDB<E, Hot, Cold>>, log: Logger) -> Self {
+        NullMigrator { log }
+    }
+
+    fn log(&self) -> &Logger {
+        &self.log
     }
 }
 
@@ -184,30 +212,36 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> Migrate<E, Hot, Cold> fo
 /// Mostly useful for tests.
 pub struct BlockingMigrator<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     db: Arc<HotColdDB<E, Hot, Cold>>,
+    log: Logger,
 }
 
 impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> Migrate<E, Hot, Cold>
     for BlockingMigrator<E, Hot, Cold>
 {
-    fn new(db: Arc<HotColdDB<E, Hot, Cold>>, _: Logger) -> Self {
-        BlockingMigrator { db }
+    fn new(db: Arc<HotColdDB<E, Hot, Cold>>, log: Logger) -> Self {
+        BlockingMigrator { db, log }
+    }
+
+    fn log(&self) -> &Logger {
+        &self.log
     }
 
     fn process_finalization(
         &self,
         state_root: Hash256,
         new_finalized_state: BeaconState<E>,
-        _max_finality_distance: u64,
         head_tracker: Arc<HeadTracker>,
         old_finalized_block_hash: SignedBeaconBlockHash,
         new_finalized_block_hash: SignedBeaconBlockHash,
     ) {
+        // FIXME(sproul): use logger
         if let Err(e) = Self::prune_abandoned_forks(
             self.db.clone(),
             head_tracker,
             old_finalized_block_hash,
             new_finalized_block_hash,
             new_finalized_state.slot,
+            &self.log,
         ) {
             eprintln!("Pruning error: {:?}", e);
         }
@@ -243,20 +277,19 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> Migrate<E, Hot, Cold>
         Self { db, tx_thread, log }
     }
 
+    fn log(&self) -> &Logger {
+        &self.log
+    }
+
     /// Perform the freezing operation on the database,
     fn process_finalization(
         &self,
         finalized_state_root: Hash256,
         new_finalized_state: BeaconState<E>,
-        max_finality_distance: u64,
         head_tracker: Arc<HeadTracker>,
         old_finalized_block_hash: SignedBeaconBlockHash,
         new_finalized_block_hash: SignedBeaconBlockHash,
     ) {
-        if !self.needs_migration(new_finalized_state.slot, max_finality_distance) {
-            return;
-        }
-
         let (ref mut tx, ref mut thread) = *self.tx_thread.lock();
 
         let new_finalized_slot = new_finalized_state.slot;
@@ -290,12 +323,6 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> Migrate<E, Hot, Cold>
 }
 
 impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Hot, Cold> {
-    /// Return true if a migration needs to be performed, given a new `finalized_slot`.
-    fn needs_migration(&self, finalized_slot: Slot, max_finality_distance: u64) -> bool {
-        let finality_distance = finalized_slot - self.db.get_split_slot();
-        finality_distance > max_finality_distance
-    }
-
     #[allow(clippy::type_complexity)]
     /// Spawn a new child thread to run the migration process.
     ///
@@ -331,6 +358,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
                     old_finalized_block_hash,
                     new_finalized_block_hash,
                     new_finalized_slot,
+                    &log,
                 ) {
                     Ok(()) => {}
                     Err(e) => warn!(log, "Block pruning failed: {:?}", e),

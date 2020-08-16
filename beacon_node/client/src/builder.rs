@@ -424,6 +424,10 @@ where
             .build()
             .map_err(|e| format!("Failed to build beacon chain: {}", e))?;
 
+        chain
+            .manual_db_prune()
+            .map_err(|e| format!("Manual database prune on start-up failed: {:?}", e))?;
+
         self.beacon_chain = Some(Arc::new(chain));
         self.beacon_chain_builder = None;
         self.event_handler = None;

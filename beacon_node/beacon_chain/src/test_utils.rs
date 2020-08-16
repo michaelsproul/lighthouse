@@ -108,12 +108,12 @@ impl<E: EthSpec> BeaconChainHarness<HarnessType<E>> {
         spec.target_aggregators_per_committee = target_aggregators_per_committee;
 
         let log = NullLoggerBuilder.build().expect("logger should build");
-        let store = HotColdDB::open_ephemeral(config, spec.clone(), log.clone()).unwrap();
+        let store = Arc::new(HotColdDB::open_ephemeral(config, spec.clone(), log.clone()).unwrap());
         let chain = BeaconChainBuilder::new(eth_spec_instance)
-            .logger(log)
+            .logger(log.clone())
             .custom_spec(spec.clone())
-            .store(Arc::new(store))
-            .store_migrator(NullMigrator)
+            .store(store.clone())
+            .store_migrator(NullMigrator::new(store, log))
             .data_dir(data_dir.path().to_path_buf())
             .genesis_state(
                 interop_genesis_state::<E>(&keypairs, HARNESS_GENESIS_TIME, &spec)
