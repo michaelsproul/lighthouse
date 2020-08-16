@@ -1898,7 +1898,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     }
 
     pub fn manual_db_prune(&self) -> Result<(), Error> {
-        // Load finalized block and state.
+        // Load finalized block.
         let head_info = self.head_info()?;
         let finalized_block_root = head_info.finalized_checkpoint.root;
         let finalized_block = self

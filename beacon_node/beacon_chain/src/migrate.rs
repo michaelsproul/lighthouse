@@ -1,7 +1,7 @@
 use crate::errors::BeaconChainError;
 use crate::head_tracker::HeadTracker;
 use parking_lot::Mutex;
-use slog::{debug, info, warn, Logger};
+use slog::{debug, error, info, warn, Logger};
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::mpsc;
@@ -89,82 +89,40 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
         let mut abandoned_heads: HashSet<Hash256> = HashSet::new();
 
         for (head_hash, head_slot) in head_tracker.heads() {
-            info!(
+            match Self::prune_head(
+                store.clone(),
+                head_hash,
+                head_slot,
+                &newly_finalized_blocks,
+                old_finalized_slot,
+                new_finalized_slot,
                 log,
-                "Pruning head";
-                "head_block_root" => format!("{:?}", head_hash),
-                "head_slot" => format!("{}", head_slot),
-            );
-            let mut potentially_abandoned_head: Option<Hash256> = Some(head_hash);
-            let mut potentially_abandoned_blocks: Vec<(
-                Slot,
-                Option<SignedBeaconBlockHash>,
-                Option<BeaconStateHash>,
-            )> = Vec::new();
-
-            let head_state_hash = store
-                .get_block(&head_hash)?
-                .ok_or_else(|| BeaconStateError::MissingBeaconBlock(head_hash.into()))?
-                .state_root();
-
-            let iter = std::iter::once(Ok((head_hash, head_state_hash, head_slot)))
-                .chain(RootsIterator::from_block(Arc::clone(&store), head_hash)?);
-            for maybe_tuple in iter {
-                let (block_hash, state_hash, slot) = maybe_tuple?;
-                if slot < old_finalized_slot {
-                    // We must assume here any candidate chains include old_finalized_block_hash,
-                    // i.e. there aren't any forks starting at a block that is a strict ancestor of
-                    // old_finalized_block_hash.
-                    break;
-                }
-                match newly_finalized_blocks.get(&block_hash.into()).copied() {
-                    // Block is not finalized, mark it and its state for deletion
-                    None => {
-                        potentially_abandoned_blocks.push((
-                            slot,
-                            Some(block_hash.into()),
-                            Some(state_hash.into()),
+            ) {
+                Ok((head, blocks)) => {
+                    abandoned_heads.extend(head.into_iter());
+                    if !blocks.is_empty() {
+                        info!(log, "Found {} prunable slots", blocks.len());
+                        abandoned_blocks.extend(
+                            blocks
+                                .iter()
+                                .filter_map(|(_, maybe_block_hash, _)| *maybe_block_hash),
+                        );
+                        abandoned_states.extend(blocks.iter().filter_map(
+                            |(slot, _, maybe_state_hash)| match maybe_state_hash {
+                                None => None,
+                                Some(state_hash) => Some((*slot, *state_hash)),
+                            },
                         ));
                     }
-                    Some(finalized_slot) => {
-                        // Block root is finalized, and we have reached the slot it was finalized
-                        // at: we've hit a shared part of the chain.
-                        if finalized_slot == slot {
-                            // The first finalized block of a candidate chain lies after (in terms
-                            // of slots order) the newly finalized block.  It's not a candidate for
-                            // prunning.
-                            if finalized_slot == new_finalized_slot {
-                                potentially_abandoned_blocks.clear();
-                                potentially_abandoned_head.take();
-                            }
-
-                            break;
-                        }
-                        // Block root is finalized, but we're at a skip slot: delete the state only.
-                        else {
-                            potentially_abandoned_blocks.push((
-                                slot,
-                                None,
-                                Some(state_hash.into()),
-                            ));
-                        }
-                    }
                 }
-            }
-
-            abandoned_heads.extend(potentially_abandoned_head.into_iter());
-            if !potentially_abandoned_blocks.is_empty() {
-                abandoned_blocks.extend(
-                    potentially_abandoned_blocks
-                        .iter()
-                        .filter_map(|(_, maybe_block_hash, _)| *maybe_block_hash),
-                );
-                abandoned_states.extend(potentially_abandoned_blocks.iter().filter_map(
-                    |(slot, _, maybe_state_hash)| match maybe_state_hash {
-                        None => None,
-                        Some(state_hash) => Some((*slot, *state_hash)),
-                    },
-                ));
+                Err(e) => {
+                    error!(
+                        log,
+                        "Error pruning head {}",
+                        head_hash;
+                        "error" => format!("{:?}", e)
+                    );
+                }
             }
         }
 
@@ -189,6 +147,82 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
         }
 
         Ok(())
+    }
+
+    fn prune_head(
+        store: Arc<HotColdDB<E, Hot, Cold>>,
+        head_hash: Hash256,
+        head_slot: Slot,
+        newly_finalized_blocks: &HashMap<SignedBeaconBlockHash, Slot>,
+        old_finalized_slot: Slot,
+        new_finalized_slot: Slot,
+        log: &Logger,
+    ) -> Result<
+        (
+            Option<Hash256>,
+            Vec<(Slot, Option<SignedBeaconBlockHash>, Option<BeaconStateHash>)>,
+        ),
+        Error,
+    > {
+        info!(
+            log,
+            "Pruning head";
+            "head_block_root" => format!("{:?}", head_hash),
+            "head_slot" => format!("{}", head_slot),
+        );
+        let mut potentially_abandoned_head = Some(head_hash);
+        let mut potentially_abandoned_blocks: Vec<(
+            Slot,
+            Option<SignedBeaconBlockHash>,
+            Option<BeaconStateHash>,
+        )> = Vec::new();
+
+        let head_state_hash = store
+            .get_block(&head_hash)?
+            .ok_or_else(|| BeaconStateError::MissingBeaconBlock(head_hash.into()))?
+            .state_root();
+
+        let iter = std::iter::once(Ok((head_hash, head_state_hash, head_slot)))
+            .chain(RootsIterator::from_block(store.clone(), head_hash)?);
+        for maybe_tuple in iter {
+            let (block_hash, state_hash, slot) = maybe_tuple?;
+            if slot < old_finalized_slot {
+                // We must assume here any candidate chains include old_finalized_block_hash,
+                // i.e. there aren't any forks starting at a block that is a strict ancestor of
+                // old_finalized_block_hash.
+                break;
+            }
+            match newly_finalized_blocks.get(&block_hash.into()).copied() {
+                // Block is not finalized, mark it and its state for deletion
+                None => {
+                    potentially_abandoned_blocks.push((
+                        slot,
+                        Some(block_hash.into()),
+                        Some(state_hash.into()),
+                    ));
+                }
+                Some(finalized_slot) => {
+                    // Block root is finalized, and we have reached the slot it was finalized
+                    // at: we've hit a shared part of the chain.
+                    if finalized_slot == slot {
+                        // The first finalized block of a candidate chain lies after (in terms
+                        // of slots order) the newly finalized block.  It's not a candidate for
+                        // prunning.
+                        if finalized_slot == new_finalized_slot {
+                            potentially_abandoned_blocks.clear();
+                            potentially_abandoned_head.take();
+                        }
+
+                        break;
+                    }
+                    // Block root is finalized, but we're at a skip slot: delete the state only.
+                    else {
+                        potentially_abandoned_blocks.push((slot, None, Some(state_hash.into())));
+                    }
+                }
+            }
+        }
+        Ok((potentially_abandoned_head, potentially_abandoned_blocks))
     }
 }
 
