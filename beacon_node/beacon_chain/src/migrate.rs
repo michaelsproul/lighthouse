@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use store::hot_cold_store::{process_finalization, HotColdDBError};
-use store::iter::{ParentRootBlockIterator, RootsIterator};
+use store::iter::RootsIterator;
 use store::{Error, ItemStore, StoreOp};
 pub use store::{HotColdDB, MemoryStore};
 use types::*;
@@ -59,6 +59,7 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
             .slot();
 
         // Collect hashes from new_finalized_block back to old_finalized_block (inclusive)
+        /*
         let mut found_block = false; // hack for `take_until`
         let newly_finalized_blocks: HashMap<SignedBeaconBlockHash, Slot> =
             ParentRootBlockIterator::new(&*store, new_finalized_block_hash.into())
@@ -75,6 +76,23 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
                 })
                 .map(|result| result.map(|(block_hash, block)| (block_hash.into(), block.slot())))
                 .collect::<Result<_, _>>()?;
+        */
+        let mut prev_block_root: Hash256 = new_finalized_block_hash.into();
+        let newly_finalized_blocks: HashMap<SignedBeaconBlockHash, Slot> =
+            std::iter::once((new_finalized_block_hash, new_finalized_slot))
+                .chain(
+                    RootsIterator::from_block(store.clone(), new_finalized_block_hash.into())?
+                        .flat_map(|res| {
+                            let (block_root, _, slot) = res.ok()?;
+                            if block_root != prev_block_root {
+                                prev_block_root = block_root;
+                                Some((block_root.into(), slot))
+                            } else {
+                                None
+                            }
+                        }),
+                )
+                .collect();
 
         info!(
             log,
@@ -185,7 +203,17 @@ pub trait Migrate<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>:
         let iter = std::iter::once(Ok((head_hash, head_state_hash, head_slot)))
             .chain(RootsIterator::from_block(store.clone(), head_hash)?);
         for maybe_tuple in iter {
-            let (block_hash, state_hash, slot) = maybe_tuple?;
+            let (block_hash, state_hash, slot) = match maybe_tuple {
+                Ok(x) => x,
+                Err(e) => {
+                    error!(
+                        log,
+                        "Aborting prune early due to iterator error";
+                        "error" => format!("{:?}", e),
+                    );
+                    break;
+                }
+            };
             if slot < old_finalized_slot {
                 // We must assume here any candidate chains include old_finalized_block_hash,
                 // i.e. there aren't any forks starting at a block that is a strict ancestor of
