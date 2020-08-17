@@ -171,12 +171,6 @@ pub fn get_config<E: EthSpec>(
         );
     }
 
-    if let Some(block_cache_size) = cli_args.value_of("block-cache-size") {
-        client_config.store.block_cache_size = block_cache_size
-            .parse()
-            .map_err(|_| "block-cache-size is not a valid integer".to_string())?;
-    }
-
     if spec_constants != client_config.spec_constants {
         crit!(log, "Specification constants do not match.";
               "client_config" => client_config.spec_constants,

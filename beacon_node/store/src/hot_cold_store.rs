@@ -12,8 +12,7 @@ use crate::{
     get_key_for_col, DBColumn, Error, ItemStore, KeyValueStoreOp, PartialBeaconState, StoreItem,
     StoreOp,
 };
-use lru::LruCache;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use slog::{debug, error, info, trace, warn, Logger};
 use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
@@ -58,8 +57,6 @@ pub struct HotColdDB<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     ///
     /// The hot database also contains all blocks.
     pub(crate) hot_db: Hot,
-    /// LRU cache of deserialized blocks. Updated whenever a block is loaded.
-    block_cache: Mutex<LruCache<Hash256, SignedBeaconBlock<E>>>,
     /// Chain spec.
     spec: ChainSpec,
     /// Logger.
@@ -109,7 +106,6 @@ impl<E: EthSpec> HotColdDB<E, MemoryStore<E>, MemoryStore<E>> {
             split: RwLock::new(Split::default()),
             cold_db: MemoryStore::open(),
             hot_db: MemoryStore::open(),
-            block_cache: Mutex::new(LruCache::new(config.block_cache_size)),
             config,
             spec,
             log,
@@ -137,7 +133,6 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
             split: RwLock::new(Split::default()),
             cold_db: LevelDB::open(cold_path)?,
             hot_db: LevelDB::open(hot_path)?,
-            block_cache: Mutex::new(LruCache::new(config.block_cache_size)),
             config,
             spec,
             log,
@@ -166,39 +161,17 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         block_root: &Hash256,
         block: SignedBeaconBlock<E>,
     ) -> Result<(), Error> {
-        // Store on disk.
-        self.hot_db.put(block_root, &block)?;
-
-        // Update cache.
-        self.block_cache.lock().put(*block_root, block);
-
-        Ok(())
+        self.hot_db.put(block_root, &block)
     }
 
     /// Fetch a block from the store.
     pub fn get_block(&self, block_root: &Hash256) -> Result<Option<SignedBeaconBlock<E>>, Error> {
         metrics::inc_counter(&metrics::BEACON_BLOCK_GET_COUNT);
-
-        // Check the cache.
-        if let Some(block) = self.block_cache.lock().get(block_root) {
-            metrics::inc_counter(&metrics::BEACON_BLOCK_CACHE_HIT_COUNT);
-            return Ok(Some(block.clone()));
-        }
-
-        // Fetch from database.
-        match self.hot_db.get::<SignedBeaconBlock<E>>(block_root)? {
-            Some(block) => {
-                // Add to cache.
-                self.block_cache.lock().put(*block_root, block.clone());
-                Ok(Some(block))
-            }
-            None => Ok(None),
-        }
+        self.hot_db.get(block_root)
     }
 
     /// Delete a block from the store and the block cache.
     pub fn delete_block(&self, block_root: &Hash256) -> Result<(), Error> {
-        self.block_cache.lock().pop(block_root);
         self.hot_db.delete::<SignedBeaconBlock<E>>(block_root)
     }
 
@@ -358,42 +331,40 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     }
 
     pub fn do_atomically(&self, batch: Vec<StoreOp<E>>) -> Result<(), Error> {
-        let mut guard = self.block_cache.lock();
-
         let mut key_value_batch: Vec<KeyValueStoreOp> = Vec::with_capacity(batch.len());
-        for op in &batch {
+        for op in batch {
             match op {
                 StoreOp::PutBlock(block_hash, block) => {
-                    let untyped_hash: Hash256 = (*block_hash).into();
+                    let untyped_hash: Hash256 = block_hash.into();
                     key_value_batch.push(block.as_kv_store_op(untyped_hash));
                 }
 
                 StoreOp::PutState(state_hash, state) => {
-                    let untyped_hash: Hash256 = (*state_hash).into();
-                    self.store_hot_state(&untyped_hash, state, &mut key_value_batch)?;
+                    let untyped_hash: Hash256 = state_hash.into();
+                    self.store_hot_state(&untyped_hash, &state, &mut key_value_batch)?;
                 }
 
                 StoreOp::PutStateSummary(state_hash, summary) => {
-                    let untyped_hash: Hash256 = (*state_hash).into();
+                    let untyped_hash: Hash256 = state_hash.into();
                     key_value_batch.push(summary.as_kv_store_op(untyped_hash));
                 }
 
                 StoreOp::DeleteBlock(block_hash) => {
-                    let untyped_hash: Hash256 = (*block_hash).into();
+                    let untyped_hash: Hash256 = block_hash.into();
                     let key =
                         get_key_for_col(DBColumn::BeaconBlock.into(), untyped_hash.as_bytes());
                     key_value_batch.push(KeyValueStoreOp::DeleteKey(key));
                 }
 
                 StoreOp::DeleteState(state_hash, slot) => {
-                    let untyped_hash: Hash256 = (*state_hash).into();
+                    let untyped_hash: Hash256 = state_hash.into();
                     let state_summary_key = get_key_for_col(
                         DBColumn::BeaconStateSummary.into(),
                         untyped_hash.as_bytes(),
                     );
                     key_value_batch.push(KeyValueStoreOp::DeleteKey(state_summary_key));
 
-                    if *slot % E::slots_per_epoch() == 0 {
+                    if slot % E::slots_per_epoch() == 0 {
                         let state_key =
                             get_key_for_col(DBColumn::BeaconState.into(), untyped_hash.as_bytes());
                         key_value_batch.push(KeyValueStoreOp::DeleteKey(state_key));
@@ -402,28 +373,9 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             }
         }
         self.hot_db.do_atomically(key_value_batch)?;
-
-        for op in &batch {
-            match op {
-                StoreOp::PutBlock(block_hash, block) => {
-                    let untyped_hash: Hash256 = (*block_hash).into();
-                    guard.put(untyped_hash, block.clone());
-                }
-
-                StoreOp::PutState(_, _) => (),
-
-                StoreOp::PutStateSummary(_, _) => (),
-
-                StoreOp::DeleteBlock(block_hash) => {
-                    let untyped_hash: Hash256 = (*block_hash).into();
-                    guard.pop(&untyped_hash);
-                }
-
-                StoreOp::DeleteState(_, _) => (),
-            }
-        }
         Ok(())
     }
+
     /// Store a post-finalization state efficiently in the hot database.
     ///
     /// On an epoch boundary, store a full state. On an intermediate slot, store
