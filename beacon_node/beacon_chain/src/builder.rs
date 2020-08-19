@@ -308,6 +308,7 @@ where
             .get_item::<SignedBeaconBlock<TEthSpec>>(&finalized_block_root)
             .map_err(|e| format!("DB error when reading finalized block: {:?}", e))?
             .ok_or_else(|| "Finalized block not found in store".to_string())?;
+        println!("Finalized block slot: {}", finalized_block.slot());
         let finalized_state_root = finalized_block.state_root();
         let finalized_state = store
             .get_state(&finalized_state_root, Some(finalized_block.slot()))

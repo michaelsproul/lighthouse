@@ -3,6 +3,7 @@ pub use crate::beacon_chain::{
 };
 use crate::migrate::{BlockingMigrator, Migrate, NullMigrator};
 pub use crate::persisted_beacon_chain::PersistedBeaconChain;
+use crate::slog::Drain;
 use crate::{
     builder::{BeaconChainBuilder, Witness},
     eth1_chain::CachingEth1Backend,
@@ -107,7 +108,10 @@ impl<E: EthSpec> BeaconChainHarness<HarnessType<E>> {
 
         spec.target_aggregators_per_committee = target_aggregators_per_committee;
 
-        let log = NullLoggerBuilder.build().expect("logger should build");
+        let decorator = slog_term::PlainDecorator::new(slog_term::TestStdoutWriter);
+        let drain = slog_term::FullFormat::new(decorator).build();
+        let log = slog::Logger::root(std::sync::Mutex::new(drain).fuse(), o!());
+        //let log = NullLoggerBuilder.build().expect("logger should build");
         let store = HotColdDB::open_ephemeral(config, spec.clone(), log.clone()).unwrap();
         let chain = BeaconChainBuilder::new(eth_spec_instance)
             .logger(log)

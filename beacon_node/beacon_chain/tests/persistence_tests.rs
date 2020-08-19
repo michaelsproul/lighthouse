@@ -11,7 +11,7 @@ use sloggers::{null::NullLoggerBuilder, Build};
 use std::sync::Arc;
 use store::{HotColdDB, LevelDB, StoreConfig};
 use tempfile::{tempdir, TempDir};
-use types::{EthSpec, Keypair, MinimalEthSpec};
+use types::{EthSpec, Keypair, MinimalEthSpec, Slot};
 
 type E = MinimalEthSpec;
 
@@ -38,8 +38,9 @@ fn get_store(db_path: &TempDir) -> Arc<HotColdDB<E, LevelDB<E>, LevelDB<E>>> {
 #[test]
 fn finalizes_after_resuming_from_db() {
     let validator_count = 16;
-    let num_blocks_produced = MinimalEthSpec::slots_per_epoch() * 8;
-    let first_half = num_blocks_produced / 2;
+    let slots_per_epoch = MinimalEthSpec::slots_per_epoch();
+    let num_blocks_produced = slots_per_epoch * 10;
+    let first_half = 6 * slots_per_epoch - 1;
 
     let db_path = tempdir().unwrap();
     let store = get_store(&db_path);
@@ -53,24 +54,54 @@ fn finalizes_after_resuming_from_db() {
     harness.advance_slot();
 
     harness.extend_chain(
-        first_half as usize,
+        3 * slots_per_epoch as usize - 1,
         BlockStrategy::OnCanonicalHead,
         AttestationStrategy::AllValidators,
     );
 
-    assert!(
+    harness.advance_slot();
+
+    assert_eq!(harness.chain.slot().unwrap(), 3 * slots_per_epoch);
+
+    harness.extend_chain(
+        slots_per_epoch as usize - 1,
+        BlockStrategy::ForkCanonicalChainAt {
+            previous_slot: Slot::new(3 * slots_per_epoch - 1),
+            first_slot: Slot::new(3 * slots_per_epoch + 1),
+        },
+        AttestationStrategy::AllValidators,
+    );
+
+    harness.advance_slot();
+
+    assert_eq!(harness.chain.slot().unwrap(), 4 * slots_per_epoch);
+
+    harness.extend_chain(
+        2 * slots_per_epoch as usize,
+        BlockStrategy::ForkCanonicalChainAt {
+            previous_slot: Slot::new(4 * slots_per_epoch - 1),
+            first_slot: Slot::new(4 * slots_per_epoch + 1),
+        },
+        AttestationStrategy::AllValidators,
+    );
+
+    assert_eq!(harness.chain.slot().unwrap(), 6 * slots_per_epoch);
+
+    assert_eq!(
         harness
             .chain
             .head()
             .expect("should read head")
             .beacon_state
             .finalized_checkpoint
-            .epoch
-            > 0,
+            .epoch,
+        4,
         "the chain should have already finalized"
     );
 
     let latest_slot = harness.chain.slot().expect("should have a slot");
+    println!("we're at slot {}", latest_slot);
+    println!("split slot is {}", store.get_split_slot());
 
     harness
         .chain
@@ -106,7 +137,7 @@ fn finalizes_after_resuming_from_db() {
         .set_slot(latest_slot.as_u64() + 1);
 
     resumed_harness.extend_chain(
-        (num_blocks_produced - first_half) as usize,
+        (num_blocks_produced - first_half - 1) as usize,
         BlockStrategy::OnCanonicalHead,
         AttestationStrategy::AllValidators,
     );
