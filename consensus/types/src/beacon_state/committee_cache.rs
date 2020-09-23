@@ -185,6 +185,7 @@ impl CommitteeCache {
                     index,
                     committee_position,
                     committee_len,
+                    committees_at_slot: self.committees_per_slot(),
                 })
             })
     }

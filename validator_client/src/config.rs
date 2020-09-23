@@ -1,8 +1,9 @@
 use clap::ArgMatches;
 use clap_utils::{parse_optional, parse_path_with_default_in_home_dir};
+use eth2::types::Graffiti;
 use serde_derive::{Deserialize, Serialize};
 use std::path::PathBuf;
-use types::{Graffiti, GRAFFITI_BYTES_LEN};
+use types::GRAFFITI_BYTES_LEN;
 
 pub const DEFAULT_HTTP_SERVER: &str = "http://localhost:5052/";
 pub const DEFAULT_DATA_DIR: &str = ".lighthouse/validators";
@@ -24,8 +25,8 @@ pub struct Config {
     /// If true, the validator client will still poll for duties and produce blocks even if the
     /// beacon node is not synced at startup.
     pub allow_unsynced_beacon_node: bool,
-    /// If true, refuse to unlock a keypair that is guarded by a lockfile.
-    pub strict_lockfiles: bool,
+    /// If true, delete any validator keystore lockfiles that would prevent starting.
+    pub delete_lockfiles: bool,
     /// If true, don't scan the validators dir for new keystores.
     pub disable_auto_discover: bool,
     /// Graffiti to be inserted everytime we create a block.
@@ -46,7 +47,7 @@ impl Default for Config {
             secrets_dir,
             http_server: DEFAULT_HTTP_SERVER.to_string(),
             allow_unsynced_beacon_node: false,
-            strict_lockfiles: false,
+            delete_lockfiles: false,
             disable_auto_discover: false,
             graffiti: None,
         }
@@ -77,7 +78,7 @@ impl Config {
         }
 
         config.allow_unsynced_beacon_node = cli_args.is_present("allow-unsynced");
-        config.strict_lockfiles = cli_args.is_present("strict-lockfiles");
+        config.delete_lockfiles = cli_args.is_present("delete-lockfiles");
         config.disable_auto_discover = cli_args.is_present("disable-auto-discover");
 
         if let Some(secrets_dir) = parse_optional(cli_args, "secrets-dir")? {
@@ -92,15 +93,14 @@ impl Config {
                     GRAFFITI_BYTES_LEN
                 ));
             } else {
-                // Default graffiti to all 0 bytes.
-                let mut graffiti = Graffiti::default();
+                let mut graffiti = [0; 32];
 
                 // Copy the provided bytes over.
                 //
                 // Panic-free because `graffiti_bytes.len()` <= `GRAFFITI_BYTES_LEN`.
                 graffiti[..graffiti_bytes.len()].copy_from_slice(&graffiti_bytes);
 
-                config.graffiti = Some(graffiti);
+                config.graffiti = Some(graffiti.into());
             }
         }
 

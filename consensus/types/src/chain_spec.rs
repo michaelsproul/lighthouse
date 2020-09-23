@@ -4,10 +4,6 @@ use serde_derive::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::Path;
 use tree_hash::TreeHash;
-use utils::{
-    fork_from_hex_str, fork_to_hex_str, u32_from_hex_str, u32_to_hex_str, u8_from_hex_str,
-    u8_to_hex_str,
-};
 
 /// Each of the BLS signature domains.
 ///
@@ -64,12 +60,9 @@ pub struct ChainSpec {
     /*
      * Initial Values
      */
-    #[serde(
-        serialize_with = "fork_to_hex_str",
-        deserialize_with = "fork_from_hex_str"
-    )]
+    #[serde(with = "serde_utils::bytes_4_hex")]
     pub genesis_fork_version: [u8; 4],
-    #[serde(deserialize_with = "u8_from_hex_str", serialize_with = "u8_to_hex_str")]
+    #[serde(with = "serde_utils::u8_hex")]
     pub bls_withdrawal_prefix_byte: u8,
 
     /*
@@ -114,6 +107,7 @@ pub struct ChainSpec {
      */
     pub eth1_follow_distance: u64,
     pub seconds_per_eth1_block: u64,
+    pub deposit_contract_address: Address,
 
     /*
      * Networking
@@ -324,6 +318,9 @@ impl ChainSpec {
              */
             eth1_follow_distance: 1_024,
             seconds_per_eth1_block: 14,
+            deposit_contract_address: "1234567890123456789012345678901234567890"
+                .parse()
+                .expect("chain spec deposit contract address"),
 
             /*
              * Network specific
@@ -449,108 +446,132 @@ mod tests {
 #[serde(default)]
 pub struct YamlConfig {
     // ChainSpec
+    #[serde(with = "serde_utils::quoted_u64")]
     far_future_epoch: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     base_rewards_per_epoch: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     deposit_contract_tree_depth: u64,
-    max_committees_per_slot: usize,
-    target_committee_size: usize,
+    #[serde(with = "serde_utils::quoted_u64")]
+    max_committees_per_slot: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
+    target_committee_size: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     min_per_epoch_churn_limit: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     churn_limit_quotient: u64,
+    #[serde(with = "serde_utils::quoted_u8")]
     shuffle_round_count: u8,
+    #[serde(with = "serde_utils::quoted_u64")]
     min_genesis_active_validator_count: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     min_genesis_time: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     genesis_delay: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     min_deposit_amount: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     max_effective_balance: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     ejection_balance: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     effective_balance_increment: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     hysteresis_quotient: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     hysteresis_downward_multiplier: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     hysteresis_upward_multiplier: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     genesis_slot: u64,
-    #[serde(
-        serialize_with = "fork_to_hex_str",
-        deserialize_with = "fork_from_hex_str"
-    )]
+    #[serde(with = "serde_utils::bytes_4_hex")]
     genesis_fork_version: [u8; 4],
-    #[serde(deserialize_with = "u8_from_hex_str", serialize_with = "u8_to_hex_str")]
+    #[serde(with = "serde_utils::u8_hex")]
     bls_withdrawal_prefix: u8,
+    #[serde(with = "serde_utils::quoted_u64")]
     seconds_per_slot: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     min_attestation_inclusion_delay: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     min_seed_lookahead: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     max_seed_lookahead: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     min_epochs_to_inactivity_penalty: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     min_validator_withdrawability_delay: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     shard_committee_period: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     base_reward_factor: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     whistleblower_reward_quotient: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     proposer_reward_quotient: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     inactivity_penalty_quotient: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     min_slashing_penalty_quotient: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     safe_slots_to_update_justified: u64,
 
-    #[serde(
-        deserialize_with = "u32_from_hex_str",
-        serialize_with = "u32_to_hex_str"
-    )]
+    #[serde(with = "serde_utils::u32_hex")]
     domain_beacon_proposer: u32,
-    #[serde(
-        deserialize_with = "u32_from_hex_str",
-        serialize_with = "u32_to_hex_str"
-    )]
+    #[serde(with = "serde_utils::u32_hex")]
     domain_beacon_attester: u32,
-    #[serde(
-        deserialize_with = "u32_from_hex_str",
-        serialize_with = "u32_to_hex_str"
-    )]
+    #[serde(with = "serde_utils::u32_hex")]
     domain_randao: u32,
-    #[serde(
-        deserialize_with = "u32_from_hex_str",
-        serialize_with = "u32_to_hex_str"
-    )]
+    #[serde(with = "serde_utils::u32_hex")]
     domain_deposit: u32,
-    #[serde(
-        deserialize_with = "u32_from_hex_str",
-        serialize_with = "u32_to_hex_str"
-    )]
+    #[serde(with = "serde_utils::u32_hex")]
     domain_voluntary_exit: u32,
-    #[serde(
-        deserialize_with = "u32_from_hex_str",
-        serialize_with = "u32_to_hex_str"
-    )]
+    #[serde(with = "serde_utils::u32_hex")]
     domain_selection_proof: u32,
-    #[serde(
-        deserialize_with = "u32_from_hex_str",
-        serialize_with = "u32_to_hex_str"
-    )]
+    #[serde(with = "serde_utils::u32_hex")]
     domain_aggregate_and_proof: u32,
-    #[serde(
-        deserialize_with = "u32_from_hex_str",
-        serialize_with = "u32_to_hex_str"
-    )]
     // EthSpec
+    #[serde(with = "serde_utils::u32_hex")]
     justification_bits_length: u32,
+    #[serde(with = "serde_utils::quoted_u32")]
     max_validators_per_committee: u32,
     genesis_epoch: Epoch,
+    #[serde(with = "serde_utils::quoted_u64")]
     slots_per_epoch: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     epochs_per_eth1_voting_period: u64,
-    slots_per_historical_root: usize,
-    epochs_per_historical_vector: usize,
-    epochs_per_slashings_vector: usize,
+    #[serde(with = "serde_utils::quoted_u64")]
+    slots_per_historical_root: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
+    epochs_per_historical_vector: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
+    epochs_per_slashings_vector: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     historical_roots_limit: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     validator_registry_limit: u64,
+    #[serde(with = "serde_utils::quoted_u32")]
     max_proposer_slashings: u32,
+    #[serde(with = "serde_utils::quoted_u32")]
     max_attester_slashings: u32,
+    #[serde(with = "serde_utils::quoted_u32")]
     max_attestations: u32,
+    #[serde(with = "serde_utils::quoted_u32")]
     max_deposits: u32,
+    #[serde(with = "serde_utils::quoted_u32")]
     max_voluntary_exits: u32,
 
     // Validator
+    #[serde(with = "serde_utils::quoted_u64")]
     eth1_follow_distance: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     target_aggregators_per_committee: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     random_subnets_per_validator: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     epochs_per_random_subnet_subscription: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
     seconds_per_eth1_block: u64,
+    deposit_contract_address: Address,
 }
 
 impl Default for YamlConfig {
@@ -569,8 +590,8 @@ impl YamlConfig {
             far_future_epoch: spec.far_future_epoch.into(),
             base_rewards_per_epoch: spec.base_rewards_per_epoch,
             deposit_contract_tree_depth: spec.deposit_contract_tree_depth,
-            max_committees_per_slot: spec.max_committees_per_slot,
-            target_committee_size: spec.target_committee_size,
+            max_committees_per_slot: spec.max_committees_per_slot as u64,
+            target_committee_size: spec.target_committee_size as u64,
             min_per_epoch_churn_limit: spec.min_per_epoch_churn_limit,
             churn_limit_quotient: spec.churn_limit_quotient,
             shuffle_round_count: spec.shuffle_round_count,
@@ -614,9 +635,9 @@ impl YamlConfig {
             genesis_epoch: T::genesis_epoch(),
             slots_per_epoch: T::slots_per_epoch(),
             epochs_per_eth1_voting_period: T::EpochsPerEth1VotingPeriod::to_u64(),
-            slots_per_historical_root: T::slots_per_historical_root(),
-            epochs_per_historical_vector: T::epochs_per_historical_vector(),
-            epochs_per_slashings_vector: T::EpochsPerSlashingsVector::to_usize(),
+            slots_per_historical_root: T::slots_per_historical_root() as u64,
+            epochs_per_historical_vector: T::epochs_per_historical_vector() as u64,
+            epochs_per_slashings_vector: T::EpochsPerSlashingsVector::to_u64(),
             historical_roots_limit: T::HistoricalRootsLimit::to_u64(),
             validator_registry_limit: T::ValidatorRegistryLimit::to_u64(),
             max_proposer_slashings: T::MaxProposerSlashings::to_u32(),
@@ -631,6 +652,7 @@ impl YamlConfig {
             random_subnets_per_validator: spec.random_subnets_per_validator,
             epochs_per_random_subnet_subscription: spec.epochs_per_random_subnet_subscription,
             seconds_per_eth1_block: spec.seconds_per_eth1_block,
+            deposit_contract_address: spec.deposit_contract_address,
         }
     }
 
@@ -648,9 +670,9 @@ impl YamlConfig {
             || self.genesis_epoch != T::genesis_epoch()
             || self.slots_per_epoch != T::slots_per_epoch()
             || self.epochs_per_eth1_voting_period != T::EpochsPerEth1VotingPeriod::to_u64()
-            || self.slots_per_historical_root != T::slots_per_historical_root()
-            || self.epochs_per_historical_vector != T::epochs_per_historical_vector()
-            || self.epochs_per_slashings_vector != T::EpochsPerSlashingsVector::to_usize()
+            || self.slots_per_historical_root as usize != T::slots_per_historical_root()
+            || self.epochs_per_historical_vector as usize != T::epochs_per_historical_vector()
+            || self.epochs_per_slashings_vector != T::EpochsPerSlashingsVector::to_u64()
             || self.historical_roots_limit != T::HistoricalRootsLimit::to_u64()
             || self.validator_registry_limit != T::ValidatorRegistryLimit::to_u64()
             || self.max_proposer_slashings != T::MaxProposerSlashings::to_u32()
@@ -667,7 +689,7 @@ impl YamlConfig {
             far_future_epoch: Epoch::from(self.far_future_epoch),
             base_rewards_per_epoch: self.base_rewards_per_epoch,
             deposit_contract_tree_depth: self.deposit_contract_tree_depth,
-            target_committee_size: self.target_committee_size,
+            target_committee_size: self.target_committee_size as usize,
             min_per_epoch_churn_limit: self.min_per_epoch_churn_limit,
             churn_limit_quotient: self.churn_limit_quotient,
             shuffle_round_count: self.shuffle_round_count,
@@ -705,6 +727,8 @@ impl YamlConfig {
             boot_nodes: chain_spec.boot_nodes.clone(),
             genesis_fork_version: self.genesis_fork_version,
             eth1_follow_distance: self.eth1_follow_distance,
+            seconds_per_eth1_block: self.seconds_per_eth1_block,
+            deposit_contract_address: self.deposit_contract_address,
             ..*chain_spec
         })
     }

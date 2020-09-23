@@ -63,10 +63,11 @@ pub struct Config {
     pub genesis: ClientGenesis,
     pub store: store::StoreConfig,
     pub network: network::NetworkConfig,
-    pub rest_api: rest_api::Config,
     pub chain: beacon_chain::ChainConfig,
     pub websocket_server: websocket_server::Config,
     pub eth1: eth1::Config,
+    pub http_api: http_api::Config,
+    pub http_metrics: http_metrics::Config,
 }
 
 impl Default for Config {
@@ -80,7 +81,6 @@ impl Default for Config {
             store: <_>::default(),
             network: NetworkConfig::default(),
             chain: <_>::default(),
-            rest_api: <_>::default(),
             websocket_server: <_>::default(),
             spec_constants: TESTNET_SPEC_CONSTANTS.into(),
             dummy_eth1_backend: false,
@@ -88,6 +88,8 @@ impl Default for Config {
             eth1: <_>::default(),
             disabled_forks: Vec::new(),
             graffiti: Graffiti::default(),
+            http_api: <_>::default(),
+            http_metrics: <_>::default(),
         }
     }
 }
