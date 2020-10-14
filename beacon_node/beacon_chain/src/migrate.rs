@@ -242,6 +242,10 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
         mut persist_head: PersistedBeaconChain,
         log: &Logger,
     ) -> Result<PruningOutcome, BeaconChainError> {
+        // Start pruning after importing the canonical head block and before importing
+        // the fork block.
+        let sx = hiatus::step(4);
+
         let old_finalized_slot = old_finalized_checkpoint
             .epoch
             .start_slot(E::slots_per_epoch());
@@ -408,6 +412,10 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
             }
         }
 
+        // Wait for the fork block to be imported.
+        drop(sx);
+        let sx = hiatus::step(6);
+
         // Update the head tracker before the database, so that we maintain the invariant
         // that a block present in the head tracker is present in the database.
         // See https://github.com/sigp/lighthouse/issues/1557
@@ -427,6 +435,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
             head_tracker_lock.remove(&head_hash);
         }
         drop(head_tracker_lock);
+        drop(sx);
 
         let batch: Vec<StoreOp<E>> = abandoned_blocks
             .into_iter()

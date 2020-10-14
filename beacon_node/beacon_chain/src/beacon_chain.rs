@@ -1513,6 +1513,18 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         let current_slot = self.slot()?;
         let mut ops = fully_verified_block.intermediate_states;
 
+        let sx = if hiatus::is_enabled() {
+            if fully_verified_block.parent_block.slot() == 88 {
+                // Fork chain
+                Some(hiatus::step(1))
+            } else {
+                // Canonical chain
+                Some(hiatus::step(2))
+            }
+        } else {
+            None
+        };
+
         let attestation_observation_timer =
             metrics::start_timer(&metrics::BLOCK_PROCESSING_ATTESTATION_OBSERVATION);
 
@@ -1670,8 +1682,25 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 );
             });
 
+        // Differentiate canonical block from fork by parent block slot
+        drop(sx);
+        let sx = if hiatus::is_enabled() {
+            assert_eq!(slot, 96, "hullo");
+            if fully_verified_block.parent_block.slot() == 88 {
+                // Fork chain
+                Some(hiatus::step(5))
+            } else {
+                // Canonical chain
+                Some(hiatus::step(3))
+            }
+        } else {
+            None
+        };
+
         self.head_tracker
             .register_block(block_root, parent_root, slot);
+
+        drop(sx);
 
         metrics::stop_timer(db_write_timer);
 
