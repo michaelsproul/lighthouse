@@ -128,6 +128,7 @@ fn main() {
         .subcommand(validator_client::cli_app())
         .subcommand(account_manager::cli_app())
         .subcommand(remote_signer::cli_app())
+        .subcommand(db_cli::cli_app())
         .get_matches();
 
     // Debugging output for libp2p and external crates.
@@ -331,6 +332,18 @@ fn run<E: EthSpec>(
                     .shutdown_sender()
                     .try_send("Failed to start remote signer");
             }
+        }
+        ("database", Some(matches)) => {
+            let context = environment.core_context();
+            let spec = &context.eth2_config().spec;
+            if let Err(e) = db_cli::run::<E>(matches, spec, log.clone()) {
+                crit!(log, "Error occurred"; "error" => e);
+            }
+            let _ = environment
+                .core_context()
+                .executor
+                .shutdown_sender()
+                .try_send("Complete");
         }
         _ => {
             crit!(log, "No subcommand supplied. See --help .");

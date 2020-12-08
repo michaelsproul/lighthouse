@@ -1,0 +1,13 @@
+[package]
+name = "db_cli"
+version = "0.1.0"
+authors = ["Michael Sproul <michael@sigmaprime.io>"]
+edition = "2018"
+
+[dependencies]
+clap = "2.33.3"
+clap_utils = { path = "../../common/clap_utils" }
+directory = { path = "../../common/directory" }
+store = { path = "../store" }
+types = { path = "../../consensus/types" }
+slog = "2.5.2"

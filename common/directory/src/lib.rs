@@ -59,6 +59,24 @@ pub fn parse_path_or_default_with_flag(
     )
 }
 
+/// Read the `--datadir` flag.
+///
+/// If it's not present, try and find the home directory (`~`) and push the default data
+/// directory and the testnet name onto it.
+pub fn get_data_dir(cli_args: &ArgMatches) -> PathBuf {
+    cli_args
+        .value_of("datadir")
+        .map(|path| PathBuf::from(path).join(DEFAULT_BEACON_NODE_DIR))
+        .or_else(|| {
+            dirs::home_dir().map(|home| {
+                home.join(DEFAULT_ROOT_DIR)
+                    .join(get_testnet_name(cli_args))
+                    .join(DEFAULT_BEACON_NODE_DIR)
+            })
+        })
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 /// Get the approximate size of a directory and its contents.
 ///
 /// Will skip unreadable files, and files. Not 100% accurate if files are being created and deleted
