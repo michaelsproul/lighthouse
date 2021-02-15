@@ -7,6 +7,8 @@ use types::{EthSpec, MinimalEthSpec};
 pub const DEFAULT_SLOTS_PER_RESTORE_POINT: u64 = 2048;
 pub const DEFAULT_BLOCK_CACHE_SIZE: usize = 5;
 
+const SLOTS_PER_RESTORE_POINT_NONE: u64 = 0;
+
 /// Database configuration parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreConfig {
@@ -21,18 +23,15 @@ pub struct StoreConfig {
 }
 
 /// Variant of `StoreConfig` that gets written to disk. Contains immutable configuration params.
-// FIXME(sproul): implement migration
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct OnDiskStoreConfig {
-    pub slots_per_restore_point: Option<u64>,
+    /// Use 0 to represent `None`.
+    pub slots_per_restore_point: u64,
 }
 
 #[derive(Debug, Clone)]
 pub enum StoreConfigError {
-    MismatchedSlotsPerRestorePoint {
-        config: Option<u64>,
-        on_disk: Option<u64>,
-    },
+    MismatchedSlotsPerRestorePoint { config: Option<u64>, on_disk: u64 },
 }
 
 impl Default for StoreConfig {
@@ -50,7 +49,9 @@ impl Default for StoreConfig {
 impl StoreConfig {
     pub fn as_disk_config(&self) -> OnDiskStoreConfig {
         OnDiskStoreConfig {
-            slots_per_restore_point: self.slots_per_restore_point,
+            slots_per_restore_point: self
+                .slots_per_restore_point
+                .unwrap_or(SLOTS_PER_RESTORE_POINT_NONE),
         }
     }
 
@@ -58,7 +59,8 @@ impl StoreConfig {
         &self,
         on_disk_config: &OnDiskStoreConfig,
     ) -> Result<(), StoreConfigError> {
-        if self.slots_per_restore_point != on_disk_config.slots_per_restore_point {
+        let current_config = self.as_disk_config();
+        if current_config.slots_per_restore_point != on_disk_config.slots_per_restore_point {
             return Err(StoreConfigError::MismatchedSlotsPerRestorePoint {
                 config: self.slots_per_restore_point,
                 on_disk: on_disk_config.slots_per_restore_point,
