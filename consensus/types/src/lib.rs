@@ -52,6 +52,7 @@ pub mod voluntary_exit;
 pub mod slot_epoch_macros;
 pub mod slot_epoch;
 pub mod subnet_id;
+pub mod sync_committee;
 mod tree_hash_impls;
 
 #[cfg(feature = "sqlite")]
@@ -65,7 +66,6 @@ pub use crate::attestation_data::AttestationData;
 pub use crate::attestation_duty::AttestationDuty;
 pub use crate::attester_slashing::AttesterSlashing;
 pub use crate::beacon_block::BeaconBlock;
-pub use crate::beacon_block_body::BeaconBlockBody;
 pub use crate::beacon_block_header::BeaconBlockHeader;
 pub use crate::beacon_committee::{BeaconCommittee, OwnedBeaconCommittee};
 pub use crate::beacon_state::{BeaconTreeHashCache, Error as BeaconStateError, *};

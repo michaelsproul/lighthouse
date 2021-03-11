@@ -17,6 +17,7 @@ pub enum Domain {
     VoluntaryExit,
     SelectionProof,
     AggregateAndProof,
+    SyncCommittee,
 }
 
 /// Holds all the "constants" for a BeaconChain.
@@ -109,6 +110,15 @@ pub struct ChainSpec {
     pub deposit_contract_address: Address,
 
     /*
+     * Altair hard fork params
+     */
+    pub hf1_inactivity_penalty_quotient: u64,
+    pub hf1_min_slashing_penalty_quotient: u64,
+    pub hf1_proportional_slashing_multiplier: u64,
+    pub epochs_per_sync_committee_period: Epoch,
+    domain_sync_committee: u32,
+
+    /*
      * Networking
      */
     pub boot_nodes: Vec<String>,
@@ -157,6 +167,7 @@ impl ChainSpec {
             Domain::VoluntaryExit => self.domain_voluntary_exit,
             Domain::SelectionProof => self.domain_selection_proof,
             Domain::AggregateAndProof => self.domain_aggregate_and_proof,
+            Domain::SyncCommittee => self.domain_sync_committee,
         }
     }
 
@@ -323,6 +334,15 @@ impl ChainSpec {
             deposit_contract_address: "00000000219ab540356cbb839cbe05303d7705fa"
                 .parse()
                 .expect("chain spec deposit contract address"),
+
+            /*
+             * Altair hard fork params
+             */
+            hf1_inactivity_penalty_quotient: 3 * u64::pow(2, 24),
+            hf1_min_slashing_penalty_quotient: u64::pow(2, 6),
+            hf1_proportional_slashing_multiplier: 2,
+            epochs_per_sync_committee_period: Epoch::new(256),
+            domain_sync_committee: 7,
 
             /*
              * Network specific
@@ -519,6 +539,18 @@ pub struct YamlConfig {
     #[serde(with = "serde_utils::quoted_u64")]
     safe_slots_to_update_justified: u64,
 
+    // ChainSpec (Altair)
+    /* FIXME(altair): parse from separate file
+    #[serde(with = "serde_utils::quoted_u64")]
+    hf1_inactivity_penalty_quotient: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
+    hf1_min_slashing_penalty_quotient: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
+    hf1_proportional_slashing_multiplier: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
+    epochs_per_sync_committee_period: u64,
+    domain_sync_committee: u32,
+    */
     #[serde(with = "serde_utils::u32_hex")]
     domain_beacon_proposer: u32,
     #[serde(with = "serde_utils::u32_hex")]
@@ -533,6 +565,7 @@ pub struct YamlConfig {
     domain_selection_proof: u32,
     #[serde(with = "serde_utils::u32_hex")]
     domain_aggregate_and_proof: u32,
+
     // EthSpec
     #[serde(with = "serde_utils::quoted_u32")]
     max_validators_per_committee: u32,
@@ -773,6 +806,15 @@ impl YamlConfig {
             domain_voluntary_exit: self.domain_voluntary_exit,
             domain_selection_proof: self.domain_selection_proof,
             domain_aggregate_and_proof: self.domain_aggregate_and_proof,
+            /*
+             * Altair params
+             * FIXME(altair): hardcoded
+             */
+            hf1_inactivity_penalty_quotient: chain_spec.hf1_inactivity_penalty_quotient,
+            hf1_min_slashing_penalty_quotient: chain_spec.hf1_min_slashing_penalty_quotient,
+            hf1_proportional_slashing_multiplier: chain_spec.hf1_proportional_slashing_multiplier,
+            epochs_per_sync_committee_period: chain_spec.epochs_per_sync_committee_period,
+            domain_sync_committee: chain_spec.domain_sync_committee,
             /*
              * Lighthouse-specific parameters
              *

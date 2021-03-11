@@ -79,6 +79,11 @@ pub trait EthSpec: 'static + Default + Sync + Send + Clone + Debug + PartialEq +
     type MaxDeposits: Unsigned + Clone + Sync + Send + Debug + PartialEq;
     type MaxVoluntaryExits: Unsigned + Clone + Sync + Send + Debug + PartialEq;
     /*
+     * New in Altair
+     */
+    type SyncCommitteeSize: Unsigned + Clone + Sync + Send + Debug + PartialEq;
+    type SyncSubcommitteeSize: Unsigned + Clone + Sync + Send + Debug + PartialEq;
+    /*
      * Derived values (set these CAREFULLY)
      */
     /// The length of the `{previous,current}_epoch_attestations` lists.
@@ -91,6 +96,10 @@ pub trait EthSpec: 'static + Default + Sync + Send + Clone + Debug + PartialEq +
     ///
     /// Must be set to `EpochsPerEth1VotingPeriod * SlotsPerEpoch`
     type SlotsPerEth1VotingPeriod: Unsigned + Clone + Sync + Send + Debug + PartialEq;
+    /// The length of `pubkey_aggregates`.
+    ///
+    /// Must be set to `SyncCommitteeSize / SyncSubcommitteeSize`.
+    type SyncAggregateSize: Unsigned + Clone + Sync + Send + Debug + PartialEq;
 
     fn default_spec() -> ChainSpec;
 
@@ -205,6 +214,9 @@ impl EthSpec for MainnetEthSpec {
     type MaxAttestations = U128;
     type MaxDeposits = U16;
     type MaxVoluntaryExits = U16;
+    type SyncCommitteeSize = U1024;
+    type SyncSubcommitteeSize = U64;
+    type SyncAggregateSize = U16; // 1024 committee size / 64 subcommittee size
     type MaxPendingAttestations = U4096; // 128 max attestations * 32 slots per epoch
     type SlotsPerEth1VotingPeriod = U2048; // 64 epochs * 32 slots per epoch
 
@@ -232,6 +244,9 @@ impl EthSpec for MinimalEthSpec {
     type SlotsPerHistoricalRoot = U64;
     type EpochsPerHistoricalVector = U64;
     type EpochsPerSlashingsVector = U64;
+    type SyncCommitteeSize = U32;
+    type SyncSubcommitteeSize = U16;
+    type SyncAggregateSize = U2; // 32 committee size / 16 subcommittee size
     type MaxPendingAttestations = U1024; // 128 max attestations * 8 slots per epoch
     type SlotsPerEth1VotingPeriod = U32; // 4 epochs * 8 slots per epoch
 
@@ -265,6 +280,7 @@ pub type MinimalBeaconState = BeaconState<MinimalEthSpec>;
 ///
 /// This struct only needs to exist whilst we provide support for "legacy" testnets prior to v1.0.0
 /// (e.g., Medalla, Pyrmont, Spadina, Altona, etc.).
+/// FIXME(altair): DELETE
 #[cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))]
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct V012LegacyEthSpec;
@@ -289,7 +305,10 @@ impl EthSpec for V012LegacyEthSpec {
         MaxAttesterSlashings,
         MaxAttestations,
         MaxDeposits,
-        MaxVoluntaryExits
+        MaxVoluntaryExits,
+        SyncCommitteeSize,
+        SyncSubcommitteeSize,
+        SyncAggregateSize
     });
 
     fn default_spec() -> ChainSpec {

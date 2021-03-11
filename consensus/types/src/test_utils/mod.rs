@@ -2,11 +2,12 @@
 
 #[macro_use]
 mod macros;
-mod builders;
+// FIXME(altair): fuck these builders, omg
+// mod builders;
 mod generate_deterministic_keypairs;
 mod test_random;
 
-pub use builders::*;
+// pub use builders::*;
 pub use generate_deterministic_keypairs::generate_deterministic_keypair;
 pub use generate_deterministic_keypairs::generate_deterministic_keypairs;
 pub use generate_deterministic_keypairs::load_keypairs_from_yaml;

@@ -1,26 +1,62 @@
-use crate::test_utils::TestRandom;
+use crate::beacon_block_body::{BeaconBlockBodyAltair, BeaconBlockBodyBase};
 use crate::*;
 use bls::Signature;
-
 use serde_derive::{Deserialize, Serialize};
 use ssz_derive::{Decode, Encode};
-use test_random_derive::TestRandom;
+use superstruct::superstruct;
 use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
 /// A block of the `BeaconChain`.
-///
-/// Spec v0.12.1
-#[cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))]
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Encode, Decode, TreeHash, TestRandom)]
-#[serde(bound = "T: EthSpec")]
+// #[cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))]
+#[superstruct(
+    variants(Base, Altair),
+    derive_all(
+        Debug,
+        PartialEq,
+        Clone,
+        Serialize,
+        Deserialize,
+        Encode,
+        Decode,
+        TreeHash
+    )
+)]
+// #[serde(bound = "T: EthSpec")]
 pub struct BeaconBlock<T: EthSpec> {
     pub slot: Slot,
     #[serde(with = "serde_utils::quoted_u64")]
     pub proposer_index: u64,
     pub parent_root: Hash256,
     pub state_root: Hash256,
-    pub body: BeaconBlockBody<T>,
+    #[superstruct(only(Base))]
+    pub body: BeaconBlockBodyBase<T>,
+    #[superstruct(only(Altair))]
+    pub body: BeaconBlockBodyAltair<T>,
+}
+
+// FIXME(altair): test random
+
+// TODO(altair): abstract this into a "transparent" mode for tree_hash_derive
+impl<T: EthSpec> TreeHash for BeaconBlock<T> {
+    fn tree_hash_type() -> tree_hash::TreeHashType {
+        tree_hash::TreeHashType::Container
+    }
+
+    fn tree_hash_packed_encoding(&self) -> Vec<u8> {
+        unreachable!("Enum should never be packed.")
+    }
+
+    fn tree_hash_packing_factor() -> usize {
+        unreachable!("Enum should never be packed.")
+    }
+
+    fn tree_hash_root(&self) -> tree_hash::Hash256 {
+        match self {
+            BeaconBlock::Base(block) => block.tree_hash_root(),
+            BeaconBlock::Altair(block) => block.tree_hash_root(),
+        }
+    }
 }
 
 impl<T: EthSpec> SignedRoot for BeaconBlock<T> {}
@@ -30,12 +66,12 @@ impl<T: EthSpec> BeaconBlock<T> {
     ///
     /// Spec v0.12.1
     pub fn empty(spec: &ChainSpec) -> Self {
-        BeaconBlock {
+        Self::Base(BeaconBlockBase {
             slot: spec.genesis_slot,
             proposer_index: 0,
             parent_root: Hash256::zero(),
             state_root: Hash256::zero(),
-            body: BeaconBlockBody {
+            body: BeaconBlockBodyBase {
                 randao_reveal: Signature::empty(),
                 eth1_data: Eth1Data {
                     deposit_root: Hash256::zero(),
@@ -49,9 +85,10 @@ impl<T: EthSpec> BeaconBlock<T> {
                 deposits: VariableList::empty(),
                 voluntary_exits: VariableList::empty(),
             },
-        }
+        })
     }
 
+    /* FIXME(altair): re-enable
     /// Return a block where the block has the max possible operations.
     pub fn full(spec: &ChainSpec) -> BeaconBlock<T> {
         let header = BeaconBlockHeader {
@@ -145,6 +182,7 @@ impl<T: EthSpec> BeaconBlock<T> {
         }
         block
     }
+    */
 
     /// Returns the epoch corresponding to `self.slot`.
     pub fn epoch(&self) -> Epoch {
@@ -172,7 +210,15 @@ impl<T: EthSpec> BeaconBlock<T> {
             proposer_index: self.proposer_index,
             parent_root: self.parent_root,
             state_root: self.state_root,
-            body_root: Hash256::from_slice(&self.body.tree_hash_root()[..]),
+            body_root: self.body_root(),
+        }
+    }
+
+    /// Return the tree hash root of the block's body.
+    pub fn body_root(&self) -> Hash256 {
+        match self {
+            BeaconBlock::Base(block) => block.body.tree_hash_root(),
+            BeaconBlock::Altair(block) => block.body.tree_hash_root(),
         }
     }
 
