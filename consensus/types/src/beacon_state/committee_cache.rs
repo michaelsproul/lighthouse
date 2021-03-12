@@ -9,7 +9,8 @@ use ssz_derive::{Decode, Encode};
 use std::ops::Range;
 use swap_or_not_shuffle::shuffle_list;
 
-mod tests;
+// FIXME(altair): re-enable
+// mod tests;
 
 /// Computes and stores the shuffling for an epoch. Provides various getters to allow callers to
 /// read the committees for the given epoch.

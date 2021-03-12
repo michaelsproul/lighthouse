@@ -63,7 +63,7 @@ impl<E: EthSpec> SignedBeaconBlock<E> {
         spec: &ChainSpec,
     ) -> bool {
         let domain = spec.get_domain(
-            self.message.slot.epoch(E::slots_per_epoch()),
+            self.message.slot().epoch(E::slots_per_epoch()),
             Domain::BeaconProposer,
             fork,
             genesis_validators_root,
@@ -92,24 +92,24 @@ impl<E: EthSpec> SignedBeaconBlock<E> {
 
     /// Convenience accessor for the block's slot.
     pub fn slot(&self) -> Slot {
-        self.message.slot
+        self.message.slot()
     }
 
     /// Convenience accessor for the block's parent root.
     pub fn parent_root(&self) -> Hash256 {
-        self.message.parent_root
+        self.message.parent_root()
     }
 
     /// Convenience accessor for the block's state root.
     pub fn state_root(&self) -> Hash256 {
-        self.message.state_root
+        self.message.state_root()
     }
 
     /// Returns the `tree_hash_root` of the block.
     ///
     /// Spec v0.12.1
     pub fn canonical_root(&self) -> Hash256 {
-        Hash256::from_slice(&self.message.tree_hash_root()[..])
+        self.message.tree_hash_root()
     }
 }
 

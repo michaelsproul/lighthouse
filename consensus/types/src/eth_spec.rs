@@ -11,7 +11,6 @@ use std::str::FromStr;
 
 const MAINNET: &str = "mainnet";
 const MINIMAL: &str = "minimal";
-const LEGACY: &str = "v0.12-legacy";
 
 /// Used to identify one of the `EthSpec` instances defined here.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -19,7 +18,6 @@ const LEGACY: &str = "v0.12-legacy";
 pub enum EthSpecId {
     Mainnet,
     Minimal,
-    V012Legacy,
 }
 
 impl FromStr for EthSpecId {
@@ -29,7 +27,6 @@ impl FromStr for EthSpecId {
         match s {
             MAINNET => Ok(EthSpecId::Mainnet),
             MINIMAL => Ok(EthSpecId::Minimal),
-            LEGACY => Ok(EthSpecId::V012Legacy),
             _ => Err(format!("Unknown eth spec: {}", s)),
         }
     }
@@ -40,7 +37,6 @@ impl fmt::Display for EthSpecId {
         let s = match self {
             EthSpecId::Mainnet => MAINNET,
             EthSpecId::Minimal => MINIMAL,
-            EthSpecId::V012Legacy => LEGACY,
         };
         write!(f, "{}", s)
     }
@@ -191,8 +187,6 @@ macro_rules! params_from_eth_spec {
 }
 
 /// Ethereum Foundation specifications.
-///
-/// Spec v0.12.1
 #[cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))]
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct MainnetEthSpec;
@@ -232,8 +226,6 @@ impl EthSpec for MainnetEthSpec {
 pub type FoundationBeaconState = BeaconState<MainnetEthSpec>;
 
 /// Ethereum Foundation minimal spec, as defined in the eth2.0-specs repo.
-///
-/// Spec v0.12.1
 #[cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))]
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct MinimalEthSpec;
@@ -274,48 +266,3 @@ impl EthSpec for MinimalEthSpec {
 }
 
 pub type MinimalBeaconState = BeaconState<MinimalEthSpec>;
-
-/// Suits the `v0.12.3` version of the eth2 spec:
-/// https://github.com/ethereum/eth2.0-specs/blob/v0.12.3/configs/mainnet/phase0.yaml
-///
-/// This struct only needs to exist whilst we provide support for "legacy" testnets prior to v1.0.0
-/// (e.g., Medalla, Pyrmont, Spadina, Altona, etc.).
-/// FIXME(altair): DELETE
-#[cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))]
-#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
-pub struct V012LegacyEthSpec;
-
-impl EthSpec for V012LegacyEthSpec {
-    type EpochsPerEth1VotingPeriod = U32;
-    type SlotsPerEth1VotingPeriod = U1024; // 32 epochs * 32 slots per epoch
-
-    params_from_eth_spec!(MainnetEthSpec {
-        SlotsPerEpoch,
-        SlotsPerHistoricalRoot,
-        EpochsPerHistoricalVector,
-        EpochsPerSlashingsVector,
-        MaxPendingAttestations,
-        JustificationBitsLength,
-        SubnetBitfieldLength,
-        MaxValidatorsPerCommittee,
-        GenesisEpoch,
-        HistoricalRootsLimit,
-        ValidatorRegistryLimit,
-        MaxProposerSlashings,
-        MaxAttesterSlashings,
-        MaxAttestations,
-        MaxDeposits,
-        MaxVoluntaryExits,
-        SyncCommitteeSize,
-        SyncSubcommitteeSize,
-        SyncAggregateSize
-    });
-
-    fn default_spec() -> ChainSpec {
-        ChainSpec::v012_legacy()
-    }
-
-    fn spec_name() -> EthSpecId {
-        EthSpecId::V012Legacy
-    }
-}

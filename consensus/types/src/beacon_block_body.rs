@@ -1,6 +1,5 @@
 use crate::test_utils::TestRandom;
 use crate::*;
-
 use serde_derive::{Deserialize, Serialize};
 use ssz_derive::{Decode, Encode};
 use ssz_types::VariableList;
@@ -13,18 +12,23 @@ use tree_hash_derive::TreeHash;
 /// This *superstruct* abstracts over the hard-fork.
 #[superstruct(
     variants(Base, Altair),
-    derive_all(
-        Debug,
-        PartialEq,
-        Clone,
-        Serialize,
-        Deserialize,
-        Encode,
-        Decode,
-        TreeHash
+    variant_attributes(
+        derive(
+            Debug,
+            PartialEq,
+            Clone,
+            Serialize,
+            Deserialize,
+            Encode,
+            Decode,
+            TreeHash,
+            TestRandom
+        ),
+        serde(bound = "T: EthSpec")
     )
 )]
-// #[serde(bound = "T: EthSpec")]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, TestRandom)]
+#[serde(bound = "T: EthSpec")]
 pub struct BeaconBlockBody<T: EthSpec> {
     pub randao_reveal: Signature,
     pub eth1_data: Eth1Data,
@@ -42,9 +46,12 @@ pub struct BeaconBlockBody<T: EthSpec> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    ssz_and_tree_hash_tests!(BeaconBlockBody<MainnetEthSpec>);
-    ssz_and_tree_hash_tests!(BeaconBlockBodyBase<MainnetEthSpec>);
-    ssz_and_tree_hash_tests!(BeaconBlockBodyAltair<MainnetEthSpec>);
+    mod base {
+        use super::super::*;
+        ssz_and_tree_hash_tests!(BeaconBlockBodyBase<MainnetEthSpec>);
+    }
+    mod altair {
+        use super::super::*;
+        ssz_and_tree_hash_tests!(BeaconBlockBodyAltair<MainnetEthSpec>);
+    }
 }
