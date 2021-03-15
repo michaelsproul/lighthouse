@@ -2,7 +2,6 @@ use self::committee_cache::get_active_validator_indices;
 use self::exit_cache::ExitCache;
 use crate::test_utils::TestRandom;
 use crate::*;
-
 use cached_tree_hash::{CacheArena, CachedTreeHash};
 use compare_fields_derive::CompareFields;
 use eth2_hashing::hash;
@@ -15,6 +14,7 @@ use ssz_derive::{Decode, Encode};
 use ssz_types::{typenum::Unsigned, BitVector, FixedVector};
 use std::convert::TryInto;
 use std::fmt;
+use superstruct::superstruct;
 use swap_or_not_shuffle::compute_shuffled_index;
 use test_random_derive::TestRandom;
 use tree_hash::TreeHash;
@@ -137,30 +137,40 @@ impl From<BeaconStateHash> for Hash256 {
 }
 
 /// The state of the `BeaconChain` at some slot.
-///
-/// Spec v0.12.1
-#[derive(
-    Debug,
-    PartialEq,
-    Clone,
-    Serialize,
-    Deserialize,
-    TestRandom,
-    Encode,
-    Decode,
-    TreeHash,
-    CompareFields,
+#[superstruct(
+    variants(Base, Altair),
+    variant_attributes(
+        derive(
+            Debug,
+            PartialEq,
+            Clone,
+            Serialize,
+            Deserialize,
+            Encode,
+            Decode,
+            TreeHash,
+            TestRandom,
+            CompareFields,
+        ),
+        serde(bound = "T: EthSpec")
+    )
 )]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Encode, TreeHash)]
+#[serde(untagged)]
 #[serde(bound = "T: EthSpec")]
 pub struct BeaconState<T>
 where
     T: EthSpec,
 {
     // Versioning
+    #[superstruct(getter(copy))]
     #[serde(with = "serde_utils::quoted_u64")]
     pub genesis_time: u64,
+    #[superstruct(getter(copy))]
     pub genesis_validators_root: Hash256,
+    #[superstruct(getter(copy))]
     pub slot: Slot,
+    #[superstruct(getter(copy))]
     pub fork: Fork,
 
     // History
@@ -174,6 +184,7 @@ where
     // Ethereum 1.0 chain data
     pub eth1_data: Eth1Data,
     pub eth1_data_votes: VariableList<Eth1Data, T::SlotsPerEth1VotingPeriod>,
+    #[superstruct(getter(copy))]
     #[serde(with = "serde_utils::quoted_u64")]
     pub eth1_deposit_index: u64,
 
@@ -191,9 +202,17 @@ where
     #[serde(with = "ssz_types::serde_utils::quoted_u64_fixed_vec")]
     pub slashings: FixedVector<u64, T::EpochsPerSlashingsVector>,
 
-    // Attestations
+    // Attestations (genesis fork only)
+    #[superstruct(only(Base))]
     pub previous_epoch_attestations: VariableList<PendingAttestation<T>, T::MaxPendingAttestations>,
+    #[superstruct(only(Base))]
     pub current_epoch_attestations: VariableList<PendingAttestation<T>, T::MaxPendingAttestations>,
+
+    // Participation (Altair and later)
+    #[superstruct(only(Altair))]
+    pub previous_epoch_participation: VariableList<ParticipationFlags, T::ValidatorRegistryLimit>,
+    #[superstruct(only(Altair))]
+    pub current_epoch_participation: VariableList<ParticipationFlags, T::ValidatorRegistryLimit>,
 
     // Finality
     #[test_random(default)]
@@ -201,6 +220,16 @@ where
     pub previous_justified_checkpoint: Checkpoint,
     pub current_justified_checkpoint: Checkpoint,
     pub finalized_checkpoint: Checkpoint,
+
+    // Light-client sync committees
+    #[superstruct(only(Altair))]
+    pub current_sync_commmittee: SyncCommittee<T>,
+    #[superstruct(only(Altair))]
+    pub next_sync_committee: SyncCommittee<T>,
+
+    // Leak
+    #[superstruct(only(Altair))]
+    pub leak_scores: VariableList<u64, T::ValidatorRegistryLimit>,
 
     // Caching (not in the spec)
     #[serde(skip_serializing, skip_deserializing)]
@@ -233,10 +262,8 @@ impl<T: EthSpec> BeaconState<T> {
     /// Create a new BeaconState suitable for genesis.
     ///
     /// Not a complete genesis state, see `initialize_beacon_state_from_eth1`.
-    ///
-    /// Spec v0.12.1
     pub fn new(genesis_time: u64, eth1_data: Eth1Data, spec: &ChainSpec) -> Self {
-        BeaconState {
+        BeaconState::Base(BeaconStateBase {
             // Versioning
             genesis_time,
             genesis_validators_root: Hash256::zero(), // Set later.
@@ -287,7 +314,7 @@ impl<T: EthSpec> BeaconState<T> {
             pubkey_cache: PubkeyCache::default(),
             exit_cache: ExitCache::default(),
             tree_hash_cache: None,
-        }
+        })
     }
 
     /// Returns the `tree_hash_root` of the state.
@@ -299,8 +326,8 @@ impl<T: EthSpec> BeaconState<T> {
 
     pub fn historical_batch(&self) -> HistoricalBatch<T> {
         HistoricalBatch {
-            block_roots: self.block_roots.clone(),
-            state_roots: self.state_roots.clone(),
+            block_roots: self.block_roots().clone(),
+            state_roots: self.state_roots().clone(),
         }
     }
 
@@ -309,21 +336,17 @@ impl<T: EthSpec> BeaconState<T> {
     /// otherwise returns `None`.
     pub fn get_validator_index(&mut self, pubkey: &PublicKeyBytes) -> Result<Option<usize>, Error> {
         self.update_pubkey_cache()?;
-        Ok(self.pubkey_cache.get(pubkey))
+        Ok(self.pubkey_cache().get(pubkey))
     }
 
-    /// The epoch corresponding to `self.slot`.
-    ///
-    /// Spec v0.12.1
+    /// The epoch corresponding to `self.slot()`.
     pub fn current_epoch(&self) -> Epoch {
-        self.slot.epoch(T::slots_per_epoch())
+        self.slot().epoch(T::slots_per_epoch())
     }
 
     /// The epoch prior to `self.current_epoch()`.
     ///
     /// If the current epoch is the genesis epoch, the genesis_epoch is returned.
-    ///
-    /// Spec v0.12.1
     pub fn previous_epoch(&self) -> Epoch {
         let current_epoch = self.current_epoch();
         if current_epoch > T::genesis_epoch() {
@@ -377,8 +400,6 @@ impl<T: EthSpec> BeaconState<T> {
     /// Returns the active validator indices for the given epoch.
     ///
     /// Does not utilize the cache, performs a full iteration over the validator registry.
-    ///
-    /// Spec v0.12.1
     pub fn get_active_validator_indices(
         &self,
         epoch: Epoch,
@@ -387,7 +408,7 @@ impl<T: EthSpec> BeaconState<T> {
         if epoch >= self.compute_activation_exit_epoch(self.current_epoch(), spec)? {
             Err(BeaconStateError::EpochOutOfBounds)
         } else {
-            Ok(get_active_validator_indices(&self.validators, epoch))
+            Ok(get_active_validator_indices(self.validators(), epoch))
         }
     }
 
@@ -473,7 +494,7 @@ impl<T: EthSpec> BeaconState<T> {
                 let hash = hash(&preimage);
                 hash[i.safe_rem(32)?]
             };
-            let effective_balance = self.validators[candidate_index].effective_balance;
+            let effective_balance = self.validators()[candidate_index].effective_balance;
             if effective_balance.safe_mul(MAX_RANDOM_BYTE)?
                 >= spec
                     .max_effective_balance
@@ -564,12 +585,12 @@ impl<T: EthSpec> BeaconState<T> {
     ///
     /// Spec v0.12.1
     pub fn get_latest_block_root(&self, current_state_root: Hash256) -> Hash256 {
-        if self.latest_block_header.state_root.is_zero() {
-            let mut latest_block_header = self.latest_block_header.clone();
+        if self.latest_block_header().state_root.is_zero() {
+            let mut latest_block_header = self.latest_block_header().clone();
             latest_block_header.state_root = current_state_root;
             latest_block_header.canonical_root()
         } else {
-            self.latest_block_header.canonical_root()
+            self.latest_block_header().canonical_root()
         }
     }
 
@@ -577,8 +598,8 @@ impl<T: EthSpec> BeaconState<T> {
     ///
     /// Spec v0.12.1
     fn get_latest_block_roots_index(&self, slot: Slot) -> Result<usize, Error> {
-        if slot < self.slot && self.slot <= slot.safe_add(self.block_roots.len() as u64)? {
-            Ok(slot.as_usize().safe_rem(self.block_roots.len())?)
+        if slot < self.slot() && self.slot() <= slot.safe_add(self.block_roots().len() as u64)? {
+            Ok(slot.as_usize().safe_rem(self.block_roots().len())?)
         } else {
             Err(BeaconStateError::SlotOutOfBounds)
         }
@@ -589,33 +610,30 @@ impl<T: EthSpec> BeaconState<T> {
     /// Spec v0.12.1
     pub fn get_block_root(&self, slot: Slot) -> Result<&Hash256, BeaconStateError> {
         let i = self.get_latest_block_roots_index(slot)?;
-        Ok(&self.block_roots[i])
+        Ok(&self.block_roots()[i])
     }
 
     /// Return the block root at a recent `epoch`.
     ///
-    /// Spec v0.12.1
-    // NOTE: the spec calls this get_block_root
+    /// Note that the spec calls this `get_block_root`.
     pub fn get_block_root_at_epoch(&self, epoch: Epoch) -> Result<&Hash256, BeaconStateError> {
         self.get_block_root(epoch.start_slot(T::slots_per_epoch()))
     }
 
     /// Sets the block root for some given slot.
-    ///
-    /// Spec v0.12.1
     pub fn set_block_root(
         &mut self,
         slot: Slot,
         block_root: Hash256,
     ) -> Result<(), BeaconStateError> {
         let i = self.get_latest_block_roots_index(slot)?;
-        self.block_roots[i] = block_root;
+        self.block_roots_mut()[i] = block_root;
         Ok(())
     }
 
     /// Fill `randao_mixes` with
     pub fn fill_randao_mixes_with(&mut self, index_root: Hash256) {
-        self.randao_mixes = FixedVector::from_elem(index_root);
+        *self.randao_mixes_mut() = FixedVector::from_elem(index_root);
     }
 
     /// Safely obtains the index for `randao_mixes`
@@ -652,7 +670,7 @@ impl<T: EthSpec> BeaconState<T> {
 
         let signature_hash = Hash256::from_slice(&hash(&ssz_encode(signature)));
 
-        self.randao_mixes[i] = *self.get_randao_mix(epoch)? ^ signature_hash;
+        self.randao_mixes_mut()[i] = *self.get_randao_mix(epoch)? ^ signature_hash;
 
         Ok(())
     }
@@ -662,7 +680,7 @@ impl<T: EthSpec> BeaconState<T> {
     /// Spec v0.12.1
     pub fn get_randao_mix(&self, epoch: Epoch) -> Result<&Hash256, Error> {
         let i = self.get_randao_mix_index(epoch, AllowNextEpoch::False)?;
-        Ok(&self.randao_mixes[i])
+        Ok(&self.randao_mixes()[i])
     }
 
     /// Set the randao mix at a recent ``epoch``.
@@ -670,7 +688,7 @@ impl<T: EthSpec> BeaconState<T> {
     /// Spec v0.12.1
     pub fn set_randao_mix(&mut self, epoch: Epoch, mix: Hash256) -> Result<(), Error> {
         let i = self.get_randao_mix_index(epoch, AllowNextEpoch::True)?;
-        self.randao_mixes[i] = mix;
+        self.randao_mixes()[i] = mix;
         Ok(())
     }
 
@@ -678,8 +696,8 @@ impl<T: EthSpec> BeaconState<T> {
     ///
     /// Spec v0.12.1
     fn get_latest_state_roots_index(&self, slot: Slot) -> Result<usize, Error> {
-        if slot < self.slot && self.slot <= slot.safe_add(self.state_roots.len() as u64)? {
-            Ok(slot.as_usize().safe_rem(self.state_roots.len())?)
+        if slot < self.slot() && self.slot() <= slot.safe_add(self.state_roots().len() as u64)? {
+            Ok(slot.as_usize().safe_rem(self.state_roots().len())?)
         } else {
             Err(BeaconStateError::SlotOutOfBounds)
         }
@@ -690,16 +708,16 @@ impl<T: EthSpec> BeaconState<T> {
     /// Spec v0.12.1
     pub fn get_state_root(&self, slot: Slot) -> Result<&Hash256, Error> {
         let i = self.get_latest_state_roots_index(slot)?;
-        Ok(&self.state_roots[i])
+        Ok(&self.state_roots()[i])
     }
 
     /// Gets the oldest (earliest slot) state root.
     ///
     /// Spec v0.12.1
     pub fn get_oldest_state_root(&self) -> Result<&Hash256, Error> {
-        let i =
-            self.get_latest_state_roots_index(self.slot.saturating_sub(self.state_roots.len()))?;
-        Ok(&self.state_roots[i])
+        let i = self
+            .get_latest_state_roots_index(self.slot().saturating_sub(self.state_roots().len()))?;
+        Ok(&self.state_roots()[i])
     }
 
     /// Gets the oldest (earliest slot) block root.
@@ -707,9 +725,9 @@ impl<T: EthSpec> BeaconState<T> {
     /// Spec v0.12.1
     pub fn get_oldest_block_root(&self) -> Result<&Hash256, Error> {
         let i = self.get_latest_block_roots_index(
-            self.slot.saturating_sub(self.block_roots.len() as u64),
+            self.slot().saturating_sub(self.block_roots().len() as u64),
         )?;
-        Ok(&self.block_roots[i])
+        Ok(&self.block_roots()[i])
     }
 
     pub fn get_block_state_roots(
@@ -717,7 +735,7 @@ impl<T: EthSpec> BeaconState<T> {
         slot: Slot,
     ) -> Result<(SignedBeaconBlockHash, BeaconStateHash), Error> {
         let i = self.get_latest_block_roots_index(slot)?;
-        Ok((self.block_roots[i].into(), self.state_roots[i].into()))
+        Ok((self.block_roots()[i].into(), self.state_roots()[i].into()))
     }
 
     /// Sets the latest state root for slot.
@@ -725,7 +743,7 @@ impl<T: EthSpec> BeaconState<T> {
     /// Spec v0.12.1
     pub fn set_state_root(&mut self, slot: Slot, state_root: Hash256) -> Result<(), Error> {
         let i = self.get_latest_state_roots_index(slot)?;
-        self.state_roots[i] = state_root;
+        self.state_roots_mut()[i] = state_root;
         Ok(())
     }
 
@@ -752,32 +770,25 @@ impl<T: EthSpec> BeaconState<T> {
     }
 
     /// Get a reference to the entire `slashings` vector.
-    ///
-    /// Spec v0.12.1
     pub fn get_all_slashings(&self) -> &[u64] {
-        &self.slashings
+        self.slashings()
     }
 
     /// Get the total slashed balances for some epoch.
-    ///
-    /// Spec v0.12.1
     pub fn get_slashings(&self, epoch: Epoch) -> Result<u64, Error> {
         let i = self.get_slashings_index(epoch, AllowNextEpoch::False)?;
-        Ok(self.slashings[i])
+        Ok(self.slashings()[i])
     }
 
     /// Set the total slashed balances for some epoch.
-    ///
-    /// Spec v0.12.1
     pub fn set_slashings(&mut self, epoch: Epoch, value: u64) -> Result<(), Error> {
         let i = self.get_slashings_index(epoch, AllowNextEpoch::True)?;
-        self.slashings[i] = value;
+        self.slashings_mut()[i] = value;
         Ok(())
     }
 
+    /* FIXME(altair): work out where to put this
     /// Get the attestations from the current or previous epoch.
-    ///
-    /// Spec v0.12.1
     pub fn get_matching_source_attestations(
         &self,
         epoch: Epoch,
@@ -790,6 +801,7 @@ impl<T: EthSpec> BeaconState<T> {
             Err(Error::EpochOutOfBounds)
         }
     }
+    */
 
     /// Generate a seed for the given `epoch`.
     ///
@@ -807,7 +819,7 @@ impl<T: EthSpec> BeaconState<T> {
                 .safe_add(T::EpochsPerHistoricalVector::to_u64())?
                 .safe_sub(spec.min_seed_lookahead)?
                 .safe_sub(1)?;
-            self.randao_mixes[i.as_usize().safe_rem(self.randao_mixes.len())?]
+            self.randao_mixes()[i.as_usize().safe_rem(self.randao_mixes().len())?]
         };
         let domain_bytes = int_to_bytes4(spec.get_domain_constant(domain_type));
         let epoch_bytes = int_to_bytes8(epoch.as_u64());
@@ -833,7 +845,7 @@ impl<T: EthSpec> BeaconState<T> {
         validator_index: usize,
         _spec: &ChainSpec,
     ) -> Result<u64, Error> {
-        self.validators
+        self.validators()
             .get(validator_index)
             .map(|v| v.effective_balance)
             .ok_or_else(|| Error::UnknownValidator(validator_index as u64))
@@ -899,12 +911,12 @@ impl<T: EthSpec> BeaconState<T> {
     ///
     /// Returns `Err` if the state is invalid.
     pub fn get_outstanding_deposit_len(&self) -> Result<u64, Error> {
-        self.eth1_data
+        self.eth1_data()
             .deposit_count
-            .checked_sub(self.eth1_deposit_index)
+            .checked_sub(self.eth1_deposit_index())
             .ok_or(Error::InvalidDepositState {
-                deposit_count: self.eth1_data.deposit_count,
-                deposit_index: self.eth1_deposit_index,
+                deposit_count: self.eth1_data().deposit_count,
+                deposit_index: self.eth1_deposit_index(),
             })
     }
 
@@ -912,7 +924,7 @@ impl<T: EthSpec> BeaconState<T> {
     pub fn build_all_caches(&mut self, spec: &ChainSpec) -> Result<(), Error> {
         self.build_all_committee_caches(spec)?;
         self.update_pubkey_cache()?;
-        self.exit_cache.build(&self.validators, spec)?;
+        self.exit_cache().build(self.validators(), spec)?;
 
         Ok(())
     }
@@ -932,14 +944,15 @@ impl<T: EthSpec> BeaconState<T> {
         self.drop_committee_cache(RelativeEpoch::Next);
         self.drop_pubkey_cache();
         self.drop_tree_hash_cache();
-        self.exit_cache = ExitCache::default();
+        *self.exit_cache_mut() = ExitCache::default();
     }
 
     /// Returns `true` if the committee cache for `relative_epoch` is built and ready to use.
     pub fn committee_cache_is_initialized(&self, relative_epoch: RelativeEpoch) -> bool {
         let i = Self::committee_cache_index(relative_epoch);
 
-        self.committee_caches[i].is_initialized_at(relative_epoch.into_epoch(self.current_epoch()))
+        self.committee_caches()[i]
+            .is_initialized_at(relative_epoch.into_epoch(self.current_epoch()))
     }
 
     /// Build an epoch cache, unless it is has already been built.
@@ -950,7 +963,7 @@ impl<T: EthSpec> BeaconState<T> {
     ) -> Result<(), Error> {
         let i = Self::committee_cache_index(relative_epoch);
 
-        if self.committee_caches[i]
+        if self.committee_caches()[i]
             .is_initialized_at(relative_epoch.into_epoch(self.current_epoch()))
         {
             Ok(())
@@ -967,7 +980,7 @@ impl<T: EthSpec> BeaconState<T> {
     ) -> Result<(), Error> {
         let epoch = relative_epoch.into_epoch(self.current_epoch());
 
-        self.committee_caches[Self::committee_cache_index(relative_epoch)] =
+        self.committee_caches()[Self::committee_cache_index(relative_epoch)] =
             CommitteeCache::initialized(&self, epoch, spec)?;
         Ok(())
     }
@@ -978,7 +991,7 @@ impl<T: EthSpec> BeaconState<T> {
     ///
     /// Note: whilst this function will preserve already-built caches, it will not build any.
     pub fn advance_caches(&mut self) {
-        let caches = &mut self.committee_caches[..];
+        let caches = self.committee_caches_mut();
         caches.rotate_left(1);
 
         let next = Self::committee_cache_index(RelativeEpoch::Next);
@@ -1005,7 +1018,7 @@ impl<T: EthSpec> BeaconState<T> {
     /// Returns the cache for some `RelativeEpoch`. Returns an error if the cache has not been
     /// initialized.
     pub fn committee_cache(&self, relative_epoch: RelativeEpoch) -> Result<&CommitteeCache, Error> {
-        let cache = &self.committee_caches[Self::committee_cache_index(relative_epoch)];
+        let cache = &self.committee_caches()[Self::committee_cache_index(relative_epoch)];
 
         if cache.is_initialized_at(relative_epoch.into_epoch(self.current_epoch())) {
             Ok(cache)
@@ -1016,7 +1029,7 @@ impl<T: EthSpec> BeaconState<T> {
 
     /// Drops the cache, leaving it in an uninitialized state.
     fn drop_committee_cache(&mut self, relative_epoch: RelativeEpoch) {
-        self.committee_caches[Self::committee_cache_index(relative_epoch)] =
+        self.committee_caches_mut()[Self::committee_cache_index(relative_epoch)] =
             CommitteeCache::default();
     }
 
@@ -1026,12 +1039,13 @@ impl<T: EthSpec> BeaconState<T> {
     /// never re-add a pubkey.
     pub fn update_pubkey_cache(&mut self) -> Result<(), Error> {
         for (i, validator) in self
-            .validators
+            .validators()
             .iter()
             .enumerate()
-            .skip(self.pubkey_cache.len())
+            .skip(self.pubkey_cache().len())
         {
-            let success = self.pubkey_cache.insert(validator.pubkey, i);
+            // FIXME(altair): gonna have borrow issues
+            let success = self.pubkey_cache_mut().insert(validator.pubkey, i);
             if !success {
                 return Err(Error::PubkeyCacheInconsistent);
             }
@@ -1042,13 +1056,13 @@ impl<T: EthSpec> BeaconState<T> {
 
     /// Completely drops the `pubkey_cache`, replacing it with a new, empty cache.
     pub fn drop_pubkey_cache(&mut self) {
-        self.pubkey_cache = PubkeyCache::default()
+        *self.pubkey_cache_mut() = PubkeyCache::default()
     }
 
     /// Initialize but don't fill the tree hash cache, if it isn't already initialized.
     pub fn initialize_tree_hash_cache(&mut self) {
-        if self.tree_hash_cache.is_none() {
-            self.tree_hash_cache = Some(BeaconTreeHashCache::new(self))
+        if self.tree_hash_cache().is_none() {
+            *self.tree_hash_cache_mut() = Some(BeaconTreeHashCache::new(self))
         }
     }
 
@@ -1058,13 +1072,13 @@ impl<T: EthSpec> BeaconState<T> {
     pub fn update_tree_hash_cache(&mut self) -> Result<Hash256, Error> {
         self.initialize_tree_hash_cache();
 
-        let cache = self.tree_hash_cache.take();
+        let cache = self.tree_hash_cache_mut().take();
 
         if let Some(mut cache) = cache {
             // Note: we return early if the tree hash fails, leaving `self.tree_hash_cache` as
             // None. There's no need to keep a cache that fails.
             let root = cache.recalculate_tree_hash_root(&self)?;
-            self.tree_hash_cache = Some(cache);
+            *self.tree_hash_cache_mut() = Some(cache);
             Ok(root)
         } else {
             Err(Error::TreeHashCacheNotInitialized)
@@ -1077,13 +1091,13 @@ impl<T: EthSpec> BeaconState<T> {
     pub fn update_validators_tree_hash_cache(&mut self) -> Result<Hash256, Error> {
         self.initialize_tree_hash_cache();
 
-        let cache = self.tree_hash_cache.take();
+        let cache = self.tree_hash_cache_mut().take();
 
         if let Some(mut cache) = cache {
             // Note: we return early if the tree hash fails, leaving `self.tree_hash_cache` as
             // None. There's no need to keep a cache that fails.
-            let root = cache.recalculate_validators_tree_hash_root(&self.validators)?;
-            self.tree_hash_cache = Some(cache);
+            let root = cache.recalculate_validators_tree_hash_root(self.validators())?;
+            *self.tree_hash_cache_mut() = Some(cache);
             Ok(root)
         } else {
             Err(Error::TreeHashCacheNotInitialized)
@@ -1092,11 +1106,12 @@ impl<T: EthSpec> BeaconState<T> {
 
     /// Completely drops the tree hash cache, replacing it with a new, empty cache.
     pub fn drop_tree_hash_cache(&mut self) {
-        self.tree_hash_cache = None;
+        *self.tree_hash_cache_mut() = None;
     }
 
     /// Clone the state whilst preserving only the selected caches.
-    pub fn clone_with(&self, config: CloneConfig) -> Self {
+    pub fn clone_with(&self, _config: CloneConfig) -> Self {
+        /* FIXME(altair): write/find/steal a clone_except proc macro
         BeaconState {
             genesis_time: self.genesis_time,
             genesis_validators_root: self.genesis_validators_root,
@@ -1144,6 +1159,8 @@ impl<T: EthSpec> BeaconState<T> {
                 None
             },
         }
+        */
+        self.clone()
     }
 
     pub fn clone_with_only_committee_caches(&self) -> Self {

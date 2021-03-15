@@ -40,7 +40,7 @@ impl CommitteeCache {
             return Err(Error::ZeroSlotsPerEpoch);
         }
 
-        let active_validator_indices = get_active_validator_indices(&state.validators, epoch);
+        let active_validator_indices = get_active_validator_indices(state.validators(), epoch);
 
         if active_validator_indices.is_empty() {
             return Err(Error::InsufficientValidators);
@@ -60,11 +60,11 @@ impl CommitteeCache {
         .ok_or(Error::UnableToShuffle)?;
 
         // The use of `NonZeroUsize` reduces the maximum number of possible validators by one.
-        if state.validators.len() == usize::max_value() {
+        if state.validators().len() == usize::max_value() {
             return Err(Error::TooManyValidators);
         }
 
-        let mut shuffling_positions = vec![None; state.validators.len()];
+        let mut shuffling_positions = vec![None; state.validators().len()];
         for (i, v) in shuffling.iter().enumerate() {
             shuffling_positions[*v] = NonZeroUsize::new(i + 1);
         }

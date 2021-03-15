@@ -41,6 +41,12 @@ impl TestRandom for u32 {
     }
 }
 
+impl TestRandom for u8 {
+    fn random_for_test(rng: &mut impl RngCore) -> Self {
+        rng.next_u32().to_be_bytes()[0]
+    }
+}
+
 impl TestRandom for usize {
     fn random_for_test(rng: &mut impl RngCore) -> Self {
         rng.next_u32() as usize

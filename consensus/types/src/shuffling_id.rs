@@ -40,7 +40,7 @@ impl AttestationShufflingId {
             .start_slot(E::slots_per_epoch())
             .saturating_sub(1_u64);
 
-        let shuffling_decision_block = if state.slot == shuffling_decision_slot {
+        let shuffling_decision_block = if state.slot() == shuffling_decision_slot {
             block_root
         } else {
             *state.get_block_root(shuffling_decision_slot)?
