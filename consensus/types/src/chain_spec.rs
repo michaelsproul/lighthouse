@@ -618,7 +618,6 @@ impl Default for YamlConfig {
     }
 }
 
-/// Spec v0.12.1
 impl YamlConfig {
     /// Maps `self.config_name` to an identifier for an `EthSpec` instance.
     ///
@@ -627,11 +626,7 @@ impl YamlConfig {
         Some(match self.config_name.as_str() {
             "mainnet" => EthSpecId::Mainnet,
             "minimal" => EthSpecId::Minimal,
-            "toledo" => EthSpecId::Mainnet,
             "pyrmont" => EthSpecId::Mainnet,
-            "spadina" => EthSpecId::V012Legacy,
-            "medalla" => EthSpecId::V012Legacy,
-            "altona" => EthSpecId::V012Legacy,
             _ => return None,
         })
     }

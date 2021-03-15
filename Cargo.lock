@@ -6961,6 +6961,7 @@ dependencies = [
  "lazy_static",
  "log",
  "merkle_proof",
+ "parking_lot",
  "rand 0.7.3",
  "rand_xorshift",
  "rayon",

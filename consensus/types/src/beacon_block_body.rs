@@ -27,7 +27,7 @@ use tree_hash_derive::TreeHash;
         serde(bound = "T: EthSpec")
     )
 )]
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, TestRandom)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 #[serde(bound = "T: EthSpec")]
 pub struct BeaconBlockBody<T: EthSpec> {
     pub randao_reveal: Signature,
