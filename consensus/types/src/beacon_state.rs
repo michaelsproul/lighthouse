@@ -223,7 +223,7 @@ where
 
     // Light-client sync committees
     #[superstruct(only(Altair))]
-    pub current_sync_commmittee: SyncCommittee<T>,
+    pub current_sync_committee: SyncCommittee<T>,
     #[superstruct(only(Altair))]
     pub next_sync_committee: SyncCommittee<T>,
 
@@ -688,7 +688,7 @@ impl<T: EthSpec> BeaconState<T> {
     /// Spec v0.12.1
     pub fn set_randao_mix(&mut self, epoch: Epoch, mix: Hash256) -> Result<(), Error> {
         let i = self.get_randao_mix_index(epoch, AllowNextEpoch::True)?;
-        self.randao_mixes()[i] = mix;
+        self.randao_mixes_mut()[i] = mix;
         Ok(())
     }
 
@@ -924,7 +924,7 @@ impl<T: EthSpec> BeaconState<T> {
     pub fn build_all_caches(&mut self, spec: &ChainSpec) -> Result<(), Error> {
         self.build_all_committee_caches(spec)?;
         self.update_pubkey_cache()?;
-        self.exit_cache().build(self.validators(), spec)?;
+        self.build_exit_cache(spec)?;
 
         Ok(())
     }
@@ -934,6 +934,14 @@ impl<T: EthSpec> BeaconState<T> {
         self.build_committee_cache(RelativeEpoch::Previous, spec)?;
         self.build_committee_cache(RelativeEpoch::Current, spec)?;
         self.build_committee_cache(RelativeEpoch::Next, spec)?;
+        Ok(())
+    }
+
+    /// Build the exit cache, if it needs to be built.
+    pub fn build_exit_cache(&mut self, spec: &ChainSpec) -> Result<(), Error> {
+        if self.exit_cache().check_initialized().is_err() {
+            *self.exit_cache_mut() = ExitCache::new(self.validators(), spec)?;
+        }
         Ok(())
     }
 
@@ -980,7 +988,7 @@ impl<T: EthSpec> BeaconState<T> {
     ) -> Result<(), Error> {
         let epoch = relative_epoch.into_epoch(self.current_epoch());
 
-        self.committee_caches()[Self::committee_cache_index(relative_epoch)] =
+        self.committee_caches_mut()[Self::committee_cache_index(relative_epoch)] =
             CommitteeCache::initialized(&self, epoch, spec)?;
         Ok(())
     }
@@ -1038,18 +1046,19 @@ impl<T: EthSpec> BeaconState<T> {
     /// Adds all `pubkeys` from the `validators` which are not already in the cache. Will
     /// never re-add a pubkey.
     pub fn update_pubkey_cache(&mut self) -> Result<(), Error> {
+        let mut pubkey_cache = std::mem::take(self.pubkey_cache_mut());
         for (i, validator) in self
             .validators()
             .iter()
             .enumerate()
-            .skip(self.pubkey_cache().len())
+            .skip(pubkey_cache.len())
         {
-            // FIXME(altair): gonna have borrow issues
-            let success = self.pubkey_cache_mut().insert(validator.pubkey, i);
+            let success = pubkey_cache.insert(validator.pubkey, i);
             if !success {
                 return Err(Error::PubkeyCacheInconsistent);
             }
         }
+        *self.pubkey_cache_mut() = pubkey_cache;
 
         Ok(())
     }

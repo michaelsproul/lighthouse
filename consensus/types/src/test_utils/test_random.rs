@@ -70,16 +70,15 @@ where
 
 impl<T, N: Unsigned> TestRandom for FixedVector<T, N>
 where
-    T: TestRandom + Default,
+    T: TestRandom,
 {
     fn random_for_test(rng: &mut impl RngCore) -> Self {
-        let mut output = vec![];
-
-        for _ in 0..(usize::random_for_test(rng) % std::cmp::min(4, N::to_usize())) {
-            output.push(<T>::random_for_test(rng));
-        }
-
-        output.into()
+        Self::new(
+            (0..N::to_usize())
+                .map(|_| T::random_for_test(rng))
+                .collect(),
+        )
+        .expect("N items provided")
     }
 }
 

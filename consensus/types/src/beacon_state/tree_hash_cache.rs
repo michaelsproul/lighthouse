@@ -169,7 +169,6 @@ impl<T: EthSpec> BeaconTreeHashCache<T> {
 
         let mut hasher = MerkleHasher::with_leaves(NUM_BEACON_STATE_HASHING_FIELDS);
 
-        // FIXME(altair): fix this
         hasher.write(state.genesis_time().tree_hash_root().as_bytes())?;
         hasher.write(state.genesis_validators_root().tree_hash_root().as_bytes())?;
         hasher.write(state.slot().tree_hash_root().as_bytes())?;
@@ -177,19 +176,19 @@ impl<T: EthSpec> BeaconTreeHashCache<T> {
         hasher.write(state.latest_block_header().tree_hash_root().as_bytes())?;
         hasher.write(
             state
-                .block_roots_mut()
+                .block_roots()
                 .recalculate_tree_hash_root(&mut self.fixed_arena, &mut self.block_roots)?
                 .as_bytes(),
         )?;
         hasher.write(
             state
-                .state_roots_mut()
+                .state_roots()
                 .recalculate_tree_hash_root(&mut self.fixed_arena, &mut self.state_roots)?
                 .as_bytes(),
         )?;
         hasher.write(
             state
-                .historical_roots_mut()
+                .historical_roots()
                 .recalculate_tree_hash_root(&mut self.fixed_arena, &mut self.historical_roots)?
                 .as_bytes(),
         )?;
@@ -207,31 +206,51 @@ impl<T: EthSpec> BeaconTreeHashCache<T> {
         )?;
         hasher.write(
             state
-                .balances_mut()
+                .balances()
                 .recalculate_tree_hash_root(&mut self.balances_arena, &mut self.balances)?
                 .as_bytes(),
         )?;
         hasher.write(
             state
-                .randao_mixes_mut()
+                .randao_mixes()
                 .recalculate_tree_hash_root(&mut self.fixed_arena, &mut self.randao_mixes)?
                 .as_bytes(),
         )?;
         hasher.write(
             state
-                .slashings_mut()
+                .slashings()
                 .recalculate_tree_hash_root(&mut self.slashings_arena, &mut self.slashings)?
                 .as_bytes(),
         )?;
-        /* FIXME(altair): branch on type
-        hasher.write(
-            state
-                .previous_epoch_attestations
-                .tree_hash_root()
-                .as_bytes(),
-        )?;
-        hasher.write(state.current_epoch_attestations.tree_hash_root().as_bytes())?;
-        */
+
+        // Participation
+        match state {
+            BeaconState::Base(state) => {
+                hasher.write(
+                    state
+                        .previous_epoch_attestations
+                        .tree_hash_root()
+                        .as_bytes(),
+                )?;
+                hasher.write(state.current_epoch_attestations.tree_hash_root().as_bytes())?;
+            }
+            // FIXME(altair): add a cache to accelerate hashing of these fields
+            BeaconState::Altair(state) => {
+                hasher.write(
+                    state
+                        .previous_epoch_participation
+                        .tree_hash_root()
+                        .as_bytes(),
+                )?;
+                hasher.write(
+                    state
+                        .current_epoch_participation
+                        .tree_hash_root()
+                        .as_bytes(),
+                )?;
+            }
+        }
+
         hasher.write(state.justification_bits().tree_hash_root().as_bytes())?;
         hasher.write(
             state
@@ -246,6 +265,14 @@ impl<T: EthSpec> BeaconTreeHashCache<T> {
                 .as_bytes(),
         )?;
         hasher.write(state.finalized_checkpoint().tree_hash_root().as_bytes())?;
+
+        // Light-client sync committees & leak
+        if let BeaconState::Altair(ref state) = state {
+            hasher.write(state.current_sync_committee.tree_hash_root().as_bytes())?;
+            hasher.write(state.next_sync_committee.tree_hash_root().as_bytes())?;
+            // FIXME(altair): add cache for this field
+            hasher.write(state.next_sync_committee.tree_hash_root().as_bytes())?;
+        }
 
         let root = hasher.finish()?;
 
