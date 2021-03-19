@@ -16,7 +16,8 @@ pub fn process_slashings<T: EthSpec>(
         total_balance,
     );
 
-    for (index, validator) in state.validators.iter().enumerate() {
+    let (validators, balances) = state.validators_and_balances_mut();
+    for (index, validator) in validators.iter().enumerate() {
         if validator.slashed
             && epoch.safe_add(T::EpochsPerSlashingsVector::to_u64().safe_div(2)?)?
                 == validator.withdrawable_epoch
@@ -31,7 +32,7 @@ pub fn process_slashings<T: EthSpec>(
                 .safe_mul(increment)?;
 
             // Equivalent to `decrease_balance(state, index, penalty)`, but avoids borrowing `state`.
-            state.balances[index] = state.balances[index].saturating_sub(penalty);
+            balances[index] = balances[index].saturating_sub(penalty);
         }
     }
 

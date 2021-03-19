@@ -67,7 +67,10 @@ pub use crate::attestation::{Attestation, Error as AttestationError};
 pub use crate::attestation_data::AttestationData;
 pub use crate::attestation_duty::AttestationDuty;
 pub use crate::attester_slashing::AttesterSlashing;
-pub use crate::beacon_block::BeaconBlock;
+pub use crate::beacon_block::{BeaconBlock, BeaconBlockAltair, BeaconBlockBase, BeaconBlockRef};
+pub use crate::beacon_block_body::{
+    BeaconBlockBody, BeaconBlockBodyAltair, BeaconBlockBodyBase, BeaconBlockBodyRef,
+};
 pub use crate::beacon_block_header::BeaconBlockHeader;
 pub use crate::beacon_committee::{BeaconCommittee, OwnedBeaconCommittee};
 pub use crate::beacon_state::{BeaconTreeHashCache, Error as BeaconStateError, *};

@@ -1,4 +1,4 @@
-use crate::beacon_block_body::{BeaconBlockBodyAltair, BeaconBlockBodyBase};
+use crate::beacon_block_body::{BeaconBlockBodyAltair, BeaconBlockBodyBase, BeaconBlockBodyRef};
 use crate::test_utils::TestRandom;
 use crate::*;
 use bls::Signature;
@@ -47,6 +47,16 @@ pub struct BeaconBlock<T: EthSpec> {
     pub body: BeaconBlockBodyBase<T>,
     #[superstruct(only(Altair))]
     pub body: BeaconBlockBodyAltair<T>,
+}
+
+impl<T: EthSpec> BeaconBlock<T> {
+    /// Convenience accessor for the `body` as a `BeaconBlockBodyRef`.
+    pub fn body_ref(&self) -> BeaconBlockBodyRef<'_, T> {
+        match self {
+            BeaconBlock::Base(ref block) => BeaconBlockBodyRef::Base(&block.body),
+            BeaconBlock::Altair(ref block) => BeaconBlockBodyRef::Altair(&block.body),
+        }
+    }
 }
 
 /// Custom `Decode` implementation for blocks that differentiates between hard fork blocks by slot.

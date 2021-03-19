@@ -9,7 +9,8 @@ pub mod genesis;
 pub mod per_block_processing;
 pub mod per_epoch_processing;
 pub mod per_slot_processing;
-pub mod test_utils;
+// FIXME(altair): re-enable
+// pub mod test_utils;
 pub mod verify_operation;
 
 pub use genesis::{

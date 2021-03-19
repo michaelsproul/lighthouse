@@ -38,6 +38,8 @@ const MAX_RANDOM_BYTE: u64 = (1 << 8) - 1;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Error {
+    /// A state for a different hard-fork was required -- a severe logic error.
+    IncorrectStateVariant,
     EpochOutOfBounds,
     SlotOutOfBounds,
     UnknownValidator(u64),
@@ -217,8 +219,11 @@ where
     // Finality
     #[test_random(default)]
     pub justification_bits: BitVector<T::JustificationBitsLength>,
+    #[superstruct(getter(copy))]
     pub previous_justified_checkpoint: Checkpoint,
+    #[superstruct(getter(copy))]
     pub current_justified_checkpoint: Checkpoint,
+    #[superstruct(getter(copy))]
     pub finalized_checkpoint: Checkpoint,
 
     // Light-client sync committees
@@ -315,6 +320,22 @@ impl<T: EthSpec> BeaconState<T> {
             exit_cache: ExitCache::default(),
             tree_hash_cache: None,
         })
+    }
+
+    // TODO(altair): auto-generate these methods in superstruct
+    /// Assert that the state is for the initial (base) hard fork.
+    pub fn as_base(&self) -> Result<&BeaconStateBase<T>, Error> {
+        match self {
+            BeaconState::Base(ref s) => Ok(s),
+            _ => return Err(Error::IncorrectStateVariant),
+        }
+    }
+
+    pub fn as_base_mut(&mut self) -> Result<&mut BeaconStateBase<T>, Error> {
+        match self {
+            BeaconState::Base(ref mut s) => Ok(s),
+            _ => return Err(Error::IncorrectStateVariant),
+        }
     }
 
     /// Returns the `tree_hash_root` of the state.
@@ -466,9 +487,6 @@ impl<T: EthSpec> BeaconState<T> {
     }
 
     /// Compute the proposer (not necessarily for the Beacon chain) from a list of indices.
-    ///
-    /// Spec v0.12.1
-    // NOTE: be sure to test this bad boy.
     pub fn compute_proposer_index(
         &self,
         indices: &[usize],
@@ -785,6 +803,14 @@ impl<T: EthSpec> BeaconState<T> {
         let i = self.get_slashings_index(epoch, AllowNextEpoch::True)?;
         self.slashings_mut()[i] = value;
         Ok(())
+    }
+
+    /// Convenience accessor for validators and balances simultaneously.
+    pub fn validators_and_balances_mut(&mut self) -> (&mut [Validator], &mut [u64]) {
+        match self {
+            BeaconState::Base(state) => (&mut state.validators, &mut state.balances),
+            BeaconState::Altair(state) => (&mut state.validators, &mut state.balances),
+        }
     }
 
     /* FIXME(altair): work out where to put this

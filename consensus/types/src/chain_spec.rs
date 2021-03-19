@@ -6,8 +6,6 @@ use std::path::Path;
 use tree_hash::TreeHash;
 
 /// Each of the BLS signature domains.
-///
-/// Spec v0.12.1
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Domain {
     BeaconProposer,
@@ -21,8 +19,6 @@ pub enum Domain {
 }
 
 /// Holds all the "constants" for a BeaconChain.
-///
-/// Spec v0.12.1
 #[cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))]
 #[derive(PartialEq, Debug, Clone)]
 pub struct ChainSpec {
@@ -112,11 +108,14 @@ pub struct ChainSpec {
     /*
      * Altair hard fork params
      */
-    pub hf1_inactivity_penalty_quotient: u64,
-    pub hf1_min_slashing_penalty_quotient: u64,
-    pub hf1_proportional_slashing_multiplier: u64,
+    pub inactivity_penalty_quotient_altair: u64,
+    pub min_slashing_penalty_quotient_altair: u64,
+    pub proportional_slashing_multiplier_altair: u64,
     pub epochs_per_sync_committee_period: Epoch,
+    pub inactivity_score_bias: u64,
     domain_sync_committee: u32,
+    domain_sync_committee_selection_proof: u32,
+    domain_contribution_and_proof: u32,
 
     /*
      * Networking
@@ -338,11 +337,14 @@ impl ChainSpec {
             /*
              * Altair hard fork params
              */
-            hf1_inactivity_penalty_quotient: 3 * u64::pow(2, 24),
-            hf1_min_slashing_penalty_quotient: u64::pow(2, 6),
-            hf1_proportional_slashing_multiplier: 2,
+            inactivity_penalty_quotient_altair: 3 * u64::pow(2, 24),
+            min_slashing_penalty_quotient_altair: u64::pow(2, 6),
+            proportional_slashing_multiplier_altair: 2,
+            inactivity_score_bias: 4,
             epochs_per_sync_committee_period: Epoch::new(256),
             domain_sync_committee: 7,
+            domain_sync_committee_selection_proof: 8,
+            domain_contribution_and_proof: 9,
 
             /*
              * Network specific
@@ -542,11 +544,11 @@ pub struct YamlConfig {
     // ChainSpec (Altair)
     /* FIXME(altair): parse from separate file
     #[serde(with = "serde_utils::quoted_u64")]
-    hf1_inactivity_penalty_quotient: u64,
+    inactivity_penalty_quotient_altair: u64,
     #[serde(with = "serde_utils::quoted_u64")]
-    hf1_min_slashing_penalty_quotient: u64,
+    min_slashing_penalty_quotient_altair: u64,
     #[serde(with = "serde_utils::quoted_u64")]
-    hf1_proportional_slashing_multiplier: u64,
+    proportional_slashing_multiplier_altair: u64,
     #[serde(with = "serde_utils::quoted_u64")]
     epochs_per_sync_committee_period: u64,
     domain_sync_committee: u32,
@@ -805,11 +807,15 @@ impl YamlConfig {
              * Altair params
              * FIXME(altair): hardcoded
              */
-            hf1_inactivity_penalty_quotient: chain_spec.hf1_inactivity_penalty_quotient,
-            hf1_min_slashing_penalty_quotient: chain_spec.hf1_min_slashing_penalty_quotient,
-            hf1_proportional_slashing_multiplier: chain_spec.hf1_proportional_slashing_multiplier,
+            inactivity_penalty_quotient_altair: chain_spec.inactivity_penalty_quotient_altair,
+            min_slashing_penalty_quotient_altair: chain_spec.min_slashing_penalty_quotient_altair,
+            proportional_slashing_multiplier_altair: chain_spec
+                .proportional_slashing_multiplier_altair,
+            inactivity_score_bias: chain_spec.inactivity_score_bias,
             epochs_per_sync_committee_period: chain_spec.epochs_per_sync_committee_period,
             domain_sync_committee: chain_spec.domain_sync_committee,
+            domain_sync_committee_selection_proof: chain_spec.domain_sync_committee_selection_proof,
+            domain_contribution_and_proof: chain_spec.domain_contribution_and_proof,
             /*
              * Lighthouse-specific parameters
              *
