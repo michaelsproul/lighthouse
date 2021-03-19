@@ -77,7 +77,7 @@ impl VerifySignatures {
 /// tree hash root of the block, NOT the signing root of the block. This function takes
 /// care of mixing in the domain.
 pub fn per_block_processing<T: EthSpec>(
-    mut state: &mut BeaconState<T>,
+    state: &mut BeaconState<T>,
     signed_block: &SignedBeaconBlock<T>,
     block_root: Option<Hash256>,
     block_signature_strategy: BlockSignatureStrategy,
@@ -107,42 +107,16 @@ pub fn per_block_processing<T: EthSpec>(
     process_block_header(state, block, spec)?;
 
     if verify_signatures.is_true() {
-        verify_block_signature(&state, signed_block, block_root, &spec)?;
+        verify_block_signature(state, signed_block, block_root, spec)?;
     }
 
     // Ensure the current and previous epoch caches are built.
     state.build_committee_cache(RelativeEpoch::Previous, spec)?;
     state.build_committee_cache(RelativeEpoch::Current, spec)?;
 
-    process_randao(&mut state, &block, verify_signatures, &spec)?;
-    process_eth1_data(&mut state, block.body_ref().eth1_data())?;
-    /* FIXME(altair): process_operations
-    process_proposer_slashings(
-        &mut state,
-        &block.body.proposer_slashings,
-        verify_signatures,
-        spec,
-    )?;
-    process_attester_slashings(
-        &mut state,
-        &block.body.attester_slashings,
-        verify_signatures,
-        spec,
-    )?;
-    process_attestations(
-        &mut state,
-        &block.body.attestations,
-        verify_signatures,
-        spec,
-    )?;
-    process_deposits(&mut state, &block.body.deposits, spec)?;
-    process_exits(
-        &mut state,
-        &block.body.voluntary_exits,
-        verify_signatures,
-        spec,
-    )?;
-    */
+    process_randao(state, &block, verify_signatures, spec)?;
+    process_eth1_data(state, block.body_ref().eth1_data())?;
+    process_operations(state, block.body_ref(), verify_signatures, spec)?;
 
     // FIXME(altair): process_sync_committee
 

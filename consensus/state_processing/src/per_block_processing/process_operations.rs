@@ -143,7 +143,7 @@ pub mod base {
                 .map_err(|e| e.into_with_index(deposit_index))?;
         }
 
-        state.eth1_deposit_index().safe_add_assign(1)?;
+        state.eth1_deposit_index_mut().safe_add_assign(1)?;
 
         // Get an `Option<u64>` where `u64` is the validator index if this deposit public key
         // already exists in the beacon_state.

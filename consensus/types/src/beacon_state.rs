@@ -3,13 +3,14 @@ use self::exit_cache::ExitCache;
 use crate::test_utils::TestRandom;
 use crate::*;
 use cached_tree_hash::{CacheArena, CachedTreeHash};
+use compare_fields::CompareFields;
 use compare_fields_derive::CompareFields;
 use eth2_hashing::hash;
 use int_to_bytes::{int_to_bytes4, int_to_bytes8};
 use pubkey_cache::PubkeyCache;
 use safe_arith::{ArithError, SafeArith};
 use serde_derive::{Deserialize, Serialize};
-use ssz::{ssz_encode, Encode};
+use ssz::{ssz_encode, Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use ssz_types::{typenum::Unsigned, BitVector, FixedVector};
 use std::convert::TryInto;
@@ -261,6 +262,17 @@ where
     #[tree_hash(skip_hashing)]
     #[test_random(default)]
     pub tree_hash_cache: Option<BeaconTreeHashCache<T>>,
+}
+
+// FIXME(altair): consider a slot-switching approach
+impl<T: EthSpec> Decode for BeaconState<T> {
+    fn is_ssz_fixed_len() -> bool {
+        <BeaconStateBase<T> as Decode>::is_ssz_fixed_len()
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
+        BeaconStateBase::from_ssz_bytes(bytes).map(Self::Base)
+    }
 }
 
 impl<T: EthSpec> BeaconState<T> {
@@ -1291,5 +1303,15 @@ impl<T: EthSpec> arbitrary::Arbitrary for BeaconState<T> {
             exit_cache: ExitCache::arbitrary(u)?,
             tree_hash_cache: None,
         })
+    }
+}
+
+impl<T: EthSpec> CompareFields for BeaconState<T> {
+    fn compare_fields(&self, other: &Self) -> Vec<compare_fields::Comparison> {
+        match (self, other) {
+            (BeaconState::Base(x), BeaconState::Base(y)) => x.compare_fields(y),
+            (BeaconState::Altair(x), BeaconState::Altair(y)) => x.compare_fields(y),
+            _ => panic!("compare_fields: mismatched state variants"),
+        }
     }
 }
