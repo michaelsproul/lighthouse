@@ -21,6 +21,9 @@ pub use per_block_processing::{
     block_signature_verifier, errors::BlockProcessingError, per_block_processing, signature_sets,
     BlockSignatureStrategy, BlockSignatureVerifier, VerifySignatures,
 };
-pub use per_epoch_processing::{errors::EpochProcessingError, per_epoch_processing};
+// FIXME(altair): consider process_epoch name
+pub use per_epoch_processing::{
+    errors::EpochProcessingError, process_epoch as per_epoch_processing,
+};
 pub use per_slot_processing::{per_slot_processing, Error as SlotProcessingError};
 pub use verify_operation::{SigVerifiedOp, VerifyOperation};

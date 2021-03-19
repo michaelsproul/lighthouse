@@ -1,11 +1,11 @@
 use crate::{common::initiate_validator_exit, per_epoch_processing::Error};
 use itertools::Itertools;
 use safe_arith::SafeArith;
-use types::*;
+use types::{BeaconState, ChainSpec, EthSpec, Validator};
 
 /// Performs a validator registry update, if required.
 ///
-/// Spec v0.12.1
+/// NOTE: unchanged in Altair
 pub fn process_registry_updates<T: EthSpec>(
     state: &mut BeaconState<T>,
     spec: &ChainSpec,

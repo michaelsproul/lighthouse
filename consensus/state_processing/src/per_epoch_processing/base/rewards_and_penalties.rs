@@ -1,9 +1,10 @@
-use super::super::common::get_base_reward;
-use super::validator_statuses::{TotalBalances, ValidatorStatus, ValidatorStatuses};
-use super::Error;
+use crate::common::get_base_reward;
+use crate::per_epoch_processing::base::validator_statuses::{
+    TotalBalances, ValidatorStatus, ValidatorStatuses,
+};
+use crate::per_epoch_processing::Error;
 use safe_arith::SafeArith;
-
-use types::*;
+use types::{BeaconState, ChainSpec, EthSpec};
 
 /// Use to track the changes to a validators balance.
 #[derive(Default, Clone)]
