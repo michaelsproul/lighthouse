@@ -1,13 +1,14 @@
-//! Provides an `ObservedAttestations` struct which allows us to reject aggregated attestations if
-//! we've already seen the aggregated attestation.
+//! Provides an `ObservedAggregates` struct which allows us to reject aggregated attestations or
+//! sync committee contributions if we've already seen them.
 
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use tree_hash::TreeHash;
-use types::{Attestation, EthSpec, Hash256, Slot};
+use types::attestation::SlotData;
+use types::{Attestation, EthSpec, Hash256, Slot, SyncCommitteeContribution};
 
-/// As a DoS protection measure, the maximum number of distinct `Attestations` that will be
-/// recorded for each slot.
+/// As a DoS protection measure, the maximum number of distinct `Attestations` or
+/// `SyncCommitteeContributions` that will be recorded for each slot.
 ///
 /// Currently this is set to ~524k. If we say that each entry is 40 bytes (Hash256 (32 bytes) + an
 /// 8 byte hash) then this comes to about 20mb per slot. If we're storing 34 of these slots, then
@@ -19,11 +20,14 @@ use types::{Attestation, EthSpec, Hash256, Slot};
 /// of the number of validators.
 const MAX_OBSERVATIONS_PER_SLOT: usize = 1 << 19; // 524,288
 
+pub type ObservedSyncAggregates<E> = ObservedAggregates<SyncCommitteeContribution<E>, E>;
+pub type ObservedAggregateAttestations<E> = ObservedAggregates<Attestation<E>, E>;
+
 #[derive(Debug, PartialEq)]
 pub enum ObserveOutcome {
-    /// This attestation was already known.
+    /// This item was already known.
     AlreadyKnown,
-    /// This was the first time this attestation was observed.
+    /// This was the first time this item was observed.
     New,
 }
 
@@ -35,7 +39,7 @@ pub enum Error {
     },
     /// The function to obtain a set index failed, this is an internal error.
     InvalidSetIndex(usize),
-    /// We have reached the maximum number of unique `Attestation` that can be observed in a slot.
+    /// We have reached the maximum number of unique items that can be observed in a slot.
     /// This is a DoS protection function.
     ReachedMaxObservationsPerSlot(usize),
     IncorrectSlot {
@@ -59,15 +63,15 @@ impl SlotHashSet {
     }
 
     /// Store the attestation in self so future observations recognise its existence.
-    pub fn observe_attestation<E: EthSpec>(
+    pub fn observe_item<T: SlotData>(
         &mut self,
-        a: &Attestation<E>,
+        item: &T,
         root: Hash256,
     ) -> Result<ObserveOutcome, Error> {
-        if a.data.slot != self.slot {
+        if item.get_slot() != self.slot {
             return Err(Error::IncorrectSlot {
                 expected: self.slot,
-                attestation: a.data.slot,
+                attestation: item.get_slot(),
             });
         }
 
@@ -77,7 +81,7 @@ impl SlotHashSet {
             // Here we check to see if this slot has reached the maximum observation count.
             //
             // The resulting behaviour is that we are no longer able to successfully observe new
-            // attestations, however we will continue to return `is_known` values. We could also
+            // items, however we will continue to return `is_known` values. We could also
             // disable `is_known`, however then we would stop forwarding attestations across the
             // gossip network and I think that this is a worse case than sending some invalid ones.
             // The underlying libp2p network is responsible for removing duplicate messages, so
@@ -95,80 +99,82 @@ impl SlotHashSet {
     }
 
     /// Indicates if `a` has been observed before.
-    pub fn is_known<E: EthSpec>(&self, a: &Attestation<E>, root: Hash256) -> Result<bool, Error> {
-        if a.data.slot != self.slot {
+    pub fn is_known<T: SlotData>(&self, item: &T, root: Hash256) -> Result<bool, Error> {
+        if item.get_slot() != self.slot {
             return Err(Error::IncorrectSlot {
                 expected: self.slot,
-                attestation: a.data.slot,
+                attestation: item.get_slot(),
             });
         }
 
         Ok(self.set.contains(&root))
     }
 
-    /// The number of observed attestations in `self`.
+    /// The number of observed items in `self`.
     pub fn len(&self) -> usize {
         self.set.len()
     }
 }
 
-/// Stores the roots of `Attestation` objects for some number of `Slots`, so we can determine if
+/// Stores the roots of objects for some number of `Slots`, so we can determine if
 /// these have previously been seen on the network.
-pub struct ObservedAttestations<E: EthSpec> {
+pub struct ObservedAggregates<T: TreeHash, E: EthSpec> {
     lowest_permissible_slot: Slot,
     sets: Vec<SlotHashSet>,
-    _phantom: PhantomData<E>,
+    _phantom_spec: PhantomData<E>,
+    _phantom_tree_hash: PhantomData<T>,
 }
 
-impl<E: EthSpec> Default for ObservedAttestations<E> {
+impl<T: TreeHash, E: EthSpec> Default for ObservedAggregates<T, E> {
     fn default() -> Self {
         Self {
             lowest_permissible_slot: Slot::new(0),
             sets: vec![],
-            _phantom: PhantomData,
+            _phantom_spec: PhantomData,
+            _phantom_tree_hash: PhantomData,
         }
     }
 }
 
-impl<E: EthSpec> ObservedAttestations<E> {
+impl<T: TreeHash + SlotData, E: EthSpec> ObservedAggregates<T, E> {
     /// Store the root of `a` in `self`.
     ///
     /// `root` must equal `a.tree_hash_root()`.
-    pub fn observe_attestation(
+    pub fn observe_item(
         &mut self,
-        a: &Attestation<E>,
+        item: &T,
         root_opt: Option<Hash256>,
     ) -> Result<ObserveOutcome, Error> {
-        let index = self.get_set_index(a.data.slot)?;
-        let root = root_opt.unwrap_or_else(|| a.tree_hash_root());
+        let index = self.get_set_index(item.get_slot())?;
+        let root = root_opt.unwrap_or_else(|| item.tree_hash_root());
 
         self.sets
             .get_mut(index)
             .ok_or(Error::InvalidSetIndex(index))
-            .and_then(|set| set.observe_attestation(a, root))
+            .and_then(|set| set.observe_item(item, root))
     }
 
     /// Check to see if the `root` of `a` is in self.
     ///
     /// `root` must equal `a.tree_hash_root()`.
-    pub fn is_known(&mut self, a: &Attestation<E>, root: Hash256) -> Result<bool, Error> {
-        let index = self.get_set_index(a.data.slot)?;
+    pub fn is_known(&mut self, item: &T, root: Hash256) -> Result<bool, Error> {
+        let index = self.get_set_index(item.get_slot())?;
 
         self.sets
             .get(index)
             .ok_or(Error::InvalidSetIndex(index))
-            .and_then(|set| set.is_known(a, root))
+            .and_then(|set| set.is_known(item, root))
     }
 
-    /// The maximum number of slots that attestations are stored for.
+    /// The maximum number of slots that items are stored for.
     fn max_capacity(&self) -> u64 {
         // We add `2` in order to account for one slot either side of the range due to
         // `MAXIMUM_GOSSIP_CLOCK_DISPARITY`.
         E::slots_per_epoch() + 2
     }
 
-    /// Removes any attestations with a slot lower than `current_slot` and bars any future
-    /// attestations with a slot lower than `current_slot - SLOTS_RETAINED`.
+    /// Removes any items with a slot lower than `current_slot` and bars any future
+    /// item with a slot lower than `current_slot - SLOTS_RETAINED`.
     pub fn prune(&mut self, current_slot: Slot) {
         // Taking advantage of saturating subtraction on `Slot`.
         let lowest_permissible_slot = current_slot - (self.max_capacity() - 1);
@@ -254,7 +260,7 @@ mod tests {
         a
     }
 
-    fn single_slot_test(store: &mut ObservedAttestations<E>, slot: Slot) {
+    fn single_slot_test(store: &mut ObservedAggregates<Attestation<E>, E>, slot: Slot) {
         let attestations = (0..NUM_ELEMENTS as u64)
             .map(|i| get_attestation(slot, i))
             .collect::<Vec<_>>();
@@ -266,7 +272,7 @@ mod tests {
                 "should indicate an unknown attestation is unknown"
             );
             assert_eq!(
-                store.observe_attestation(a, None),
+                store.observe_item(a, None),
                 Ok(ObserveOutcome::New),
                 "should observe new attestation"
             );
@@ -279,7 +285,7 @@ mod tests {
                 "should indicate a known attestation is known"
             );
             assert_eq!(
-                store.observe_attestation(a, Some(a.tree_hash_root())),
+                store.observe_item(a, Some(a.tree_hash_root())),
                 Ok(ObserveOutcome::AlreadyKnown),
                 "should acknowledge an existing attestation"
             );
@@ -288,7 +294,7 @@ mod tests {
 
     #[test]
     fn single_slot() {
-        let mut store = ObservedAttestations::default();
+        let mut store = ObservedAggregates::default();
 
         single_slot_test(&mut store, Slot::new(0));
 
@@ -302,7 +308,7 @@ mod tests {
 
     #[test]
     fn mulitple_contiguous_slots() {
-        let mut store = ObservedAttestations::default();
+        let mut store = ObservedAggregates::default();
         let max_cap = store.max_capacity();
 
         for i in 0..max_cap * 3 {
@@ -364,7 +370,7 @@ mod tests {
 
     #[test]
     fn mulitple_non_contiguous_slots() {
-        let mut store = ObservedAttestations::default();
+        let mut store = ObservedAggregates::default();
         let max_cap = store.max_capacity();
 
         let to_skip = vec![1_u64, 2, 3, 5, 6, 29, 30, 31, 32, 64];
