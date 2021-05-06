@@ -6,6 +6,8 @@
 //! The `DutiesService` is also responsible for sending events to the `BlockService` which trigger
 //! block production.
 
+mod sync;
+
 use crate::beacon_node_fallback::{BeaconNodeFallback, RequireSynced};
 use crate::{
     block_service::BlockServiceNotification, http_metrics::metrics, validator_store::ValidatorStore,
@@ -18,6 +20,7 @@ use slog::{debug, error, info, warn, Logger};
 use slot_clock::SlotClock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use sync::poll_sync_committee_duties;
 use tokio::{sync::mpsc::Sender, time::sleep};
 use types::{ChainSpec, Epoch, EthSpec, Hash256, PublicKeyBytes, SelectionProof, Slot};
 
@@ -93,6 +96,7 @@ pub struct DutiesService<T, E: EthSpec> {
     /// Maps an epoch to all *local* proposers in this epoch. Notably, this does not contain
     /// proposals for any validators which are not registered locally.
     pub proposers: RwLock<ProposerMap>,
+    pub sync_duties:
     /// Maps a public key to a validator index. There is a task which ensures this map is kept
     /// up-to-date.
     pub indices: RwLock<IndicesMap>,
@@ -264,6 +268,37 @@ pub fn start_update_service<T: SlotClock + 'static, E: EthSpec>(
             }
         },
         "duties_service_attesters",
+    );
+
+    // Spawn the task which keeps track of local sync committee duties.
+    let duties_service = core_duties_service.clone();
+    let log = core_duties_service.context.log().clone();
+    core_duties_service.context.executor.spawn(
+        async move {
+            loop {
+                if let Err(e) = poll_sync_committee_duties(&duties_service).await {
+                    error!(
+                       log,
+                       "Failed to poll sync committee duties";
+                       "error" => ?e
+                    );
+                }
+
+                // Wait a whole epoch before polling again.
+                if let Some(duration) = duties_service
+                    .slot_clock
+                    .duration_to_next_epoch(E::slots_per_epoch())
+                {
+                    sleep(duration).await;
+                } else {
+                    // Just sleep for one slot if we are unable to read the system clock, this gives
+                    // us an opportunity for the clock to eventually come good.
+                    sleep(duties_service.slot_clock.slot_duration()).await;
+                    continue;
+                }
+            }
+        },
+        "duties_service_sync_committee",
     );
 }
 

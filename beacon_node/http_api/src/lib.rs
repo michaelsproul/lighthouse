@@ -10,6 +10,7 @@ mod block_id;
 mod metrics;
 mod proposer_duties;
 mod state_id;
+mod sync_committees;
 mod validator_inclusion;
 
 use beacon_chain::{
@@ -1763,6 +1764,27 @@ pub fn serve<T: BeaconChainTypes>(
             },
         );
 
+    let post_validator_duties_sync = eth1_v1
+        .and(warp::path("validator"))
+        .and(warp::path("duties"))
+        .and(warp::path("sync"))
+        .and(warp::path::param::<Epoch>().or_else(|_| async {
+            Err(warp_utils::reject::custom_bad_request(
+                "Invalid epoch".to_string(),
+            ))
+        }))
+        .and(warp::path::end())
+        .and(not_while_syncing_filter.clone())
+        .and(warp::body::json())
+        .and(chain_filter.clone())
+        .and_then(
+            |epoch: Epoch, indices: api_types::ValidatorIndexData, chain: Arc<BeaconChain<T>>| {
+                blocking_json_task(move || {
+                    sync_committees::sync_committee_duties(epoch, &indices.0, &chain)
+                })
+            },
+        );
+
     // POST validator/aggregate_and_proofs
     let post_validator_aggregate_and_proofs = eth1_v1
         .and(warp::path("validator"))
@@ -2242,6 +2264,7 @@ pub fn serve<T: BeaconChainTypes>(
                 .or(post_beacon_pool_proposer_slashings.boxed())
                 .or(post_beacon_pool_voluntary_exits.boxed())
                 .or(post_validator_duties_attester.boxed())
+                .or(post_validator_duties_sync.boxed())
                 .or(post_validator_aggregate_and_proofs.boxed())
                 .or(post_validator_beacon_committee_subscriptions.boxed()),
         ))

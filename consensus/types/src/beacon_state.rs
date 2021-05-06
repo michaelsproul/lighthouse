@@ -108,6 +108,10 @@ pub enum Error {
     ArithError(ArithError),
     MissingBeaconBlock(SignedBeaconBlockHash),
     MissingBeaconState(BeaconStateHash),
+    SyncCommitteeNotKnown {
+        current_epoch: Epoch,
+        epoch: Epoch,
+    },
 }
 
 /// Control whether an epoch-indexed field can be indexed at the next epoch or not.
@@ -714,6 +718,48 @@ impl<T: EthSpec> BeaconState<T> {
         Ok(hash(&preimage))
     }
 
+    /// Get the sync committee for the current or next period.
+    ///
+    /// Will utilise the cache for the current period.
+    // FIXME(sproul): consider adding cache for next epoch
+    pub fn get_sync_committee(
+        &self,
+        epoch: Epoch,
+        spec: &ChainSpec,
+    ) -> Result<SyncCommittee<T>, Error> {
+        let base_epoch = self.sync_committee_base_epoch(epoch, spec)?;
+        let current_base_epoch = self.sync_committee_base_epoch(self.current_epoch(), spec)?;
+
+        let sync_committee_indices = if base_epoch == current_base_epoch {
+            Cow::Borrowed(self.get_current_sync_committee_indices(spec)?)
+        } else {
+            Cow::Owned(self.compute_sync_committee_indices(epoch, spec)?)
+        };
+        self.compute_sync_committee(sync_committee_indices.as_ref())
+    }
+
+    /// Get the already-built current or next sync committee from the state.
+    pub fn get_built_sync_committee(
+        &self,
+        epoch: Epoch,
+        spec: &ChainSpec,
+    ) -> Result<&SyncCommittee<T>, Error> {
+        let sync_committee_period = epoch.sync_committee_period(spec)?;
+        let current_sync_committee_period = self.current_epoch().sync_committee_period(spec)?;
+        let next_sync_committee_period = current_sync_committee_period.safe_add(1)?;
+
+        if sync_committee_period == current_sync_committee_period {
+            self.current_sync_committee()
+        } else if sync_committee_period == next_sync_committee_period {
+            self.next_sync_committee()
+        } else {
+            Err(Error::SyncCommitteeNotKnown {
+                current_epoch: self.current_epoch(),
+                epoch,
+            })
+        }
+    }
+
     /// Get the *current* sync committee indices using the cache.
     ///
     /// Will error if the cache isn't initialised at the correct base epoch.
@@ -773,25 +819,6 @@ impl<T: EthSpec> BeaconState<T> {
         Ok(sync_committee_indices)
     }
 
-    /// Get the sync committee for the current or next period.
-    ///
-    /// Will utilise the cache for the current period.
-    pub fn get_sync_committee(
-        &self,
-        epoch: Epoch,
-        spec: &ChainSpec,
-    ) -> Result<SyncCommittee<T>, Error> {
-        let base_epoch = self.sync_committee_base_epoch(epoch, spec)?;
-        let current_base_epoch = self.sync_committee_base_epoch(self.current_epoch(), spec)?;
-
-        let sync_committee_indices = if base_epoch == current_base_epoch {
-            Cow::Borrowed(self.get_current_sync_committee_indices(spec)?)
-        } else {
-            Cow::Owned(self.compute_sync_committee_indices(epoch, spec)?)
-        };
-        self.compute_sync_committee(sync_committee_indices.as_ref())
-    }
-
     /// Compute the sync committee for a given list of indices.
     pub fn compute_sync_committee(
         &self,
@@ -842,6 +869,33 @@ impl<T: EthSpec> BeaconState<T> {
         )
         .safe_sub(1)?
         .safe_mul(spec.epochs_per_sync_committee_period)?)
+    }
+
+    /// Get the sync committee duties for a list of validator indices.
+    ///
+    /// Will return a `SyncCommitteeNotKnown` error if the `epoch` is out of bounds with respect
+    /// to the current or next sync committee periods.
+    pub fn get_sync_committee_duties(
+        &self,
+        epoch: Epoch,
+        validator_indices: &[u64],
+        spec: &ChainSpec,
+    ) -> Result<Vec<Option<SyncDuty>>, Error> {
+        // FIXME(sproul): consider using cached indices
+        let sync_committee = self.get_built_sync_committee(epoch, spec)?;
+
+        validator_indices
+            .iter()
+            .map(|&validator_index| {
+                let pubkey = self.get_validator(validator_index as usize)?.pubkey.clone();
+
+                Ok(SyncDuty::from_sync_committee(
+                    validator_index,
+                    pubkey,
+                    sync_committee,
+                ))
+            })
+            .collect()
     }
 
     /// Get the canonical root of the `latest_block_header`, filling in its state root if necessary.
