@@ -47,7 +47,7 @@ pub fn initialize_beacon_state_from_eth1<T: EthSpec>(
 
         // Reset the sync committees (this seems to be what the tests want)
         state.as_altair_mut()?.current_sync_committee = Arc::new(SyncCommittee::temporary()?);
-        state.as_altair_mut()?.next_sync_committee = SyncCommittee::temporary()?;
+        state.as_altair_mut()?.next_sync_committee = Arc::new(SyncCommittee::temporary()?);
 
         // Reset the fork version too.
         state.fork_mut().current_version = spec.genesis_fork_version;

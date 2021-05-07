@@ -42,6 +42,14 @@ pub enum Error {
     FailedToDownloadAttesters(String),
     FailedToProduceSelectionProof,
     InvalidModulo(ArithError),
+    ArithError(ArithError),
+    SyncDutiesNotFound(u64),
+}
+
+impl From<ArithError> for Error {
+    fn from(e: ArithError) -> Self {
+        Self::ArithError(e)
+    }
 }
 
 /// Neatly joins the server-generated `AttesterData` with the locally-generated `selection_proof`.
@@ -170,6 +178,20 @@ impl<T: SlotClock + 'static, E: EthSpec> DutiesService<T, E> {
             .map(|(_, duty_and_proof)| duty_and_proof)
             .filter(|duty_and_proof| duty_and_proof.duty.slot == slot)
             .cloned()
+            .collect()
+    }
+
+    /// Returns public keys for all enabled validators managed by the VC.
+    pub fn local_pubkeys(&self) -> HashSet<PublicKeyBytes> {
+        self.validator_store.voting_pubkeys().into_iter().collect()
+    }
+
+    /// Returns the validator indices for all known validators in `local_pubkeys`.
+    pub fn local_indices(&self, local_pubkeys: &HashSet<PublicKeyBytes>) -> Vec<u64> {
+        let indices_map = self.indices.read();
+        local_pubkeys
+            .iter()
+            .filter_map(|pubkey| indices_map.get(pubkey).copied())
             .collect()
     }
 }
@@ -391,22 +413,8 @@ async fn poll_beacon_attesters<T: SlotClock + 'static, E: EthSpec>(
     let current_epoch = current_slot.epoch(E::slots_per_epoch());
     let next_epoch = current_epoch + 1;
 
-    let local_pubkeys: HashSet<PublicKeyBytes> = duties_service
-        .validator_store
-        .voting_pubkeys()
-        .into_iter()
-        .collect();
-
-    let local_indices = {
-        let mut local_indices = Vec::with_capacity(local_pubkeys.len());
-        let indices_map = duties_service.indices.read();
-        for &pubkey in &local_pubkeys {
-            if let Some(validator_index) = indices_map.get(&pubkey) {
-                local_indices.push(*validator_index)
-            }
-        }
-        local_indices
-    };
+    let local_pubkeys = duties_service.local_pubkeys();
+    let local_indices = duties_service.local_indices(&local_pubkeys);
 
     // Download the duties and update the duties for the current epoch.
     if let Err(e) = poll_beacon_attesters_for_epoch(
