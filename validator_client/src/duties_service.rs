@@ -21,6 +21,7 @@ use slot_clock::SlotClock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use sync::poll_sync_committee_duties;
+use sync::SyncDutiesMap;
 use tokio::{sync::mpsc::Sender, time::sleep};
 use types::{ChainSpec, Epoch, EthSpec, Hash256, PublicKeyBytes, SelectionProof, Slot};
 
@@ -96,7 +97,7 @@ pub struct DutiesService<T, E: EthSpec> {
     /// Maps an epoch to all *local* proposers in this epoch. Notably, this does not contain
     /// proposals for any validators which are not registered locally.
     pub proposers: RwLock<ProposerMap>,
-    pub sync_duties:
+    pub sync_duties: SyncDutiesMap,
     /// Maps a public key to a validator index. There is a task which ensures this map is kept
     /// up-to-date.
     pub indices: RwLock<IndicesMap>,

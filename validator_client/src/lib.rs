@@ -290,6 +290,7 @@ impl<T: EthSpec> ProductionValidatorClient<T> {
         let duties_service = Arc::new(DutiesService {
             attesters: <_>::default(),
             proposers: <_>::default(),
+            sync_duties: <_>::default(),
             indices: <_>::default(),
             slot_clock: slot_clock.clone(),
             beacon_nodes: beacon_nodes.clone(),
