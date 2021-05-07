@@ -25,6 +25,7 @@ use tree_hash_derive::TreeHash;
 pub use self::committee_cache::CommitteeCache;
 pub use clone_config::CloneConfig;
 pub use eth_spec::*;
+use std::sync::Arc;
 pub use sync_committee_cache::SyncCommitteeCache;
 pub use tree_hash_cache::BeaconTreeHashCache;
 
@@ -257,9 +258,9 @@ where
 
     // Light-client sync committees
     #[superstruct(only(Altair))]
-    pub current_sync_committee: SyncCommittee<T>,
+    pub current_sync_committee: Arc<SyncCommittee<T>>,
     #[superstruct(only(Altair))]
-    pub next_sync_committee: SyncCommittee<T>,
+    pub next_sync_committee: Arc<SyncCommittee<T>>,
 
     // Caching (not in the spec)
     #[serde(skip_serializing, skip_deserializing)]
@@ -723,7 +724,7 @@ impl<T: EthSpec> BeaconState<T> {
         &self,
         epoch: Epoch,
         spec: &ChainSpec,
-    ) -> Result<&SyncCommittee<T>, Error> {
+    ) -> Result<&Arc<SyncCommittee<T>>, Error> {
         let sync_committee_period = epoch.sync_committee_period(spec)?;
         let current_sync_committee_period = self.current_epoch().sync_committee_period(spec)?;
         let next_sync_committee_period = current_sync_committee_period.safe_add(1)?;
@@ -1590,8 +1591,8 @@ impl<T: EthSpec> BeaconState<T> {
             // Inactivity
             inactivity_scores,
             // Sync committees
-            current_sync_committee: SyncCommittee::temporary()?, // not read
-            next_sync_committee: SyncCommittee::temporary()?,    // not read
+            current_sync_committee: Arc::new(SyncCommittee::temporary()?), // not read
+            next_sync_committee: Arc::new(SyncCommittee::temporary()?),    // not read
             // Caches
             committee_caches: mem::take(&mut pre.committee_caches),
             current_sync_committee_cache: mem::take(&mut pre.current_sync_committee_cache),
@@ -1603,12 +1604,14 @@ impl<T: EthSpec> BeaconState<T> {
         // Fill in sync committees
         post.build_current_sync_committee_cache(spec)?;
         post.as_altair_mut()?.current_sync_committee =
-            post.get_sync_committee(post.current_epoch(), spec)?;
-        post.as_altair_mut()?.next_sync_committee = post.get_sync_committee(
-            post.current_epoch()
-                .safe_add(spec.epochs_per_sync_committee_period)?,
-            spec,
-        )?;
+            Arc::new(post.get_sync_committee(post.current_epoch(), spec)?);
+        post.as_altair_mut()?.next_sync_committee = Arc::new(
+            post.get_sync_committee(
+                post.current_epoch()
+                    .safe_add(spec.epochs_per_sync_committee_period)?,
+                spec,
+            )?,
+        );
 
         *self = post;
 

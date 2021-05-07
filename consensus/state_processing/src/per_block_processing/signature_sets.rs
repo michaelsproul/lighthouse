@@ -2,11 +2,17 @@
 //! validated individually, or alongside in others in a potentially cheaper bulk operation.
 //!
 //! This module exposes one function to extract each type of `SignatureSet` from a `BeaconBlock`.
-use bls::{PublicKeyBytes, SignatureSet};
+use bls::SignatureSet;
 use ssz::DecodeError;
 use std::borrow::Cow;
 use tree_hash::TreeHash;
-use types::{AggregateSignature, AttesterSlashing, BeaconBlockRef, BeaconState, BeaconStateError, ChainSpec, DepositData, Domain, EthSpec, Fork, Hash256, IndexedAttestation, ProposerSlashing, PublicKey, Signature, SignedAggregateAndProof, SignedBeaconBlock, SignedBeaconBlockHeader, SignedContributionAndProof, SignedRoot, SignedVoluntaryExit, SigningData, SyncAggregatorSelectionData, SyncCommitteeContribution, Unsigned, SyncCommitteeSignature, Epoch};
+use types::{
+    AggregateSignature, AttesterSlashing, BeaconBlockRef, BeaconState, BeaconStateError, ChainSpec,
+    DepositData, Domain, Epoch, EthSpec, Fork, Hash256, IndexedAttestation, ProposerSlashing,
+    PublicKey, Signature, SignedAggregateAndProof, SignedBeaconBlock, SignedBeaconBlockHeader,
+    SignedContributionAndProof, SignedRoot, SignedVoluntaryExit, SigningData,
+    SyncAggregatorSelectionData, Unsigned,
+};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -477,12 +483,7 @@ where
         );
     }
 
-    let domain = spec.get_domain(
-        epoch,
-        Domain::SyncCommittee,
-        &fork,
-        genesis_validators_root,
-    );
+    let domain = spec.get_domain(epoch, Domain::SyncCommittee, &fork, genesis_validators_root);
 
     let message = beacon_block_root.signing_root(domain);
 
