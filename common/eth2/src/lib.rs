@@ -1100,8 +1100,8 @@ impl BeaconNodeHttpClient {
         path.path_segments_mut()
             .map_err(|()| Error::InvalidUrl(self.server.clone()))?
             .push("validator")
+            .push("duties")
             .push("sync")
-            .push("attester")
             .push(&epoch.to_string());
 
         self.post_with_response(path, &indices).await

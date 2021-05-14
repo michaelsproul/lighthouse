@@ -307,11 +307,11 @@ pub fn start_update_service<T: SlotClock + 'static, E: EthSpec>(
                     );
                 }
 
-                // Wait a whole epoch before polling again.
-                if let Some(duration) = duties_service
-                    .slot_clock
-                    .duration_to_next_epoch(E::slots_per_epoch())
-                {
+                // Wait until the next slot before polling again.
+                // This doesn't mean that the beacon node will get polled every slot
+                // as the sync duties service will return early if it deems it already has
+                // enough information.
+                if let Some(duration) = duties_service.slot_clock.duration_to_next_slot() {
                     sleep(duration).await;
                 } else {
                     // Just sleep for one slot if we are unable to read the system clock, this gives

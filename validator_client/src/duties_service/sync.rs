@@ -150,6 +150,7 @@ pub async fn poll_sync_committee_duties_for_period<T: SlotClock + 'static, E: Et
         log,
         "Fetching sync committee duties";
         "sync_committee_period" => sync_committee_period,
+        "num_validators" => local_indices.len(),
     );
 
     let period_start_epoch = spec.epochs_per_sync_committee_period * sync_committee_period;
@@ -176,10 +177,15 @@ pub async fn poll_sync_committee_duties_for_period<T: SlotClock + 'static, E: Et
         }
     };
 
+    info!(log, "Fetched duties from BN"; "count" => duties.len());
+
     // Add duties to map.
     let committee_duties = duties_service
         .sync_duties
         .get_or_create_committee_duties(sync_committee_period, local_indices);
+
+    // Track updated validator indices
+    let mut updated_validator_indices = vec![];
 
     {
         let mut validator_writer = committee_duties.validators.write();
@@ -188,19 +194,35 @@ pub async fn poll_sync_committee_duties_for_period<T: SlotClock + 'static, E: Et
                 .get_mut(&duty.validator_index)
                 .ok_or(Error::SyncDutiesNotFound(duty.validator_index))?;
 
-            // FIXME(sproul): warn on re-org?
-            info!(
-                log,
-                "Validator in sync committee";
-                "validator_index" => duty.validator_index,
-                "sync_committee_period" => sync_committee_period,
-            );
+            let updated = validator_duties.map_or(true, |existing_duties| {
+                existing_duties.validator_sync_committee_indices
+                    != duty.validator_sync_committee_indices
+            });
 
-            *validator_duties = Some(ValidatorDuties::new(duty.validator_sync_committee_indices));
+            if updated {
+                info!(
+                    log,
+                    "Validator in sync committee";
+                    "validator_index" => duty.validator_index,
+                    "sync_committee_period" => sync_committee_period,
+                );
+
+                updated_validator_indices.push(duty.validator_index);
+                *validator_duties =
+                    Some(ValidatorDuties::new(duty.validator_sync_committee_indices));
+            }
         }
     }
 
     // TODO: spawn background thread to fill in aggregator proofs
 
     Ok(())
+}
+
+pub fn fill_in_aggregation_proofs(
+    duties_service: &DutiesService<T, E>,
+    updated_indices: &[u64],
+    sync_committee_period: u64,
+) {
+    // Generate selection proofs for each validator at each slot
 }
