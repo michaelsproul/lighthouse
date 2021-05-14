@@ -26,16 +26,11 @@
 //!                  impl SignatureVerifiedSyncContribution
 //! ```
 
-use crate::{
-    beacon_chain::{
-        HEAD_LOCK_TIMEOUT, MAXIMUM_GOSSIP_CLOCK_DISPARITY, VALIDATOR_PUBKEY_CACHE_LOCK_TIMEOUT,
-    },
-    metrics,
-    observed_aggregates::ObserveOutcome,
-    observed_attesters::Error as ObservedAttestersError,
-    BeaconChain, BeaconChainError, BeaconChainTypes,
-};
-use bls::impls::fake_crypto::AggregateSignature;
+use std::borrow::Cow;
+use std::collections::HashMap;
+
+use strum::AsRefStr;
+
 use bls::verify_signature_sets;
 use eth2::lighthouse_vc::types::attestation::SlotData;
 use proto_array::Block as ProtoBlock;
@@ -47,15 +42,21 @@ use state_processing::signature_sets::{
     signed_sync_aggregate_selection_proof_signature_set, signed_sync_aggregate_signature_set,
     sync_committee_contribution_signature_set_from_pubkeys,
 };
-use std::borrow::Cow;
-use std::collections::HashMap;
-use strum::AsRefStr;
 use tree_hash::TreeHash;
 use types::consts::altair::SYNC_COMMITTEE_SUBNET_COUNT;
 use types::{
-    sync_committee_base_epoch, Attestation, BeaconCommittee, BitVector, CommitteeIndex, Epoch,
-    EthSpec, Hash256, IndexedAttestation, SelectionProof, SignedContributionAndProof, Slot,
-    SubnetId, SyncCommitteeContribution, SyncCommitteeSignature, Unsigned,
+    EthSpec, Hash256, SignedContributionAndProof, Slot, SyncCommitteeContribution,
+    SyncCommitteeSignature, SyncSelectionProof, SyncSubnetId, Unsigned,
+};
+
+use crate::{
+    beacon_chain::{
+        HEAD_LOCK_TIMEOUT, MAXIMUM_GOSSIP_CLOCK_DISPARITY, VALIDATOR_PUBKEY_CACHE_LOCK_TIMEOUT,
+    },
+    metrics,
+    observed_aggregates::ObserveOutcome,
+    observed_attesters::Error as ObservedAttestersError,
+    BeaconChain, BeaconChainError, BeaconChainTypes,
 };
 
 /// Returned when a sync committee contribution was not successfully verified. It might not have been verified for
@@ -177,8 +178,8 @@ pub enum Error {
     ///
     /// The peer has sent an invalid message.
     InvalidSubnetId {
-        received: SubnetId,
-        expected: Vec<SubnetId>,
+        received: SyncSubnetId,
+        expected: Vec<SyncSubnetId>,
     },
     /// The sync signature failed the `state_processing` verification stage.
     ///
@@ -211,11 +212,18 @@ pub enum Error {
     },
     SyncCommitteeCacheNotInitialized,
     ArithError(ArithError),
+    SszError(ssz_types::Error),
 }
 
 impl From<BeaconChainError> for Error {
     fn from(e: BeaconChainError) -> Self {
         Error::BeaconChainError(e)
+    }
+}
+
+impl From<ArithError> for Error {
+    fn from(e: ArithError) -> Self {
+        Error::ArithError(e)
     }
 }
 
@@ -237,7 +245,7 @@ impl<T: BeaconChainTypes> Clone for VerifiedSyncContribution<T> {
 /// Wraps a `SyncCommitteeSignature` that has been verified for propagation on the gossip network.
 pub struct VerifiedSyncSignature {
     sync_signature: SyncCommitteeSignature,
-    subnet_positions: HashMap<SubnetId, Vec<usize>>,
+    subnet_positions: HashMap<SyncSubnetId, Vec<usize>>,
 }
 
 /// Custom `Clone` implementation is to avoid the restrictive trait bounds applied by the usual derive
@@ -321,10 +329,10 @@ impl<T: BeaconChainTypes> VerifiedSyncContribution<T> {
         //
         // Future optimizations should remove this clone.
         let selection_proof =
-            SelectionProof::from(signed_aggregate.message.selection_proof.clone());
+            SyncSelectionProof::from(signed_aggregate.message.selection_proof.clone());
 
         if !selection_proof
-            .is_sync_committee_aggregator::<T::EthSpec>()
+            .is_aggregator::<T::EthSpec>()
             .map_err(|e| Error::BeaconChainError(e.into()))?
         {
             return Err(Error::InvalidSelectionProof { aggregator_index });
@@ -353,23 +361,18 @@ impl<T: BeaconChainTypes> VerifiedSyncContribution<T> {
         //TODO: equivalent to `get_sync_subcommittee_pubkeys`
         let sync_subcommittee_size =
             <<T as BeaconChainTypes>::EthSpec as EthSpec>::SyncCommitteeSize::to_usize()
-                .safe_div(SYNC_COMMITTEE_SUBNET_COUNT as usize)
-                .map_err(|e| Error::ArithError(e))?;
-        let i = subcommittee_index
-            .safe_mul(sync_subcommittee_size)
-            .map_err(|e| Error::ArithError(e))?;
-        let j = i
-            .safe_add(sync_subcommittee_size)
-            .map_err(|e| Error::ArithError(e))?;
+                .safe_div(SYNC_COMMITTEE_SUBNET_COUNT as usize)?;
+        let i = subcommittee_index.safe_mul(sync_subcommittee_size)?;
+        let j = i.safe_add(sync_subcommittee_size)?;
         // only iter through the correct partition
         let participant_indices = current_sync_committee.pubkeys[i..j]
             .iter()
             .zip(contribution.aggregation_bits.iter())
             .flat_map(|(pubkey, bit)| {
                 bit.then::<Result<usize, Error>, _>(|| {
-                    Ok(chain
+                    chain
                         .validator_index(&pubkey)?
-                        .ok_or(Error::UnknowValidatorIndex(aggregator_index as usize))?)
+                        .ok_or(Error::UnknowValidatorIndex(aggregator_index as usize))
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -447,7 +450,7 @@ impl VerifiedSyncSignature {
     /// verify that it was received on the correct subnet.
     pub fn verify<T: BeaconChainTypes>(
         sync_signature: SyncCommitteeSignature,
-        subnet_id: Option<SubnetId>,
+        subnet_id: Option<SyncSubnetId>,
         chain: &BeaconChain<T>,
     ) -> Result<Self, Error> {
         // Ensure sync committee signature is for the current slot (within a
@@ -468,8 +471,7 @@ impl VerifiedSyncSignature {
         )?;
         let sync_subcommittee_size =
             <<T as BeaconChainTypes>::EthSpec as EthSpec>::SyncCommitteeSize::to_usize()
-                .safe_div(SYNC_COMMITTEE_SUBNET_COUNT as usize)
-                .map_err(|e| Error::ArithError(e))?;
+                .safe_div(SYNC_COMMITTEE_SUBNET_COUNT as usize)?;
         let pubkey = chain
             .validator_pubkey_bytes(sync_signature.validator_index as usize)?
             .ok_or(Error::UnknowValidatorIndex(
@@ -481,11 +483,9 @@ impl VerifiedSyncSignature {
         for (committee_index, validator_pubkey) in current_sync_committee.pubkeys.iter().enumerate()
         {
             if pubkey == *validator_pubkey {
-                let subcommittee_index = committee_index
-                    .safe_div(sync_subcommittee_size)
-                    .map_err(|e| Error::ArithError(e))?;
+                let subcommittee_index = committee_index.safe_div(sync_subcommittee_size)?;
                 subnet_positions
-                    .entry(SubnetId::new(subcommittee_index as u64))
+                    .entry(SyncSubnetId::new(subcommittee_index as u64))
                     .or_insert_with(Vec::new)
                     .push(committee_index);
             }
@@ -550,7 +550,7 @@ impl VerifiedSyncSignature {
     }
 
     /// Returns the correct subnet for the attestation.
-    pub fn subnet_positions(&self) -> HashMap<SubnetId, Vec<usize>> {
+    pub fn subnet_positions(&self) -> HashMap<SyncSubnetId, Vec<usize>> {
         self.subnet_positions.clone()
     }
 

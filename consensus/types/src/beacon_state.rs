@@ -1,31 +1,36 @@
-use self::committee_cache::get_active_validator_indices;
-use self::exit_cache::ExitCache;
-use crate::test_utils::TestRandom;
-use crate::*;
+use std::borrow::Cow;
+use std::convert::TryInto;
+use std::sync::Arc;
+use std::{fmt, mem};
+
+use derivative::Derivative;
+use serde_derive::{Deserialize, Serialize};
+use superstruct::superstruct;
+
+pub use clone_config::CloneConfig;
 use compare_fields::CompareFields;
 use compare_fields_derive::CompareFields;
-use derivative::Derivative;
 use eth2_hashing::hash;
+pub use eth_spec::*;
 use int_to_bytes::{int_to_bytes4, int_to_bytes8};
 use pubkey_cache::PubkeyCache;
 use safe_arith::{ArithError, SafeArith};
-use serde_derive::{Deserialize, Serialize};
 use ssz::{ssz_encode, Decode, DecodeError, Encode};
 use ssz_derive::{Decode, Encode};
 use ssz_types::{typenum::Unsigned, BitVector, FixedVector};
-use std::convert::TryInto;
-use std::{fmt, mem};
-use superstruct::superstruct;
 use swap_or_not_shuffle::compute_shuffled_index;
+pub use sync_committee_cache::SyncCommitteeCache;
 use test_random_derive::TestRandom;
 use tree_hash::TreeHash;
+pub use tree_hash_cache::BeaconTreeHashCache;
 use tree_hash_derive::TreeHash;
 
+use crate::test_utils::TestRandom;
+use crate::*;
+
+use self::committee_cache::get_active_validator_indices;
 pub use self::committee_cache::CommitteeCache;
-pub use clone_config::CloneConfig;
-pub use eth_spec::*;
-use std::sync::Arc;
-pub use tree_hash_cache::BeaconTreeHashCache;
+use self::exit_cache::ExitCache;
 
 #[macro_use]
 mod committee_cache;
@@ -770,7 +775,7 @@ impl<T: EthSpec> BeaconState<T> {
         epoch: Epoch,
         spec: &ChainSpec,
     ) -> Result<Vec<usize>, Error> {
-        let base_epoch = sync_committee_base_epoch(epoch, spec)?;
+        let base_epoch = epoch.sync_committee_base_epoch(spec)?;
 
         if base_epoch > self.next_epoch()? {
             return Err(Error::EpochOutOfBounds);
@@ -1705,14 +1710,4 @@ impl<T: EthSpec> CompareFields for BeaconState<T> {
             _ => panic!("compare_fields: mismatched state variants"),
         }
     }
-}
-
-/// Compute the `base_epoch` used by sync committees.
-pub fn sync_committee_base_epoch(epoch: Epoch, spec: &ChainSpec) -> Result<Epoch, Error> {
-    Ok(std::cmp::max(
-        epoch.safe_div(spec.epochs_per_sync_committee_period)?,
-        Epoch::new(1),
-    )
-    .safe_sub(1)?
-    .safe_mul(spec.epochs_per_sync_committee_period)?)
 }

@@ -1179,14 +1179,15 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         unaggregated_sync_signature: VerifiedSyncSignature,
     ) -> Result<VerifiedSyncSignature, SyncCommitteeError> {
         let sync_signature = unaggregated_sync_signature.sync_signature();
-        let positions_by_subnet_id: HashMap<SubnetId, Vec<usize>> =
+        let positions_by_subnet_id: HashMap<SyncSubnetId, Vec<usize>> =
             unaggregated_sync_signature.subnet_positions();
         for (subnet_id, positions) in positions_by_subnet_id.iter() {
             for position in positions {
                 let _timer =
                     metrics::start_timer(&metrics::ATTESTATION_PROCESSING_APPLY_TO_AGG_POOL);
                 let mut bits = BitVector::new();
-                bits.set(*position, true);
+                bits.set(*position, true)
+                    .map_err(SyncCommitteeError::SszError)?;
                 let contribution = SyncCommitteeContribution {
                     slot: sync_signature.slot,
                     beacon_block_root: sync_signature.beacon_block_root,
