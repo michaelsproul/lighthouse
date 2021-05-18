@@ -1,9 +1,11 @@
 use crate::duties_service::{DutiesService, Error};
+use itertools::Itertools;
 use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use slog::{info, warn};
+use slog::{crit, info, warn};
 use slot_clock::SlotClock;
 use std::collections::HashMap;
-use types::{ChainSpec, EthSpec, Signature, Slot};
+use std::sync::Arc;
+use types::{ChainSpec, Epoch, EthSpec, PublicKeyBytes, Slot, SyncDuty, SyncSelectionProof};
 
 pub struct SyncDutiesMap {
     /// Map from sync committee period to duties for members of that sync committee.
@@ -22,10 +24,15 @@ pub struct CommitteeDuties {
 }
 
 pub struct ValidatorDuties {
-    /// The sync duty
-    validator_sync_committee_indices: Vec<u64>,
-    /// Map from slot to proof that this validator is an aggregator at that slot.
-    aggregation_proofs: RwLock<HashMap<Slot, Signature>>,
+    /// The sync duty: including validator sync committee indices & pubkey.
+    duty: SyncDuty,
+    /// Map from slot & subnet ID to proof that this validator is an aggregator.
+    aggregation_proofs: RwLock<HashMap<(Slot, u64), SyncSelectionProof>>,
+}
+
+/// Duties for a single slot & subnet.
+pub struct SlotDutiesBySubnet {
+    pub subnet_duties: HashMap<u64, Vec<(SyncDuty, Option<SyncSelectionProof>)>>,
 }
 
 impl Default for SyncDutiesMap {
@@ -49,10 +56,10 @@ impl SyncDutiesMap {
             })
     }
 
-    pub fn get_or_create_committee_duties<'a>(
+    pub fn get_or_create_committee_duties<'a, 'b>(
         &'a self,
         committee_period: u64,
-        validator_indices: &[u64],
+        validator_indices: impl IntoIterator<Item = &'b u64>,
     ) -> MappedRwLockReadGuard<'a, CommitteeDuties> {
         let mut committees_writer = self.committees.write();
 
@@ -67,11 +74,53 @@ impl SyncDutiesMap {
             |committees_reader| &committees_reader[&committee_period],
         )
     }
+
+    pub fn get_duties_for_slot<E: EthSpec>(
+        &self,
+        wall_clock_slot: Slot,
+        spec: &ChainSpec,
+    ) -> Option<SlotDutiesBySubnet> {
+        // Sync duties lag their assigned slot by 1
+        let duty_slot = wall_clock_slot + 1;
+        let sync_committee_period = duty_slot
+            .epoch(E::slots_per_epoch())
+            .sync_committee_period(spec)
+            .ok()?;
+
+        let committees_reader = self.committees.read();
+        let committee_duties = committees_reader.get(&sync_committee_period)?;
+
+        let subnet_duties = committee_duties
+            .validators
+            .read()
+            .values()
+            // Filter out non-members & failed subnet IDs
+            .filter_map(|opt_duties| {
+                let duty = opt_duties.as_ref()?;
+                let subnet_ids = duty.duty.subnet_ids::<E>().ok()?; // FIXME(sproul): log error?
+                Some((duty, subnet_ids))
+            })
+            // Re-key by subnet, with optional proof for that subnet
+            .flat_map(|(validator_duty, subnet_ids)| {
+                subnet_ids.into_iter().map(move |subnet_id| {
+                    let duty = validator_duty.duty.clone();
+                    let optional_proof = validator_duty
+                        .aggregation_proofs
+                        .read()
+                        .get(&(duty_slot, subnet_id))
+                        .cloned();
+                    (subnet_id, (duty, optional_proof))
+                })
+            })
+            .into_group_map();
+
+        Some(SlotDutiesBySubnet { subnet_duties })
+    }
 }
 
 impl CommitteeDuties {
-    fn init(&mut self, validator_indices: &[u64]) {
-        validator_indices.iter().for_each(|validator_index| {
+    fn init<'b>(&mut self, validator_indices: impl IntoIterator<Item = &'b u64>) {
+        validator_indices.into_iter().for_each(|validator_index| {
             self.validators
                 .get_mut()
                 .entry(*validator_index)
@@ -81,9 +130,9 @@ impl CommitteeDuties {
 }
 
 impl ValidatorDuties {
-    fn new(validator_sync_committee_indices: Vec<u64>) -> Self {
+    fn new(duty: SyncDuty) -> Self {
         Self {
-            validator_sync_committee_indices,
+            duty,
             aggregation_proofs: RwLock::new(HashMap::new()),
         }
     }
@@ -95,7 +144,7 @@ fn epoch_offset(spec: &ChainSpec) -> u64 {
 }
 
 pub async fn poll_sync_committee_duties<T: SlotClock + 'static, E: EthSpec>(
-    duties_service: &DutiesService<T, E>,
+    duties_service: &Arc<DutiesService<T, E>>,
 ) -> Result<(), Error> {
     let sync_duties = &duties_service.sync_duties;
     let spec = &duties_service.spec;
@@ -139,7 +188,7 @@ pub async fn poll_sync_committee_duties<T: SlotClock + 'static, E: EthSpec>(
 }
 
 pub async fn poll_sync_committee_duties_for_period<T: SlotClock + 'static, E: EthSpec>(
-    duties_service: &DutiesService<T, E>,
+    duties_service: &Arc<DutiesService<T, E>>,
     local_indices: &[u64],
     sync_committee_period: u64,
 ) -> Result<(), Error> {
@@ -184,8 +233,8 @@ pub async fn poll_sync_committee_duties_for_period<T: SlotClock + 'static, E: Et
         .sync_duties
         .get_or_create_committee_duties(sync_committee_period, local_indices);
 
-    // Track updated validator indices
-    let mut updated_validator_indices = vec![];
+    // Track updated validator indices & pubkeys.
+    let mut updated_validators = vec![];
 
     {
         let mut validator_writer = committee_duties.validators.write();
@@ -194,8 +243,9 @@ pub async fn poll_sync_committee_duties_for_period<T: SlotClock + 'static, E: Et
                 .get_mut(&duty.validator_index)
                 .ok_or(Error::SyncDutiesNotFound(duty.validator_index))?;
 
-            let updated = validator_duties.map_or(true, |existing_duties| {
-                existing_duties.validator_sync_committee_indices
+            let updated = validator_duties.as_ref().map_or(true, |existing_duties| {
+                // FIXME(sproul): warn on reorg
+                existing_duties.duty.validator_sync_committee_indices
                     != duty.validator_sync_committee_indices
             });
 
@@ -207,22 +257,123 @@ pub async fn poll_sync_committee_duties_for_period<T: SlotClock + 'static, E: Et
                     "sync_committee_period" => sync_committee_period,
                 );
 
-                updated_validator_indices.push(duty.validator_index);
-                *validator_duties =
-                    Some(ValidatorDuties::new(duty.validator_sync_committee_indices));
+                updated_validators.push(duty.clone());
+                *validator_duties = Some(ValidatorDuties::new(duty));
             }
         }
     }
 
-    // TODO: spawn background thread to fill in aggregator proofs
+    // Spawn background task to fill in aggregator selection proofs.
+    let sub_duties_service = duties_service.clone();
+    duties_service.context.executor.spawn_blocking(
+        move || {
+            fill_in_aggregation_proofs(
+                sub_duties_service,
+                &updated_validators,
+                sync_committee_period,
+            )
+        },
+        "duties_service_sync_selection_proofs",
+    );
 
     Ok(())
 }
 
-pub fn fill_in_aggregation_proofs(
-    duties_service: &DutiesService<T, E>,
-    updated_indices: &[u64],
+pub fn fill_in_aggregation_proofs<T: SlotClock + 'static, E: EthSpec>(
+    duties_service: Arc<DutiesService<T, E>>,
+    validators: &[SyncDuty],
     sync_committee_period: u64,
 ) {
-    // Generate selection proofs for each validator at each slot
+    let spec = &duties_service.spec;
+    let log = duties_service.context.log();
+
+    // Generate selection proofs for each validator at each slot, one epoch at a time
+    let start_epoch = spec.epochs_per_sync_committee_period * sync_committee_period;
+    let end_epoch = start_epoch + spec.epochs_per_sync_committee_period;
+
+    for epoch in (start_epoch.as_u64()..end_epoch.as_u64()).map(Epoch::new) {
+        // Generate proofs.
+        let validator_proofs: Vec<(u64, Vec<((Slot, u64), SyncSelectionProof)>)> = validators
+            .iter()
+            .filter_map(|duty| {
+                let subnet_ids = duty
+                    .subnet_ids::<E>()
+                    .map_err(|e| {
+                        crit!(
+                            log,
+                            "Arithmetic error computing subnet IDs";
+                            "error" => ?e,
+                        );
+                    })
+                    .ok()?;
+
+                let proofs = epoch
+                    .slot_iter(E::slots_per_epoch())
+                    .cartesian_product(subnet_ids)
+                    .filter_map(|(slot, subnet_id)| {
+                        // FIXME(sproul): use `subnet_id`
+                        let proof = duties_service
+                            .validator_store
+                            .produce_sync_selection_proof(&duty.pubkey, slot)
+                            .or_else(|| {
+                                warn!(
+                                    log,
+                                    "Pubkey missing when signing selection proof";
+                                    "pubkey" => ?duty.pubkey,
+                                    "slot" => slot,
+                                );
+                                None
+                            })?;
+
+                        let is_aggregator = proof
+                            .is_aggregator::<E>()
+                            .map_err(|e| {
+                                warn!(
+                                    log,
+                                    "Error determining is_aggregator";
+                                    "pubkey" => ?duty.pubkey,
+                                    "slot" => slot,
+                                    "error" => ?e,
+                                );
+                            })
+                            .ok()?;
+
+                        if is_aggregator {
+                            info!(
+                                log,
+                                "Validator is sync aggregator";
+                                "validator_index" => duty.validator_index,
+                                "slot" => slot,
+                            );
+                            Some(((slot, subnet_id), proof))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                Some((duty.validator_index, proofs))
+            })
+            .collect();
+
+        // Add to global storage (we add regularly in case the proofs are required).
+        let committee_duties = duties_service.sync_duties.get_or_create_committee_duties(
+            sync_committee_period,
+            validator_proofs.iter().map(|(index, _)| index),
+        );
+        let validators_reader = committee_duties.validators.read();
+
+        for (validator_index, proofs) in validator_proofs {
+            if let Some(Some(duty)) = validators_reader.get(&validator_index) {
+                duty.aggregation_proofs.write().extend(proofs);
+            } else {
+                // FIXME(sproul): downgrade to debug
+                warn!(
+                    log,
+                    "Missing sync duty to update";
+                    "validator_index" => validator_index,
+                );
+            }
+        }
+    }
 }

@@ -1247,6 +1247,23 @@ pub fn serve<T: BeaconChainTypes>(
             })
         });
 
+    // POST beacon/pool/sync_committees
+    let post_beacon_pool_sync_committees = beacon_pool_path
+        .clone()
+        .and(warp::path("sync_committees"))
+        .and(warp::path::end())
+        .and(warp::body::json())
+        .and(network_tx_filter.clone())
+        .and(log_filter.clone())
+        .and_then(
+            |chain: Arc<BeaconChain<T>>,
+             signatures: Vec<SyncCommitteeSignature>,
+             _network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>,
+             log: Logger| {
+                sync_committees::process_sync_committee_signatures(signatures, chain, log)
+            },
+        );
+
     /*
      * config/fork_schedule
      */
@@ -2263,6 +2280,7 @@ pub fn serve<T: BeaconChainTypes>(
                 .or(post_beacon_pool_attester_slashings.boxed())
                 .or(post_beacon_pool_proposer_slashings.boxed())
                 .or(post_beacon_pool_voluntary_exits.boxed())
+                .or(post_beacon_pool_sync_committees.boxed())
                 .or(post_validator_duties_attester.boxed())
                 .or(post_validator_duties_sync.boxed())
                 .or(post_validator_aggregate_and_proofs.boxed())

@@ -1,5 +1,6 @@
-use crate::{EthSpec, SyncCommittee};
+use crate::{consts::altair::SYNC_COMMITTEE_SUBNET_COUNT, EthSpec, SyncCommittee, Unsigned};
 use bls::PublicKeyBytes;
+use safe_arith::{ArithError, SafeArith};
 use serde_derive::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,5 +71,23 @@ impl SyncDuty {
         } else {
             None
         }
+    }
+
+    /// Get the set of subnet IDs for this duty.
+    ///
+    /// Returns an ordered vector with no duplicates.
+    ///
+    /// FIXME(sproul): see whether Pawan needs `compute_subnets_for_sync_committee`
+    pub fn subnet_ids<E: EthSpec>(&self) -> Result<Vec<u64>, ArithError> {
+        let mut subnets = self
+            .validator_sync_committee_indices
+            .iter()
+            .map(|position| {
+                position
+                    .safe_div(E::SyncCommitteeSize::to_u64().safe_div(SYNC_COMMITTEE_SUBNET_COUNT)?)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        subnets.dedup();
+        Ok(subnets)
     }
 }
