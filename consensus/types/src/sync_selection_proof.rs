@@ -17,7 +17,6 @@ use std::convert::TryInto;
 pub struct SyncSelectionProof(Signature);
 
 impl SyncSelectionProof {
-    // FIXME(sproul): this needs updating with `subcommittee_index`
     pub fn new<T: EthSpec>(
         slot: Slot,
         subcommittee_index: u64,

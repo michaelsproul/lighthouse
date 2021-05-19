@@ -1,23 +1,14 @@
 use crate::beacon_node_fallback::{BeaconNodeFallback, RequireSynced};
-use crate::{
-    duties_service::{DutiesService, DutyAndProof},
-    http_metrics::metrics,
-    validator_store::ValidatorStore,
-};
+use crate::{duties_service::DutiesService, validator_store::ValidatorStore};
 use environment::RuntimeContext;
 use eth2::types::BlockId;
 use futures::future::FutureExt;
 use slog::{crit, debug, error, info, trace};
 use slot_clock::SlotClock;
-use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 use tokio::time::{sleep, sleep_until, Duration, Instant};
-use tree_hash::TreeHash;
-use types::{
-    AggregateSignature, ChainSpec, CommitteeIndex, EthSpec, Hash256, Slot, SyncDuty,
-    SyncSelectionProof,
-};
+use types::{ChainSpec, EthSpec, Hash256, Slot, SyncDuty, SyncSelectionProof};
 
 pub struct SyncCommitteeService<T: SlotClock + 'static, E: EthSpec> {
     inner: Arc<Inner<T, E>>,
@@ -127,14 +118,13 @@ impl<T: SlotClock + 'static, E: EthSpec> SyncCommitteeService<T, E> {
                 .checked_sub(slot_duration / 3)
                 .unwrap_or_else(|| Duration::from_secs(0));
 
-        // Group duties by sync committee subnet (for later aggregation).
-        let duties_by_subnet = self
+        let slot_duties = self
             .duties_service
             .sync_duties
             .get_duties_for_slot::<E>(slot, &self.duties_service.spec)
             .ok_or_else(|| format!("Error fetching duties for slot {}", slot))?;
 
-        if duties_by_subnet.subnet_duties.is_empty() {
+        if slot_duties.duties.is_empty() {
             debug!(
                 log,
                 "No local validators in current sync committee";
@@ -157,49 +147,32 @@ impl<T: SlotClock + 'static, E: EthSpec> SyncCommitteeService<T, E> {
             .data
             .root;
 
-        // For each subnet for this slot:
-        //
-        // - Create and publish a `SyncCommitteeContribution` for all required validators.
-        // - Create and publish a `SignedContributionAndProof` for all aggregating validators.
-        duties_by_subnet
-            .subnet_duties
-            .into_iter()
-            .for_each(|(subnet_id, validator_duties)| {
-                // Spawn a separate task for each subnet.
-                // let sub_service = self.clone();
-                self.inner.context.executor.spawn(
-                    self.clone()
-                        .publish_signatures_and_contributions(
-                            slot,
-                            subnet_id,
-                            block_root,
-                            validator_duties,
-                            aggregate_production_instant,
-                        )
-                        .map(|_| ()),
-                    "sync_committee_publish",
-                );
-            });
+        // Spawn one task to publish all of the sync committee signatures.
+        let validator_duties = slot_duties.duties;
+        self.inner.context.executor.spawn(
+            self.clone()
+                .publish_sync_committee_signatures(slot, block_root, validator_duties)
+                .map(|_| ()),
+            "sync_committee_publish",
+        );
+
+        // FIXME(sproul): spawn one task per subnet to publish aggregates
 
         Ok(())
     }
 
-    async fn publish_signatures_and_contributions(
+    /// Publish sync committee signatures.
+    async fn publish_sync_committee_signatures(
         self,
         slot: Slot,
-        subnet_id: u64,
         beacon_block_root: Hash256,
-        validator_duties: Vec<(SyncDuty, Option<SyncSelectionProof>)>,
-        aggregate_production_instant: Instant,
+        validator_duties: Vec<SyncDuty>,
     ) -> Result<(), ()> {
         let log = self.context.log().clone();
 
-        // Publish sync committee signatures
-        // NOTE: because this is happening in a subnet-specific thread, we may end up publishing
-        // multiple identical signatures for the same validator, which is a slight waste of effort
         let committee_signatures = validator_duties
             .iter()
-            .filter_map(|(duty, _)| {
+            .filter_map(|duty| {
                 self.validator_store
                     .produce_sync_committee_signature(
                         slot,
@@ -219,15 +192,31 @@ impl<T: SlotClock + 'static, E: EthSpec> SyncCommitteeService<T, E> {
             })
             .collect::<Vec<_>>();
 
-        for (duty, proof) in &validator_duties {
-            info!(
-                log,
-                "Publishing sync contribution";
-                "validator_index" => duty.validator_index,
-                "slot" => slot,
-                "is_aggregator" => proof.is_some(),
-            );
-        }
+        let signatures_slice = &committee_signatures;
+
+        self.beacon_nodes
+            .first_success(RequireSynced::No, |beacon_node| async move {
+                beacon_node
+                    .post_beacon_pool_sync_committee_signatures(signatures_slice)
+                    .await
+            })
+            .await
+            .map_err(|e| {
+                error!(
+                    log,
+                    "Unable to publish sync committee signatures";
+                    "slot" => slot,
+                    "error" => %e,
+                );
+            })?;
+
+        info!(
+            log,
+            "Successfully published sync committee signatures";
+            "count" => committee_signatures.len(),
+            "head_block" => ?beacon_block_root,
+            "slot" => slot,
+        );
 
         Ok(())
     }

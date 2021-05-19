@@ -12,7 +12,7 @@ use tempfile::TempDir;
 use types::{
     graffiti::GraffitiString, Attestation, BeaconBlock, ChainSpec, Domain, Epoch, EthSpec, Fork,
     Graffiti, Hash256, Keypair, PublicKeyBytes, SelectionProof, Signature, SignedAggregateAndProof,
-    SignedBeaconBlock, SignedRoot, Slot, SyncSelectionProof,
+    SignedBeaconBlock, SignedRoot, Slot, SyncCommitteeSignature, SyncSelectionProof,
 };
 use validator_dir::ValidatorDir;
 
@@ -385,6 +385,7 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore<T, E> {
         &self,
         validator_pubkey: &PublicKeyBytes,
         slot: Slot,
+        subnet_id: u64,
     ) -> Option<SyncSelectionProof> {
         let validators = self.validators.read();
         let voting_keypair = validators.voting_keypair(validator_pubkey)?;
@@ -394,6 +395,7 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore<T, E> {
 
         Some(SyncSelectionProof::new::<E>(
             slot,
+            subnet_id,
             &voting_keypair.sk,
             &self.fork(),
             self.genesis_validators_root,

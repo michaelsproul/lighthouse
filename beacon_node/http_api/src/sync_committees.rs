@@ -1,12 +1,13 @@
 //! Contains the handlers for sync committee endpoints.
+use beacon_chain::sync_committee_verification::VerifiedSyncSignature;
 use beacon_chain::{
     BeaconChain, BeaconChainError, BeaconChainTypes, StateSkipConfig,
     MAXIMUM_GOSSIP_CLOCK_DISPARITY,
 };
 use eth2::types::{self as api_types};
-use slog::Logger;
+use slog::{error, Logger};
 use slot_clock::SlotClock;
-use types::{BeaconStateError, Epoch, EthSpec, SyncDuty};
+use types::{BeaconStateError, Epoch, EthSpec, SyncCommitteeSignature, SyncDuty};
 
 /// The struct that is returned to the requesting HTTP client.
 type SyncDuties = api_types::GenericResponse<Vec<SyncDuty>>;
@@ -96,16 +97,12 @@ pub fn process_sync_committee_signatures<T: BeaconChainTypes>(
     sync_committee_signatures: Vec<SyncCommitteeSignature>,
     chain: &BeaconChain<T>,
     log: Logger,
-) -> Result<SyncDuties, warp::reject::Rejection> {
-    blocking_json_task(move || {
-        let mut failures = vec![];
+) -> Result<(), warp::reject::Rejection> {
+    let mut failures = vec![];
 
-        for (i, sync_committee_signature) in sync_committee_signatures.iter().enumerate() {
-            let verified = match VerifiedSyncSignature::verify(
-                sync_committee_signature.clone(),
-                None,
-                chain,
-            ) {
+    for (i, sync_committee_signature) in sync_committee_signatures.iter().enumerate() {
+        let verified =
+            match VerifiedSyncSignature::verify(sync_committee_signature.clone(), None, chain) {
                 Ok(verified) => verified,
                 Err(e) => {
                     error!(
@@ -121,26 +118,25 @@ pub fn process_sync_committee_signatures<T: BeaconChainTypes>(
                 }
             };
 
-            if let Err(e) = chain.add_to_naive_sync_aggregation_pool(verified) {
-                error!(
-                    log,
-                    "Unable to add sync committee signature to pool";
-                    "error" => ?e,
-                    "slot" => sync_committee_signature.slot,
-                    "validator_index" => sync_committee_signature.validator_index,
-                );
-            }
-
-            // FIXME(sproul): publish on gossip
+        if let Err(e) = chain.add_to_naive_sync_aggregation_pool(verified) {
+            error!(
+                log,
+                "Unable to add sync committee signature to pool";
+                "error" => ?e,
+                "slot" => sync_committee_signature.slot,
+                "validator_index" => sync_committee_signature.validator_index,
+            );
         }
 
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(warp_utils::reject::indexed_bad_request(
-                "error processing sync committee signatures".to_string(),
-                failures,
-            ))
-        }
-    })
+        // FIXME(sproul): publish on gossip
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(warp_utils::reject::indexed_bad_request(
+            "error processing sync committee signatures".to_string(),
+            failures,
+        ))
+    }
 }

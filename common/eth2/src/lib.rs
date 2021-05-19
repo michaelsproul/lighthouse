@@ -702,6 +702,24 @@ impl BeaconNodeHttpClient {
         self.get(path).await
     }
 
+    /// `POST beacon/pool/sync_committees`
+    pub async fn post_beacon_pool_sync_committee_signatures(
+        &self,
+        signatures: &[SyncCommitteeSignature],
+    ) -> Result<(), Error> {
+        let mut path = self.eth_path()?;
+
+        path.path_segments_mut()
+            .map_err(|()| Error::InvalidUrl(self.server.clone()))?
+            .push("beacon")
+            .push("pool")
+            .push("sync_committees");
+
+        self.post(path, &signatures).await?;
+
+        Ok(())
+    }
+
     /// `GET config/fork_schedule`
     pub async fn get_config_fork_schedule(&self) -> Result<GenericResponse<Vec<Fork>>, Error> {
         let mut path = self.eth_path()?;

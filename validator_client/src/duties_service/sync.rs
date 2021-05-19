@@ -5,7 +5,7 @@ use slog::{crit, info, warn};
 use slot_clock::SlotClock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use types::{ChainSpec, Epoch, EthSpec, PublicKeyBytes, Slot, SyncDuty, SyncSelectionProof};
+use types::{ChainSpec, Epoch, EthSpec, Slot, SyncDuty, SyncSelectionProof};
 
 pub struct SyncDutiesMap {
     /// Map from sync committee period to duties for members of that sync committee.
@@ -30,9 +30,15 @@ pub struct ValidatorDuties {
     aggregation_proofs: RwLock<HashMap<(Slot, u64), SyncSelectionProof>>,
 }
 
-/// Duties for a single slot & subnet.
-pub struct SlotDutiesBySubnet {
-    pub subnet_duties: HashMap<u64, Vec<(SyncDuty, Option<SyncSelectionProof>)>>,
+/// Duties for a single slot.
+pub struct SlotDuties {
+    /// List of duties for all sync committee members at this slot
+    ///
+    /// Note: this is intentionally NOT split by subnet so that we only sign
+    /// one `SyncCommitteeSignature` per validator (recall a validator may be part of multiple
+    pub duties: Vec<SyncDuty>,
+    /// Map from subnet ID to validator index and selection proof of each aggregator.
+    pub aggregators: HashMap<u64, Vec<(u64, SyncSelectionProof)>>,
 }
 
 impl Default for SyncDutiesMap {
@@ -79,7 +85,7 @@ impl SyncDutiesMap {
         &self,
         wall_clock_slot: Slot,
         spec: &ChainSpec,
-    ) -> Option<SlotDutiesBySubnet> {
+    ) -> Option<SlotDuties> {
         // Sync duties lag their assigned slot by 1
         let duty_slot = wall_clock_slot + 1;
         let sync_committee_period = duty_slot
@@ -90,7 +96,10 @@ impl SyncDutiesMap {
         let committees_reader = self.committees.read();
         let committee_duties = committees_reader.get(&sync_committee_period)?;
 
-        let subnet_duties = committee_duties
+        let mut duties = vec![];
+        let mut aggregators = HashMap::new();
+
+        committee_duties
             .validators
             .read()
             .values()
@@ -100,21 +109,27 @@ impl SyncDutiesMap {
                 let subnet_ids = duty.duty.subnet_ids::<E>().ok()?; // FIXME(sproul): log error?
                 Some((duty, subnet_ids))
             })
-            // Re-key by subnet, with optional proof for that subnet
-            .flat_map(|(validator_duty, subnet_ids)| {
-                subnet_ids.into_iter().map(move |subnet_id| {
-                    let duty = validator_duty.duty.clone();
-                    let optional_proof = validator_duty
-                        .aggregation_proofs
-                        .read()
-                        .get(&(duty_slot, subnet_id))
-                        .cloned();
-                    (subnet_id, (duty, optional_proof))
-                })
-            })
-            .into_group_map();
+            // Add duties for members to the vec of all duties, and aggregators to the aggregators
+            // map.
+            .for_each(|(validator_duty, subnet_ids)| {
+                duties.push(validator_duty.duty.clone());
 
-        Some(SlotDutiesBySubnet { subnet_duties })
+                let proofs = validator_duty.aggregation_proofs.read();
+
+                for subnet_id in subnet_ids {
+                    if let Some(proof) = proofs.get(&(duty_slot, subnet_id)) {
+                        aggregators
+                            .entry(subnet_id)
+                            .or_insert_with(Vec::new)
+                            .push((validator_duty.duty.validator_index, proof.clone()));
+                    }
+                }
+            });
+
+        Some(SlotDuties {
+            duties,
+            aggregators,
+        })
     }
 }
 
@@ -311,10 +326,9 @@ pub fn fill_in_aggregation_proofs<T: SlotClock + 'static, E: EthSpec>(
                     .slot_iter(E::slots_per_epoch())
                     .cartesian_product(subnet_ids)
                     .filter_map(|(slot, subnet_id)| {
-                        // FIXME(sproul): use `subnet_id`
                         let proof = duties_service
                             .validator_store
-                            .produce_sync_selection_proof(&duty.pubkey, slot)
+                            .produce_sync_selection_proof(&duty.pubkey, slot, subnet_id)
                             .or_else(|| {
                                 warn!(
                                     log,

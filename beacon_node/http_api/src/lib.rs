@@ -39,6 +39,7 @@ use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 use types::{
     Attestation, AttesterSlashing, CommitteeCache, Epoch, EthSpec, ProposerSlashing, RelativeEpoch,
     SignedAggregateAndProof, SignedBeaconBlock, SignedVoluntaryExit, Slot, StandardConfig,
+    SyncCommitteeSignature,
 };
 use warp::http::StatusCode;
 use warp::sse::Event;
@@ -1260,7 +1261,10 @@ pub fn serve<T: BeaconChainTypes>(
              signatures: Vec<SyncCommitteeSignature>,
              _network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>,
              log: Logger| {
-                sync_committees::process_sync_committee_signatures(signatures, chain, log)
+                blocking_json_task(move || {
+                    sync_committees::process_sync_committee_signatures(signatures, &chain, log)?;
+                    Ok(api_types::GenericResponse::from(()))
+                })
             },
         );
 

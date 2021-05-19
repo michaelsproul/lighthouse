@@ -707,7 +707,6 @@ impl<T: EthSpec> BeaconState<T> {
         Ok(hash(&preimage))
     }
 
-<<<<<<< HEAD
     /// Get the already-built current or next sync committee from the state.
     pub fn get_built_sync_committee(
         &self,
@@ -730,8 +729,6 @@ impl<T: EthSpec> BeaconState<T> {
         }
     }
 
-=======
->>>>>>> sean/sync-committee-pools
     /// Get the sync committee for the current or next period by computing it from scratch.
     pub fn get_sync_committee(
         &self,
