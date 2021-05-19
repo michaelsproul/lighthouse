@@ -68,6 +68,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use store::iter::{BlockRootsIterator, ParentRootBlockIterator, StateRootsIterator};
 use store::{Error as DBError, HotColdDB, KeyValueStore, KeyValueStoreOp, StoreItem, StoreOp};
+use task_executor::ShutdownReason;
 use types::beacon_state::CloneConfig;
 use types::*;
 
@@ -277,7 +278,7 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     pub disabled_forks: Vec<String>,
     /// Sender given to tasks, so that if they encounter a state in which execution cannot
     /// continue they can request that everything shuts down.
-    pub shutdown_sender: Sender<&'static str>,
+    pub shutdown_sender: Sender<ShutdownReason>,
     /// Logging to CLI, etc.
     pub(crate) log: Logger,
     /// Arbitrary bytes included in the blocks.
@@ -1097,6 +1098,66 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         })
     }
 
+    /// Accepts some `Attestation` from the network and attempts to verify it, returning `Ok(_)` if
+    /// it is valid to be (re)broadcast on the gossip network.
+    ///
+    /// The attestation must be "unaggregated", that is it must have exactly one
+    /// aggregation bit set.
+    pub fn verify_sync_signature_for_gossip(
+        &self,
+        sync_signature: SyncCommitteeSignature,
+        subnet_id: Option<SyncSubnetId>,
+    ) -> Result<VerifiedSyncSignature, SyncCommitteeError> {
+        metrics::inc_counter(&metrics::UNAGGREGATED_ATTESTATION_PROCESSING_REQUESTS);
+        let _timer =
+            metrics::start_timer(&metrics::UNAGGREGATED_ATTESTATION_GOSSIP_VERIFICATION_TIMES);
+
+        VerifiedSyncSignature::verify(sync_signature, subnet_id, self)
+        //TODO: verify events in the api spec
+
+        //     .map(
+        //     |v| {
+        //         // This method is called for API and gossip attestations, so this covers all unaggregated attestation events
+        //         if let Some(event_handler) = self.event_handler.as_ref() {
+        //             if event_handler.has_attestation_subscribers() {
+        //                 event_handler.register(EventKind::Attestation(v.attestation().clone()));
+        //             }
+        //         }
+        //         metrics::inc_counter(&metrics::UNAGGREGATED_ATTESTATION_PROCESSING_SUCCESSES);
+        //         v
+        //     },
+        // )
+    }
+
+    /// Accepts some `SignedAggregateAndProof` from the network and attempts to verify it,
+    /// returning `Ok(_)` if it is valid to be (re)broadcast on the gossip network.
+    pub fn verify_sync_contribution_for_gossip(
+        &self,
+        sync_contribution: SignedContributionAndProof<T::EthSpec>,
+    ) -> Result<VerifiedSyncContribution<T>, SyncCommitteeError> {
+        metrics::inc_counter(&metrics::AGGREGATED_ATTESTATION_PROCESSING_REQUESTS);
+        let _timer =
+            metrics::start_timer(&metrics::AGGREGATED_ATTESTATION_GOSSIP_VERIFICATION_TIMES);
+        let banana = VerifiedSyncContribution::verify(sync_contribution, self);
+        if let Err(ref e) = banana {
+            banana
+        } else {
+            banana
+        }
+        //TODO: verify events in the api spec
+
+        //     .map(|v| {
+        //     // This method is called for API and gossip attestations, so this covers all aggregated attestation events
+        //     if let Some(event_handler) = self.event_handler.as_ref() {
+        //         if event_handler.has_attestation_subscribers() {
+        //             event_handler.register(EventKind::Attestation(v.attestation().clone()));
+        //         }
+        //     }
+        //     metrics::inc_counter(&metrics::AGGREGATED_ATTESTATION_PROCESSING_SUCCESSES);
+        //     v
+        // })
+    }
+
     /// Accepts some attestation-type object and attempts to verify it in the context of fork
     /// choice. If it is valid it is applied to `self.fork_choice`.
     ///
@@ -1186,10 +1247,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 let _timer =
                     metrics::start_timer(&metrics::ATTESTATION_PROCESSING_APPLY_TO_AGG_POOL);
                 let contribution = SyncCommitteeContribution::from_signature(
-                    sync_signature.clone(),
+                    sync_signature,
                     subnet_id.into(),
                     *position,
-                );
+                )?;
 
                 match self
                     .naive_sync_aggregation_pool
@@ -1830,7 +1891,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                         "error" => ?e,
                     );
                     crit!(self.log, "You must use the `--purge-db` flag to clear the database and restart sync. You may be on a hostile network.");
-                    shutdown_sender.try_send("Weak subjectivity checkpoint verification failed. Provided block root is not a checkpoint.")
+                    shutdown_sender
+                        .try_send(ShutdownReason::Failure(
+                            "Weak subjectivity checkpoint verification failed. Provided block root is not a checkpoint."
+                        ))
                         .map_err(|err| BlockError::BeaconChainError(BeaconChainError::WeakSubjectivtyShutdownError(err)))?;
                     return Err(BlockError::WeakSubjectivityConflict);
                 }
@@ -2960,7 +3024,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     }
 
     /// Get a channel to request shutting down.
-    pub fn shutdown_sender(&self) -> Sender<&'static str> {
+    pub fn shutdown_sender(&self) -> Sender<ShutdownReason> {
         self.shutdown_sender.clone()
     }
 

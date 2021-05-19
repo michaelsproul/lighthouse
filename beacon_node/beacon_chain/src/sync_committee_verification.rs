@@ -45,8 +45,9 @@ use state_processing::signature_sets::{
 use tree_hash::TreeHash;
 use types::consts::altair::SYNC_COMMITTEE_SUBNET_COUNT;
 use types::{
-    EthSpec, Hash256, SignedContributionAndProof, Slot, SyncCommitteeContribution,
-    SyncCommitteeSignature, SyncSelectionProof, SyncSubnetId, Unsigned,
+    sync_committee_contribution::Error as ContributionError, AggregateSignature, EthSpec, Hash256,
+    SignedContributionAndProof, Slot, SyncCommitteeContribution, SyncCommitteeSignature,
+    SyncSelectionProof, SyncSubnetId, Unsigned,
 };
 
 use crate::{
@@ -75,7 +76,7 @@ pub enum Error {
     ///
     /// Assuming the local clock is correct, the peer has sent an invalid message.
     FutureSlot {
-        attestation_slot: Slot,
+        signature_slot: Slot,
         latest_permissible_slot: Slot,
     },
     /// The attestation is from a slot that is prior to the earliest permissible slot (with
@@ -85,7 +86,7 @@ pub enum Error {
     ///
     /// Assuming the local clock is correct, the peer has sent an invalid message.
     PastSlot {
-        attestation_slot: Slot,
+        signature_slot: Slot,
         earliest_permissible_slot: Slot,
     },
     /// The attestations aggregation bits were empty when they shouldn't be.
@@ -94,7 +95,7 @@ pub enum Error {
     ///
     /// The peer has sent an invalid message.
     EmptyAggregationBitfield,
-    /// The `selection_proof` on the aggregate attestation does not elect it as an aggregator.
+    /// The `selection_proof` on the aggregate atte) = get_valid_sync_signature(harnstation does not elect it as an aggregator.
     ///
     /// ## Peer scoring
     ///
@@ -213,6 +214,7 @@ pub enum Error {
     SyncCommitteeCacheNotInitialized,
     ArithError(ArithError),
     SszError(ssz_types::Error),
+    ContributionError(ContributionError),
 }
 
 impl From<BeaconChainError> for Error {
@@ -224,6 +226,12 @@ impl From<BeaconChainError> for Error {
 impl From<ArithError> for Error {
     fn from(e: ArithError) -> Self {
         Error::ArithError(e)
+    }
+}
+
+impl From<ContributionError> for Error {
+    fn from(e: ContributionError) -> Self {
+        Error::ContributionError(e)
     }
 }
 
@@ -343,29 +351,23 @@ impl<T: BeaconChainTypes> VerifiedSyncContribution<T> {
             .validator_pubkey_bytes(aggregator_index as usize)?
             .ok_or(Error::UnknowValidatorIndex(aggregator_index as usize))?;
         let current_sync_committee = chain.head_current_sync_committee()?;
-        if let Some(expected_pubkey_bytes) = current_sync_committee
-            .pubkey_aggregates
-            .get(contribution.subcommittee_index as usize)
-        {
-            if expected_pubkey_bytes != &pubkey_bytes {
-                return Err(Error::InvalidSubcommittee {
-                    subcommittee_index: contribution.subcommittee_index,
-                    subcommittee_size: SYNC_COMMITTEE_SUBNET_COUNT,
-                });
-            }
-        } else {
-            return Err(Error::AggregatorNotInCommittee { aggregator_index });
-        }
 
         let subcommittee_index = contribution.subcommittee_index as usize;
-        //TODO: equivalent to `get_sync_subcommittee_pubkeys`
+
         let sync_subcommittee_size =
-            <<T as BeaconChainTypes>::EthSpec as EthSpec>::SyncCommitteeSize::to_usize()
-                .safe_div(SYNC_COMMITTEE_SUBNET_COUNT as usize)?;
-        let i = subcommittee_index.safe_mul(sync_subcommittee_size)?;
-        let j = i.safe_add(sync_subcommittee_size)?;
+            T::EthSpec::sync_committee_size().safe_div(SYNC_COMMITTEE_SUBNET_COUNT as usize)?;
+        let start_subcommittee = subcommittee_index.safe_mul(sync_subcommittee_size)?;
+        let end_subcommittee = start_subcommittee.safe_add(sync_subcommittee_size)?;
+
+        if !current_sync_committee.pubkeys[start_subcommittee..end_subcommittee]
+            .contains(&pubkey_bytes)
+        {
+            return Err(Error::AggregatorNotInCommittee { aggregator_index });
+        };
+
         // only iter through the correct partition
-        let participant_indices = current_sync_committee.pubkeys[i..j]
+        let participant_indices = current_sync_committee.pubkeys
+            [start_subcommittee..end_subcommittee]
             .iter()
             .zip(contribution.aggregation_bits.iter())
             .flat_map(|(pubkey, bit)| {
@@ -603,15 +605,15 @@ pub fn verify_propagation_slot_range<T: BeaconChainTypes, E: SlotData>(
     chain: &BeaconChain<T>,
     sync_contribution: &E,
 ) -> Result<(), Error> {
-    let attestation_slot = sync_contribution.get_slot();
+    let signature_slot = sync_contribution.get_slot();
 
     let latest_permissible_slot = chain
         .slot_clock
         .now_with_future_tolerance(MAXIMUM_GOSSIP_CLOCK_DISPARITY)
         .ok_or(BeaconChainError::UnableToReadSlot)?;
-    if attestation_slot > latest_permissible_slot {
+    if signature_slot > latest_permissible_slot {
         return Err(Error::FutureSlot {
-            attestation_slot,
+            signature_slot,
             latest_permissible_slot,
         });
     }
@@ -621,9 +623,10 @@ pub fn verify_propagation_slot_range<T: BeaconChainTypes, E: SlotData>(
         .slot_clock
         .now_with_past_tolerance(MAXIMUM_GOSSIP_CLOCK_DISPARITY)
         .ok_or(BeaconChainError::UnableToReadSlot)?;
-    if attestation_slot < earliest_permissible_slot {
+
+    if signature_slot < earliest_permissible_slot {
         return Err(Error::PastSlot {
-            attestation_slot,
+            signature_slot,
             earliest_permissible_slot,
         });
     }
@@ -720,10 +723,11 @@ pub fn verify_sync_signature<T: BeaconChainTypes>(
         .ok_or(BeaconChainError::CanonicalHeadLockTimeout)
         .map(|head| head.beacon_state.fork())?;
 
+    let agg_sig = AggregateSignature::from(&sync_signature.signature);
     let signature_set = sync_committee_contribution_signature_set_from_pubkeys::<T::EthSpec, _>(
         |validator_index| pubkey_cache.get(validator_index).map(Cow::Borrowed),
         &[sync_signature.validator_index as usize],
-        &sync_signature.signature,
+        &agg_sig,
         sync_signature.slot.epoch(T::EthSpec::slots_per_epoch()),
         sync_signature.beacon_block_root,
         &fork,

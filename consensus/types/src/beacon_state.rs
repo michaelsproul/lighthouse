@@ -1,34 +1,30 @@
-use std::convert::TryInto;
-use std::sync::Arc;
-use std::{fmt, mem};
-
-use derivative::Derivative;
-use serde_derive::{Deserialize, Serialize};
-use superstruct::superstruct;
-
+use self::committee_cache::get_active_validator_indices;
+pub use self::committee_cache::CommitteeCache;
+use self::exit_cache::ExitCache;
+use crate::test_utils::TestRandom;
+use crate::*;
 pub use clone_config::CloneConfig;
 use compare_fields::CompareFields;
 use compare_fields_derive::CompareFields;
+use derivative::Derivative;
 use eth2_hashing::hash;
+pub use eth_spec::*;
 pub use eth_spec::*;
 use int_to_bytes::{int_to_bytes4, int_to_bytes8};
 use pubkey_cache::PubkeyCache;
 use safe_arith::{ArithError, SafeArith};
+use serde_derive::{Deserialize, Serialize};
 use ssz::{ssz_encode, Decode, DecodeError, Encode};
 use ssz_derive::{Decode, Encode};
 use ssz_types::{typenum::Unsigned, BitVector, FixedVector};
+use std::convert::TryInto;
+use std::{fmt, mem, sync::Arc};
+use superstruct::superstruct;
 use swap_or_not_shuffle::compute_shuffled_index;
 use test_random_derive::TestRandom;
 use tree_hash::TreeHash;
 pub use tree_hash_cache::BeaconTreeHashCache;
 use tree_hash_derive::TreeHash;
-
-use crate::test_utils::TestRandom;
-use crate::*;
-
-use self::committee_cache::get_active_validator_indices;
-pub use self::committee_cache::CommitteeCache;
-use self::exit_cache::ExitCache;
 
 #[macro_use]
 mod committee_cache;
@@ -711,6 +707,7 @@ impl<T: EthSpec> BeaconState<T> {
         Ok(hash(&preimage))
     }
 
+<<<<<<< HEAD
     /// Get the already-built current or next sync committee from the state.
     pub fn get_built_sync_committee(
         &self,
@@ -733,6 +730,8 @@ impl<T: EthSpec> BeaconState<T> {
         }
     }
 
+=======
+>>>>>>> sean/sync-committee-pools
     /// Get the sync committee for the current or next period by computing it from scratch.
     pub fn get_sync_committee(
         &self,

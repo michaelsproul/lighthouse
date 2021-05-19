@@ -64,3 +64,4 @@ lighthouse_metrics = { path = "../common/lighthouse_metrics" }
 lazy_static = "1.4.0"
 fallback = { path = "../common/fallback" }
 itertools = "0.10.0"
+sensitive_url = { path = "../common/sensitive_url" }
