@@ -51,6 +51,9 @@ jobs:
     runs-on: [self-hosted, windows, x64]
     continue-on-error: true
     timeout-minutes: 1
+    steps:
+      - name: Noop
+        run: echo "Self-hosted runner for Windows exists!"
   release-tests-windows-self-hosted:
     name: release-tests-windows-self-hosted
     runs-on: [self-hosted, windows, x64]
