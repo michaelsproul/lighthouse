@@ -44,10 +44,21 @@ jobs:
       run: sudo npm install -g ganache-cli
     - name: Run tests in release
       run: make test-release
-  release-tests-windows:
-    name: release-tests-windows
-    # This should run on either self-hosted or GitHub runners, whichever is available.
-    runs-on: [windows, x64]
+  release-tests-windows-self-hosted:
+    name: release-tests-windows-self-hosted
+    concurrency: release-tests-windows
+    runs-on: [self-hosted, windows, x64]
+    needs: cargo-fmt
+    steps:
+    - uses: actions/checkout@v1
+    - name: Get latest version of stable Rust
+      run: rustup update stable
+    - name: Run tests in release
+      run: make test-release
+  release-tests-windows-github:
+    name: release-tests-windows-github
+    concurrency: release-tests-windows
+    runs-on: windows-latest
     needs: cargo-fmt
     steps:
     - uses: actions/checkout@v1
