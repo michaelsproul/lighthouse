@@ -46,6 +46,7 @@ jobs:
       run: make test-release
   release-tests-windows:
     name: release-tests-windows
+    # This should run on either self-hosted or GitHub runners, whichever is available.
     runs-on: [windows, x64]
     needs: cargo-fmt
     steps:
