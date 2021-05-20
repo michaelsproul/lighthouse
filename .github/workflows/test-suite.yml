@@ -50,15 +50,27 @@ jobs:
     name: detect-windows-self-hosted
     runs-on: [self-hosted, windows, x64]
     continue-on-error: true
-    timeout-minutes: 1
+    concurrency:
+      group: windows-runner
+      cancel-in-progress: true
     steps:
       - name: Noop
         run: echo "Self-hosted runner for Windows exists!"
+  detect-windows-github:
+    name: detect-windows-github
+    runs-on: windows-latest
+    continue-on-error: true
+    concurrency:
+      group: windows-runner
+      cancel-in-progress: true
+    steps:
+      - name: Noop
+        run: echo "Github runner for Windows exists!"
   release-tests-windows-self-hosted:
     name: release-tests-windows-self-hosted
     runs-on: [self-hosted, windows, x64]
     needs: detect-windows-self-hosted
-    if: ${{ success() }}
+    if: ${{ !cancelled() }}
     steps:
     - uses: actions/checkout@v1
     - name: Get latest version of stable Rust
@@ -68,8 +80,8 @@ jobs:
   release-tests-windows-github:
     name: release-tests-windows-github
     runs-on: windows-latest
-    needs: detect-windows-self-hosted
-    if: ${{ failure() }}
+    needs: detect-windows-github
+    if: ${{ !cancelled() }}
     steps:
     - uses: actions/checkout@v1
     - name: Get latest version of stable Rust
