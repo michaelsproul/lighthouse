@@ -24,6 +24,7 @@ jobs:
   cargo-fmt:
     name: cargo-fmt
     runs-on: ubuntu-latest
+    needs: detect-windows-self-hosted
     steps:
     - uses: actions/checkout@v1
     - name: Get latest version of stable Rust
@@ -44,11 +45,17 @@ jobs:
       run: sudo npm install -g ganache-cli
     - name: Run tests in release
       run: make test-release
+  # Dummy job to detect the availability of a self-hosted Windows runner
+  detect-windows-self-hosted:
+    name: detect-windows-self-hosted
+    runs-on: [self-hosted, windows, x64]
+    continue-on-error: true
+    timeout-minutes: 1
   release-tests-windows-self-hosted:
     name: release-tests-windows-self-hosted
-    concurrency: release-tests-windows
     runs-on: [self-hosted, windows, x64]
-    needs: cargo-fmt
+    needs: detect-windows-self-hosted
+    if: ${{ success() }}
     steps:
     - uses: actions/checkout@v1
     - name: Get latest version of stable Rust
@@ -57,9 +64,9 @@ jobs:
       run: make test-release
   release-tests-windows-github:
     name: release-tests-windows-github
-    concurrency: release-tests-windows
     runs-on: windows-latest
-    needs: cargo-fmt
+    needs: detect-windows-self-hosted
+    if: ${{ failure() }}
     steps:
     - uses: actions/checkout@v1
     - name: Get latest version of stable Rust
