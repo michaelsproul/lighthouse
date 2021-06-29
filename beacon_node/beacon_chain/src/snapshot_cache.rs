@@ -5,7 +5,7 @@ use types::{
 };
 
 /// The default size of the cache.
-pub const DEFAULT_SNAPSHOT_CACHE_SIZE: usize = 4;
+pub const DEFAULT_SNAPSHOT_CACHE_SIZE: usize = 24;
 
 /// This snapshot is to be used for verifying a child of `self.beacon_block`.
 #[derive(Debug)]

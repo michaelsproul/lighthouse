@@ -154,6 +154,15 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
 
     /// Perform the actual work of `process_finalization`.
     fn run_migration(db: Arc<HotColdDB<E, Hot, Cold>>, notif: MigrationNotification, log: &Logger) {
+        if notif.finalized_checkpoint.epoch % 256 != 0 {
+            info!(
+                log,
+                "Skipping migration";
+                "epoch" => notif.finalized_checkpoint.epoch
+            );
+            return;
+        }
+
         let finalized_state_root = notif.finalized_state_root;
 
         let finalized_state = match db.get_state(&finalized_state_root.into(), None) {
@@ -237,6 +246,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
             while let Ok(notif) = rx.recv() {
                 // Read the rest of the messages in the channel, ultimately choosing the `notif`
                 // with the highest finalized epoch.
+                /* FIXME(sproul): nah
                 let notif = rx
                     .try_iter()
                     .fold(notif, |best, other: MigrationNotification| {
@@ -246,6 +256,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
                             best
                         }
                     });
+                */
 
                 Self::run_migration(db.clone(), notif, &log);
             }

@@ -288,6 +288,7 @@ where
         self.genesis_state_root = Some(beacon_state_root);
         self.genesis_block_root = Some(beacon_block_root);
 
+        store.set_split_state_root(beacon_state_root).unwrap();
         store
             .put_state(&beacon_state_root, &beacon_state)
             .map_err(|e| format!("Failed to store genesis state: {:?}", e))?;

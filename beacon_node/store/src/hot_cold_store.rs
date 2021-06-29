@@ -393,6 +393,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         HybridForwardsBlockRootsIterator::new(store, start_slot, end_state, end_block_root, spec)
     }
 
+    /*
     /// Load an epoch boundary state by using the hot state summary look-up.
     ///
     /// Will fall back to the cold DB if a hot state summary is not found.
@@ -427,6 +428,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             }
         }
     }
+    */
 
     pub fn put_item<I: StoreItem>(&self, key: &Hash256, item: &I) -> Result<(), Error> {
         self.hot_db.put(key, item)
@@ -527,11 +529,12 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         state: &BeaconState<E>,
         ops: &mut Vec<KeyValueStoreOp>,
     ) -> Result<(), Error> {
+        info!(self.log, "Storing state"; "slot" => state.slot, "state_root" => ?state_root);
         // On the epoch boundary, store the full state.
-        if state.slot % E::slots_per_epoch() == 0 {
-            trace!(
+        if state.slot % self.config.slots_per_restore_point == 0 {
+            info!(
                 self.log,
-                "Storing full state on epoch boundary";
+                "Storing full state on boundary";
                 "slot" => state.slot.as_u64(),
                 "state_root" => format!("{:?}", state_root)
             );
@@ -567,18 +570,17 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         if let Some(HotStateSummary {
             slot,
             latest_block_root,
-            epoch_boundary_state_root,
+            ..
         }) = self.load_hot_state_summary(state_root)?
         {
-            let boundary_state = get_full_state(&self.hot_db, &epoch_boundary_state_root)?.ok_or(
-                HotColdDBError::MissingEpochBoundaryState(epoch_boundary_state_root),
-            )?;
+            let split = self.split.read();
+            let split_state_root = split.state_root;
+            let boundary_state = get_full_state(&self.hot_db, &split_state_root)?
+                .ok_or(HotColdDBError::MissingEpochBoundaryState(split_state_root))?;
 
             // Optimization to avoid even *thinking* about replaying blocks if we're already
             // on an epoch boundary.
-            let state = if slot % E::slots_per_epoch() == 0 {
-                boundary_state
-            } else {
+            let state = {
                 let blocks =
                     self.load_blocks_to_replay(boundary_state.slot, slot, latest_block_root)?;
                 self.replay_blocks(boundary_state, blocks, slot, block_replay)?
@@ -837,6 +839,15 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         self.split.read().slot
     }
 
+    /// Set the split state root (at startup).
+    // FIXME(sproul): bit of a hack
+    pub fn set_split_state_root(&self, state_root: Hash256) -> Result<(), Error> {
+        let mut split = self.split.write();
+        split.state_root = state_root;
+        self.hot_db.put_sync(&SPLIT_KEY, &*split)?;
+        Ok(())
+    }
+
     /// Fetch the slot of the most recently stored restore point.
     pub fn get_latest_restore_point_slot(&self) -> Slot {
         (self.get_split_slot() - 1) / self.config.slots_per_restore_point
@@ -998,12 +1009,6 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
     frozen_head_root: Hash256,
     frozen_head: &BeaconState<E>,
 ) -> Result<(), Error> {
-    debug!(
-        store.log,
-        "Freezer migration started";
-        "slot" => frozen_head.slot
-    );
-
     // 0. Check that the migration is sensible.
     // The new frozen head must increase the current split slot, and lie on an epoch
     // boundary (in order for the hot state summary scheme to work).
@@ -1017,9 +1022,20 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
         .into());
     }
 
-    if frozen_head.slot % E::slots_per_epoch() != 0 {
+    if frozen_head.slot % store.config.slots_per_restore_point != 0 {
+        info!(
+            store.log,
+            "Skipping freezer migration";
+            "slot" => frozen_head.slot,
+        );
         return Err(HotColdDBError::FreezeSlotUnaligned(frozen_head.slot).into());
     }
+
+    info!(
+        store.log,
+        "Freezer migration started";
+        "slot" => frozen_head.slot
+    );
 
     let mut hot_db_ops: Vec<StoreOp<E>> = Vec::new();
 
@@ -1106,7 +1122,7 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
     // Delete the states from the hot database if we got this far.
     store.do_atomically(hot_db_ops)?;
 
-    debug!(
+    info!(
         store.log,
         "Freezer migration complete";
         "slot" => frozen_head.slot
@@ -1143,7 +1159,6 @@ impl StoreItem for Split {
 pub struct HotStateSummary {
     slot: Slot,
     latest_block_root: Hash256,
-    epoch_boundary_state_root: Hash256,
 }
 
 impl StoreItem for HotStateSummary {
@@ -1166,19 +1181,10 @@ impl HotStateSummary {
         // Fill in the state root on the latest block header if necessary (this happens on all
         // slots where there isn't a skip).
         let latest_block_root = state.get_latest_block_root(*state_root);
-        let epoch_boundary_slot = state.slot / E::slots_per_epoch() * E::slots_per_epoch();
-        let epoch_boundary_state_root = if epoch_boundary_slot == state.slot {
-            *state_root
-        } else {
-            *state
-                .get_state_root(epoch_boundary_slot)
-                .map_err(HotColdDBError::HotStateSummaryError)?
-        };
 
         Ok(HotStateSummary {
             slot: state.slot,
             latest_block_root,
-            epoch_boundary_state_root,
         })
     }
 }
