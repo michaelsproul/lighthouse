@@ -21,10 +21,10 @@ pub fn cli_app<'a, 'b>() -> App<'a, 'b> {
 }
 
 /// Run the account manager, returning an error if the operation did not succeed.
-pub fn run<T: EthSpec>(matches: &ArgMatches<'_>, env: Environment<T>) -> Result<(), String> {
+pub async fn run<T: EthSpec>(matches: &ArgMatches<'_>, env: Environment<T>) -> Result<(), String> {
     match matches.subcommand() {
         (wallet::CMD, Some(matches)) => wallet::cli_run(matches)?,
-        (validator::CMD, Some(matches)) => validator::cli_run(matches, env)?,
+        (validator::CMD, Some(matches)) => validator::cli_run(matches, env).await?,
         (unknown, _) => {
             return Err(format!(
                 "{} is not a valid {} command. See --help.",

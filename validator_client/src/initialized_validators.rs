@@ -343,6 +343,7 @@ impl InitializedValidators {
 
         self.definitions
             .save(&self.validators_dir)
+            .await
             .map_err(Error::UnableToSaveDefinitions)?;
 
         Ok(())
@@ -394,6 +395,7 @@ impl InitializedValidators {
 
         self.definitions
             .save(&self.validators_dir)
+            .await
             .map_err(Error::UnableToSaveDefinitions)?;
 
         Ok(())

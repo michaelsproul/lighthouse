@@ -3,7 +3,7 @@
 //! Serves as the source-of-truth of which validators this validator client should attempt (or not
 //! attempt) to load into the `crate::intialized_validators::InitializedValidators` struct.
 
-use crate::{default_keystore_password_path, write_file_via_temporary, ZeroizeString};
+use crate::{default_keystore_password_path, write_file_via_temporary_async, ZeroizeString};
 use directory::ensure_dir_exists;
 use eth2_keystore::Keystore;
 use regex::Regex;
@@ -118,15 +118,18 @@ pub struct ValidatorDefinitions(Vec<ValidatorDefinition>);
 
 impl ValidatorDefinitions {
     /// Open an existing file or create a new, empty one if it does not exist.
-    pub fn open_or_create<P: AsRef<Path>>(validators_dir: P) -> Result<Self, Error> {
+    pub async fn open_or_create<P: AsRef<Path>>(validators_dir: P) -> Result<Self, Error> {
         ensure_dir_exists(validators_dir.as_ref()).map_err(|_| {
             Error::UnableToCreateValidatorDir(PathBuf::from(validators_dir.as_ref()))
         })?;
         let config_path = validators_dir.as_ref().join(CONFIG_FILENAME);
+        println!("Calling `exists`");
         if !config_path.exists() {
+            println!("Didn't exist");
             let this = Self::default();
-            this.save(&validators_dir)?;
+            this.save(&validators_dir).await?;
         }
+        println!("Already exists");
         Self::open(validators_dir)
     }
 
@@ -259,12 +262,13 @@ impl ValidatorDefinitions {
     /// the `validators_dir` directory.
     ///
     /// Will create a new file if it does not exist or overwrite any existing file.
-    pub fn save<P: AsRef<Path>>(&self, validators_dir: P) -> Result<(), Error> {
+    pub async fn save<P: AsRef<Path>>(&self, validators_dir: P) -> Result<(), Error> {
         let config_path = validators_dir.as_ref().join(CONFIG_FILENAME);
         let temp_path = validators_dir.as_ref().join(CONFIG_TEMP_FILENAME);
         let bytes = serde_yaml::to_vec(self).map_err(Error::UnableToEncodeFile)?;
 
-        write_file_via_temporary(&config_path, &temp_path, &bytes)
+        write_file_via_temporary_async(&config_path, &temp_path, &bytes)
+            .await
             .map_err(Error::UnableToWriteFile)?;
 
         Ok(())

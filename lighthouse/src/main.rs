@@ -309,15 +309,6 @@ fn run<E: EthSpec>(
         (Some(_), Some(_)) => panic!("CLI prevents both --network and --testnet-dir"),
     };
 
-    if let Some(sub_matches) = matches.subcommand_matches("account_manager") {
-        eprintln!("Running account manager for {} network", network_name);
-        // Pass the entire `environment` to the account manager so it can run blocking operations.
-        account_manager::run(sub_matches, environment)?;
-
-        // Exit as soon as account manager returns control.
-        return Ok(());
-    };
-
     info!(log, "Lighthouse started"; "version" => VERSION);
     info!(
         log,
@@ -404,6 +395,25 @@ fn run<E: EthSpec>(
                     .try_send(ShutdownReason::Failure("Failed to start remote signer"));
             }
         }
+        /* FIXME(sproul): lifetime on ArgMatches fucks us here
+        ("account_manager", Some(sub_matches)) => {
+            eprintln!("Running account manager for {} network", network_name);
+            // Pass the entire `environment` to the account manager so it can run blocking operations.
+            let sub_matches = sub_matches.clone();
+            let rt = environment.runtime().clone();
+            rt.spawn(async move {
+                if let Err(e) = account_manager::run(&sub_matches, environment).await {
+                    crit!(log, "Account manager failed"; "error" => e);
+                    /*
+                    let _ = executor
+                        .shutdown_sender()
+                        .try_send(ShutdownReason::Failure("Failed to run account manager"));
+                    */
+                }
+                Ok::<(), String>(())
+            });
+        }
+        */
         _ => {
             crit!(log, "No subcommand supplied. See --help .");
             return Err("No subcommand supplied.".into());

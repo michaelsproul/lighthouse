@@ -2,6 +2,8 @@ use std::fs::File;
 use std::io;
 use std::io::Write;
 use std::path::Path;
+use tokio::fs::File as AsyncFile;
+use tokio::io::AsyncWriteExt;
 #[cfg(windows)]
 use winapi::um::winnt::{FILE_GENERIC_READ, FILE_GENERIC_WRITE, STANDARD_RIGHTS_ALL};
 
@@ -74,6 +76,39 @@ pub fn create_with_600_perms<P: AsRef<Path>>(path: P, bytes: &[u8]) -> Result<()
     {
         restrict_file_permissions(path)?;
     }
+
+    Ok(())
+}
+
+pub async fn create_with_600_perms_async<P: AsRef<Path>>(
+    path: P,
+    bytes: &[u8],
+) -> Result<(), Error> {
+    let path = path.as_ref();
+    println!("AsyncFile::create");
+    let mut file = AsyncFile::create(&path)
+        .await
+        .map_err(Error::UnableToCreateFile)?;
+    println!("AsyncFile::create done");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = file
+            .metadata()
+            .await
+            .map_err(Error::UnableToRetrieveMetadata)?
+            .permissions();
+        perm.set_mode(0o600);
+        file.set_permissions(perm)
+            .await
+            .map_err(Error::UnableToSetPermissions)?;
+        println!("Perms set");
+    }
+
+    file.write_all(bytes)
+        .await
+        .map_err(Error::UnableToWriteFile)?;
 
     Ok(())
 }

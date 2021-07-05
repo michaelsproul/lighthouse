@@ -51,7 +51,7 @@ pub fn cli_app<'a, 'b>() -> App<'a, 'b> {
         )
 }
 
-pub fn cli_run(matches: &ArgMatches, validator_dir: PathBuf) -> Result<(), String> {
+pub async fn cli_run(matches: &ArgMatches<'_>, validator_dir: PathBuf) -> Result<(), String> {
     // `true` implies we are setting `validator_definition.enabled = true` and
     // vice versa.
     let (enabled, sub_matches) = match matches.subcommand() {
@@ -93,6 +93,7 @@ pub fn cli_run(matches: &ArgMatches, validator_dir: PathBuf) -> Result<(), Strin
     }
 
     defs.save(&validator_dir)
+        .await
         .map_err(|e| format!("Unable to modify validator definitions: {:?}", e))?;
 
     eprintln!("\nSuccessfully modified validator_definitions.yml");

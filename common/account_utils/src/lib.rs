@@ -6,7 +6,7 @@ use eth2_wallet::{
     bip39::{Language, Mnemonic, MnemonicType},
     Wallet,
 };
-use filesystem::{create_with_600_perms, Error as FsError};
+use filesystem::{create_with_600_perms, create_with_600_perms_async, Error as FsError};
 use rand::{distributions::Alphanumeric, Rng};
 use serde_derive::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -81,6 +81,29 @@ pub fn write_file_via_temporary(
 
     // With the temporary file created, perform an atomic rename.
     fs::rename(&temp_path, &file_path).map_err(FsError::UnableToRenameFile)?;
+
+    Ok(())
+}
+
+pub async fn write_file_via_temporary_async(
+    file_path: &Path,
+    temp_path: &Path,
+    bytes: &[u8],
+) -> Result<(), FsError> {
+    // If the file already exists, preserve its permissions by copying it.
+    // Otherwise, create a new file with restricted permissions.
+    if file_path.exists() {
+        fs::copy(&file_path, &temp_path).map_err(FsError::UnableToCopyFile)?;
+        fs::write(&temp_path, &bytes).map_err(FsError::UnableToWriteFile)?;
+    } else {
+        println!("Creating file");
+        create_with_600_perms_async(&temp_path, &bytes).await?;
+    }
+    println!("Renaming file atomically");
+
+    // With the temporary file created, perform an atomic rename.
+    fs::rename(&temp_path, &file_path).map_err(FsError::UnableToRenameFile)?;
+    println!("Atomic rename done");
 
     Ok(())
 }

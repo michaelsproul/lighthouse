@@ -82,7 +82,7 @@ pub fn cli_app<'a, 'b>() -> App<'a, 'b> {
         )
 }
 
-pub fn cli_run(matches: &ArgMatches, validator_dir: PathBuf) -> Result<(), String> {
+pub async fn cli_run(matches: &ArgMatches<'_>, validator_dir: PathBuf) -> Result<(), String> {
     let keystore: Option<PathBuf> = clap_utils::parse_optional(matches, KEYSTORE_FLAG)?;
     let keystores_dir: Option<PathBuf> = clap_utils::parse_optional(matches, DIR_FLAG)?;
     let stdin_inputs = cfg!(windows) || matches.is_present(STDIN_INPUTS_FLAG);
@@ -91,6 +91,7 @@ pub fn cli_run(matches: &ArgMatches, validator_dir: PathBuf) -> Result<(), Strin
         clap_utils::parse_optional(matches, PASSWORD_FLAG)?;
 
     let mut defs = ValidatorDefinitions::open_or_create(&validator_dir)
+        .await
         .map_err(|e| format!("Unable to open {}: {:?}", CONFIG_FILENAME, e))?;
 
     let slashing_protection_path = validator_dir.join(SLASHING_PROTECTION_FILENAME);
@@ -257,6 +258,7 @@ pub fn cli_run(matches: &ArgMatches, validator_dir: PathBuf) -> Result<(), Strin
         defs.push(validator_def);
 
         defs.save(&validator_dir)
+            .await
             .map_err(|e| format!("Unable to save {}: {:?}", CONFIG_FILENAME, e))?;
 
         eprintln!("Successfully updated {}.", CONFIG_FILENAME);

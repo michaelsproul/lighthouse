@@ -138,15 +138,20 @@ impl<T: EthSpec> ProductionValidatorClient<T> {
             );
         };
 
+        println!("Opening validator defs");
         let mut validator_defs = ValidatorDefinitions::open_or_create(&config.validator_dir)
+            .await
             .map_err(|e| format!("Unable to open or create validator definitions: {:?}", e))?;
+        println!("Validator defs open");
 
         if !config.disable_auto_discover {
             let new_validators = validator_defs
                 .discover_local_keystores(&config.validator_dir, &config.secrets_dir, &log)
                 .map_err(|e| format!("Unable to discover local validator keystores: {:?}", e))?;
+            println!("Discovered local keystores");
             validator_defs
                 .save(&config.validator_dir)
+                .await
                 .map_err(|e| format!("Unable to update validator definitions: {:?}", e))?;
             info!(
                 log,

@@ -38,7 +38,10 @@ pub fn cli_app<'a, 'b>() -> App<'a, 'b> {
         .subcommand(exit::cli_app())
 }
 
-pub fn cli_run<T: EthSpec>(matches: &ArgMatches, env: Environment<T>) -> Result<(), String> {
+pub async fn cli_run<T: EthSpec>(
+    matches: &ArgMatches<'_>,
+    env: Environment<T>,
+) -> Result<(), String> {
     let validator_base_dir = if matches.value_of("datadir").is_some() {
         let path: PathBuf = clap_utils::parse_required(matches, "datadir")?;
         path.join(DEFAULT_VALIDATOR_DIR)
@@ -49,8 +52,8 @@ pub fn cli_run<T: EthSpec>(matches: &ArgMatches, env: Environment<T>) -> Result<
 
     match matches.subcommand() {
         (create::CMD, Some(matches)) => create::cli_run::<T>(matches, env, validator_base_dir),
-        (modify::CMD, Some(matches)) => modify::cli_run(matches, validator_base_dir),
-        (import::CMD, Some(matches)) => import::cli_run(matches, validator_base_dir),
+        (modify::CMD, Some(matches)) => modify::cli_run(matches, validator_base_dir).await,
+        (import::CMD, Some(matches)) => import::cli_run(matches, validator_base_dir).await,
         (list::CMD, Some(_)) => list::cli_run(validator_base_dir),
         (recover::CMD, Some(matches)) => recover::cli_run(matches, validator_base_dir),
         (slashing_protection::CMD, Some(matches)) => {
