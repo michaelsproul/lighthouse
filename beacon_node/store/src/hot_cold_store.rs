@@ -205,6 +205,7 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
 
         // Ensure that the schema version of the on-disk database matches the software.
         // If the version is mismatched, an automatic migration will be attempted.
+        /* FIXME: schema reset hacks
         if let Some(schema_version) = db.load_schema_version()? {
             debug!(
                 db.log,
@@ -216,6 +217,8 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
         } else {
             db.store_schema_version(CURRENT_SCHEMA_VERSION)?;
         }
+        */
+        db.store_schema_version(CURRENT_SCHEMA_VERSION)?;
 
         // Ensure that any on-disk config is compatible with the supplied config.
         if let Some(disk_config) = db.load_config()? {

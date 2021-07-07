@@ -245,6 +245,7 @@ where
 
         self.genesis_time = Some(genesis_state.genesis_time());
 
+        /* FIXME: schema reset hacks
         self.op_pool = Some(
             store
                 .get_item::<PersistedOperationPool<TEthSpec>>(&OP_POOL_DB_KEY)
@@ -252,6 +253,8 @@ where
                 .map(PersistedOperationPool::into_operation_pool)
                 .unwrap_or_else(OperationPool::new),
         );
+        */
+        self.op_pool = Some(OperationPool::new());
 
         let pubkey_cache = ValidatorPubkeyCache::load_from_store(store)
             .map_err(|e| format!("Unable to open persisted pubkey cache: {:?}", e))?;
