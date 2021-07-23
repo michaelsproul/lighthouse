@@ -9,6 +9,10 @@ use types::{
     ChainSpec, Epoch, EthSpec, PublicKeyBytes, Slot, SyncDuty, SyncSelectionProof, SyncSubnetId,
 };
 
+/// Number of epochs in advance to compute selection proofs.
+pub const AGGREGATION_PRE_COMPUTE_EPOCHS: u64 = 2;
+
+// FIXME(sproul): need to prune this at some point
 pub struct SyncDutiesMap {
     /// Map from sync committee period to duties for members of that sync committee.
     committees: RwLock<HashMap<u64, CommitteeDuties>>,
@@ -28,16 +32,24 @@ pub struct CommitteeDuties {
 pub struct ValidatorDuties {
     /// The sync duty: including validator sync committee indices & pubkey.
     duty: SyncDuty,
+    /// The aggregator duties: cached selection proofs for upcoming epochs.
+    aggregation_duties: AggregatorDuties,
+}
+
+/// Aggregator duties for a single validator.
+pub struct AggregatorDuties {
+    /// The epoch up to which aggregation proofs have already been computed (inclusive).
+    pre_compute_epoch: RwLock<Option<Epoch>>,
     /// Map from slot & subnet ID to proof that this validator is an aggregator.
     ///
     /// The slot is the slot at which the signed contribution and proof should be broadcast,
     /// which is 1 less than the slot for which the `duty` was computed.
-    aggregation_proofs: RwLock<HashMap<(Slot, SyncSubnetId), SyncSelectionProof>>,
+    proofs: RwLock<HashMap<(Slot, SyncSubnetId), SyncSelectionProof>>,
 }
 
 /// Duties for a single slot.
 pub struct SlotDuties {
-    /// List of duties for all sync committee members at this slot
+    /// List of duties for all sync committee members at this slot.
     ///
     /// Note: this is intentionally NOT split by subnet so that we only sign
     /// one `SyncCommitteeMessage` per validator (recall a validator may be part of multiple
@@ -66,6 +78,54 @@ impl SyncDutiesMap {
                     .iter()
                     .all(|index| validator_duties.contains_key(index))
             })
+    }
+
+    /// Get the sync duties of all validators who have not yet had aggregation proofs pre-computed
+    /// given the lookahead from the `current_epoch`.
+    pub fn prepare_for_aggregator_pre_compute(
+        &self,
+        committee_period: u64,
+        current_epoch: Epoch,
+        spec: &ChainSpec,
+    ) -> (Epoch, Vec<(Epoch, SyncDuty)>) {
+        let default_start_epoch =
+            std::cmp::max(current_epoch, first_epoch_of_period(committee_period, spec));
+        let pre_compute_epoch = std::cmp::min(
+            current_epoch + AGGREGATION_PRE_COMPUTE_EPOCHS,
+            last_epoch_of_period(committee_period, spec),
+        );
+
+        // FIXME(sproul): think about deadlocks from lock ordering
+        let pre_compute_duties = self.committees.read().get(&committee_period).map_or_else(
+            Vec::new,
+            |committee_duties| {
+                let validator_duties = committee_duties.validators.read();
+                validator_duties
+                    .values()
+                    .filter_map(|maybe_duty| {
+                        let duty = maybe_duty.as_ref()?;
+                        let old_pre_compute_epoch = duty
+                            .aggregation_duties
+                            .pre_compute_epoch
+                            .write()
+                            .replace(pre_compute_epoch);
+
+                        match old_pre_compute_epoch {
+                            // No proofs pre-computed previously, compute all from the start of
+                            // the period or the current epoch (whichever is later).
+                            None => Some((default_start_epoch, duty.duty.clone())),
+                            // Proofs computed up to `prev`, start from the subsequent epoch.
+                            Some(prev) if prev < pre_compute_epoch => {
+                                Some((prev + 1, duty.duty.clone()))
+                            }
+                            // Proofs already known, no need to compute.
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            },
+        );
+        (pre_compute_epoch, pre_compute_duties)
     }
 
     pub fn get_or_create_committee_duties<'a, 'b>(
@@ -121,7 +181,7 @@ impl SyncDutiesMap {
             .for_each(|(validator_duty, subnet_ids)| {
                 duties.push(validator_duty.duty.clone());
 
-                let proofs = validator_duty.aggregation_proofs.read();
+                let proofs = validator_duty.aggregation_duties.proofs.read();
 
                 for subnet_id in subnet_ids {
                     if let Some(proof) = proofs.get(&(wall_clock_slot, subnet_id)) {
@@ -156,7 +216,10 @@ impl ValidatorDuties {
     fn new(duty: SyncDuty) -> Self {
         Self {
             duty,
-            aggregation_proofs: RwLock::new(HashMap::new()),
+            aggregation_duties: AggregatorDuties {
+                pre_compute_epoch: RwLock::new(None),
+                proofs: RwLock::new(HashMap::new()),
+            },
         }
     }
 }
@@ -164,6 +227,14 @@ impl ValidatorDuties {
 /// Number of epochs to wait from the start of the period before actually fetching duties.
 fn epoch_offset(spec: &ChainSpec) -> u64 {
     spec.epochs_per_sync_committee_period.as_u64() / 2
+}
+
+fn first_epoch_of_period(sync_committee_period: u64, spec: &ChainSpec) -> Epoch {
+    spec.epochs_per_sync_committee_period * sync_committee_period
+}
+
+fn last_epoch_of_period(sync_committee_period: u64, spec: &ChainSpec) -> Epoch {
+    first_epoch_of_period(sync_committee_period + 1, spec) - 1
 }
 
 pub async fn poll_sync_committee_duties<T: SlotClock + 'static, E: EthSpec>(
@@ -191,7 +262,7 @@ pub async fn poll_sync_committee_duties<T: SlotClock + 'static, E: EthSpec>(
     let local_pubkeys = duties_service.local_pubkeys();
     let local_indices = duties_service.local_indices(&local_pubkeys);
 
-    // If duties aren't known for the current period, poll for them
+    // If duties aren't known for the current period, poll for them.
     if !sync_duties.all_duties_known(current_sync_committee_period, &local_indices) {
         poll_sync_committee_duties_for_period(
             duties_service,
@@ -199,6 +270,26 @@ pub async fn poll_sync_committee_duties<T: SlotClock + 'static, E: EthSpec>(
             current_sync_committee_period,
         )
         .await?;
+    }
+
+    // Pre-compute aggregator selection proofs for the current period.
+    let (current_pre_compute_epoch, new_pre_compute_duties) = sync_duties
+        .prepare_for_aggregator_pre_compute(current_sync_committee_period, current_epoch, spec);
+
+    if !new_pre_compute_duties.is_empty() {
+        let sub_duties_service = duties_service.clone();
+        duties_service.context.executor.spawn_blocking(
+            move || {
+                fill_in_aggregation_proofs(
+                    sub_duties_service,
+                    &new_pre_compute_duties,
+                    current_sync_committee_period,
+                    current_epoch,
+                    current_pre_compute_epoch,
+                )
+            },
+            "duties_service_sync_selection_proofs",
+        );
     }
 
     // If we're past the point in the current period where we should determine duties for the next
@@ -212,6 +303,30 @@ pub async fn poll_sync_committee_duties<T: SlotClock + 'static, E: EthSpec>(
             next_sync_committee_period,
         )
         .await?;
+    }
+
+    // Pre-compute aggregator selection proofs for the next period.
+    if (current_epoch + AGGREGATION_PRE_COMPUTE_EPOCHS).sync_committee_period(spec)?
+        == next_sync_committee_period
+    {
+        let (pre_compute_epoch, new_pre_compute_duties) = sync_duties
+            .prepare_for_aggregator_pre_compute(next_sync_committee_period, current_epoch, spec);
+
+        if !new_pre_compute_duties.is_empty() {
+            let sub_duties_service = duties_service.clone();
+            duties_service.context.executor.spawn_blocking(
+                move || {
+                    fill_in_aggregation_proofs(
+                        sub_duties_service,
+                        &new_pre_compute_duties,
+                        next_sync_committee_period,
+                        current_epoch,
+                        pre_compute_epoch,
+                    )
+                },
+                "duties_service_sync_selection_proofs",
+            );
+        }
     }
 
     Ok(())
@@ -263,76 +378,65 @@ pub async fn poll_sync_committee_duties_for_period<T: SlotClock + 'static, E: Et
         .sync_duties
         .get_or_create_committee_duties(sync_committee_period, local_indices);
 
-    // Track updated validator indices & pubkeys.
-    let mut updated_validators = vec![];
+    let mut validator_writer = committee_duties.validators.write();
+    for duty in duties {
+        let validator_duties = validator_writer
+            .get_mut(&duty.validator_index)
+            .ok_or(Error::SyncDutiesNotFound(duty.validator_index))?;
 
-    {
-        let mut validator_writer = committee_duties.validators.write();
-        for duty in duties {
-            let validator_duties = validator_writer
-                .get_mut(&duty.validator_index)
-                .ok_or(Error::SyncDutiesNotFound(duty.validator_index))?;
-
-            let updated = validator_duties.as_ref().map_or(true, |existing_duties| {
-                let updated_due_to_reorg = existing_duties.duty.validator_sync_committee_indices
-                    != duty.validator_sync_committee_indices;
-                if updated_due_to_reorg {
-                    warn!(
-                        log,
-                        "Sync committee duties changed";
-                        "message" => "this could be due to a really long re-org, or a bug"
-                    );
-                }
-                updated_due_to_reorg
-            });
-
-            if updated {
-                info!(
+        let updated = validator_duties.as_ref().map_or(true, |existing_duties| {
+            let updated_due_to_reorg = existing_duties.duty.validator_sync_committee_indices
+                != duty.validator_sync_committee_indices;
+            if updated_due_to_reorg {
+                warn!(
                     log,
-                    "Validator in sync committee";
-                    "validator_index" => duty.validator_index,
-                    "sync_committee_period" => sync_committee_period,
+                    "Sync committee duties changed";
+                    "message" => "this could be due to a really long re-org, or a bug"
                 );
-
-                updated_validators.push(duty.clone());
-                *validator_duties = Some(ValidatorDuties::new(duty));
             }
+            updated_due_to_reorg
+        });
+
+        if updated {
+            info!(
+                log,
+                "Validator in sync committee";
+                "validator_index" => duty.validator_index,
+                "sync_committee_period" => sync_committee_period,
+            );
+
+            *validator_duties = Some(ValidatorDuties::new(duty));
         }
     }
-
-    // Spawn background task to fill in aggregator selection proofs.
-    let sub_duties_service = duties_service.clone();
-    duties_service.context.executor.spawn_blocking(
-        move || {
-            fill_in_aggregation_proofs(
-                sub_duties_service,
-                &updated_validators,
-                sync_committee_period,
-            )
-        },
-        "duties_service_sync_selection_proofs",
-    );
 
     Ok(())
 }
 
 pub fn fill_in_aggregation_proofs<T: SlotClock + 'static, E: EthSpec>(
     duties_service: Arc<DutiesService<T, E>>,
-    validators: &[SyncDuty],
+    pre_compute_duties: &[(Epoch, SyncDuty)],
     sync_committee_period: u64,
+    current_epoch: Epoch,
+    pre_compute_epoch: Epoch,
 ) {
-    let spec = &duties_service.spec;
     let log = duties_service.context.log();
+    info!(log, "Filling in aggregation proofs";
+        "period" => sync_committee_period,
+        "current_epoch" => current_epoch,
+        "pre_compute_epoch" => pre_compute_epoch
+    );
 
-    // Generate selection proofs for each validator at each slot, one epoch at a time
-    let start_epoch = spec.epochs_per_sync_committee_period * sync_committee_period;
-    let end_epoch = start_epoch + spec.epochs_per_sync_committee_period;
-
-    for epoch in (start_epoch.as_u64()..end_epoch.as_u64()).map(Epoch::new) {
+    // Generate selection proofs for each validator at each slot, one epoch at a time.
+    for epoch in (current_epoch.as_u64()..=pre_compute_epoch.as_u64()).map(Epoch::new) {
         // Generate proofs.
-        let validator_proofs: Vec<(u64, Vec<_>)> = validators
+        let validator_proofs: Vec<(u64, Vec<_>)> = pre_compute_duties
             .iter()
-            .filter_map(|duty| {
+            .filter_map(|(validator_start_epoch, duty)| {
+                // Proofs are already known at this epoch for this validator.
+                if epoch < *validator_start_epoch {
+                    return None;
+                }
+
                 let subnet_ids = duty
                     .subnet_ids::<E>()
                     .map_err(|e| {
@@ -378,7 +482,7 @@ pub fn fill_in_aggregation_proofs<T: SlotClock + 'static, E: EthSpec>(
                             .ok()?;
 
                         if is_aggregator {
-                            debug!(
+                            info!(
                                 log,
                                 "Validator is sync aggregator";
                                 "validator_index" => duty.validator_index,
@@ -397,15 +501,18 @@ pub fn fill_in_aggregation_proofs<T: SlotClock + 'static, E: EthSpec>(
             .collect();
 
         // Add to global storage (we add regularly in case the proofs are required).
+        // FIXME(sproul): this needn't obtain a write lock
         let committee_duties = duties_service.sync_duties.get_or_create_committee_duties(
             sync_committee_period,
             validator_proofs.iter().map(|(index, _)| index),
         );
         let validators_reader = committee_duties.validators.read();
 
+        let num_validators_updated = validator_proofs.len();
+
         for (validator_index, proofs) in validator_proofs {
             if let Some(Some(duty)) = validators_reader.get(&validator_index) {
-                duty.aggregation_proofs.write().extend(proofs);
+                duty.aggregation_duties.proofs.write().extend(proofs);
             } else {
                 debug!(
                     log,
@@ -414,5 +521,12 @@ pub fn fill_in_aggregation_proofs<T: SlotClock + 'static, E: EthSpec>(
                 );
             }
         }
+
+        info!(
+            log,
+            "Finished pre-computing sync selection proofs";
+            "epoch" => epoch,
+            "updated_validators" => num_validators_updated,
+        );
     }
 }
