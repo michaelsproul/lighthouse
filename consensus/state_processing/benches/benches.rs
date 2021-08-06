@@ -1,13 +1,10 @@
-use beacon_chain::{
-    test_utils::{BeaconChainHarness, EphemeralHarnessType, RelativeSyncCommittee},
-    BeaconChainTypes,
-};
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+use beacon_chain::test_utils::{BeaconChainHarness, EphemeralHarnessType};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use state_processing::{per_block_processing, per_slot_processing, BlockSignatureStrategy};
 use std::time::Duration;
 use types::{
-    test_utils::generate_deterministic_keypairs, BeaconState, Epoch, EthSpec, Hash256,
-    MainnetEthSpec, SignedBeaconBlock, Slot,
+    test_utils::generate_deterministic_keypairs, BeaconState, Epoch, EthSpec, MainnetEthSpec,
+    SignedBeaconBlock, Slot,
 };
 
 const VALIDATOR_COUNT: usize = 200_000;
@@ -40,7 +37,28 @@ fn setup() -> (
 
     let all_validator_indices = (0..VALIDATOR_COUNT).collect::<Vec<_>>();
 
-    let (block, _) = harness.make_block(genesis_state.clone(), BLOCK_SLOT);
+    // Include some attestations (this modifies the participation flags on Altair)
+    let attestations = harness
+        .make_attestations(
+            &all_validator_indices,
+            &genesis_state,
+            genesis_state_root,
+            genesis_block_root.into(),
+            Slot::new(0),
+        )
+        .into_iter()
+        .filter_map(|(_, agg)| Some(agg?.message.aggregate));
+
+    let (block, _) =
+        harness.make_block_with_modifier(genesis_state.clone(), BLOCK_SLOT, move |block| {
+            for attestation in attestations {
+                block
+                    .body_mut()
+                    .attestations_mut()
+                    .push(attestation)
+                    .unwrap();
+            }
+        });
 
     (genesis_state, block, harness)
 }
