@@ -4,7 +4,12 @@ version = "0.2.0"
 authors = ["Paul Hauner <paul@paulhauner.com>", "Michael Sproul <michael@sigmaprime.io>"]
 edition = "2018"
 
+[[bench]]
+name = "benches"
+harness = false
+
 [dev-dependencies]
+criterion = { version = "0.3.3", features = ["html_reports"] }
 env_logger = "0.8.2"
 serde = "1.0.116"
 serde_derive = "1.0.116"

@@ -256,12 +256,14 @@ impl<T: EthSpec> BeaconTreeHashCacheInner<T> {
                 .recalculate_tree_hash_root(state.validators())?
                 .as_bytes(),
         )?;
+        let t = std::time::Instant::now();
         hasher.write(
             state
                 .balances()
                 .recalculate_tree_hash_root(&mut self.balances_arena, &mut self.balances)?
                 .as_bytes(),
         )?;
+        println!("balances: {}ms", t.elapsed().as_millis());
         hasher.write(
             state
                 .randao_mixes()
@@ -276,6 +278,7 @@ impl<T: EthSpec> BeaconTreeHashCacheInner<T> {
         )?;
 
         // Participation
+        let t = std::time::Instant::now();
         if let BeaconState::Base(state) = state {
             hasher.write(
                 state
@@ -296,6 +299,7 @@ impl<T: EthSpec> BeaconTreeHashCacheInner<T> {
                     .as_bytes(),
             )?;
         }
+        println!("participation: {}ms", t.elapsed().as_millis());
 
         hasher.write(state.justification_bits().tree_hash_root().as_bytes())?;
         hasher.write(
@@ -314,8 +318,10 @@ impl<T: EthSpec> BeaconTreeHashCacheInner<T> {
 
         // Inactivity & light-client sync committees
         if let BeaconState::Altair(ref state) = state {
+            let t = std::time::Instant::now();
             // FIXME(altair): add cache for this field
             hasher.write(state.inactivity_scores.tree_hash_root().as_bytes())?;
+            println!("inactivity_scores: {}ms", t.elapsed().as_millis());
 
             hasher.write(state.current_sync_committee.tree_hash_root().as_bytes())?;
             hasher.write(state.next_sync_committee.tree_hash_root().as_bytes())?;
