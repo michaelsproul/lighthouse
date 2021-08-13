@@ -2394,6 +2394,30 @@ pub fn serve<T: BeaconChainTypes>(
             })
         });
 
+    let get_lighthouse_block_reward = warp::path("lighthouse")
+        .and(warp::path("block_reward"))
+        .and(warp::path::param())
+        .and(warp::path::end())
+        .and(chain_filter.clone())
+        .and_then(|block_id: BlockId, chain: Arc<BeaconChain<T>>| {
+            blocking_json_task(move || {
+                let block = block_id.block(&chain)?;
+                // FIXME(sproul): speed, state advance
+                let parent_block =
+                    BlockId::from_root(block.message().parent_root()).block(&chain)?;
+                let state_root = parent_block.message().state_root();
+                let pre_state = chain
+                    .get_state(&state_root, Some(parent_block.slot()))
+                    .and_then(|maybe_state| {
+                        maybe_state.ok_or(BeaconChainError::MissingBeaconState(state_root))
+                    })
+                    .map_err(warp_utils::reject::beacon_chain_error)?;
+                chain
+                    .compute_block_reward(block.message(), &pre_state)
+                    .map_err(warp_utils::reject::beacon_chain_error)
+            })
+        });
+
     let get_events = eth1_v1
         .and(warp::path("events"))
         .and(warp::path::end())
@@ -2505,6 +2529,7 @@ pub fn serve<T: BeaconChainTypes>(
                 .or(get_lighthouse_eth1_deposit_cache.boxed())
                 .or(get_lighthouse_beacon_states_ssz.boxed())
                 .or(get_lighthouse_staking.boxed())
+                .or(get_lighthouse_block_reward.boxed())
                 .or(get_events.boxed()),
         )
         .or(warp::post().and(

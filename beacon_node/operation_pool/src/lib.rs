@@ -7,12 +7,12 @@ mod metrics;
 mod persistence;
 mod sync_aggregate_id;
 
+pub use attestation::AttMaxCover;
 pub use persistence::{
     PersistedOperationPool, PersistedOperationPoolAltair, PersistedOperationPoolBase,
 };
 
 use crate::sync_aggregate_id::SyncAggregateId;
-use attestation::AttMaxCover;
 use attestation_id::AttestationId;
 use attester_slashing::AttesterSlashingMaxCover;
 use max_cover::{maximum_cover, MaxCover};
