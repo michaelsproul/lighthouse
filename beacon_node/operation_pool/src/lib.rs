@@ -1,6 +1,7 @@
 mod attestation;
 mod attestation_id;
 mod attester_slashing;
+mod max_cliques;
 mod max_cover;
 mod metrics;
 mod persistence;
