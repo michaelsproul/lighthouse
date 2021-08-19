@@ -2419,6 +2419,22 @@ pub fn serve<T: BeaconChainTypes>(
             })
         });
 
+    // GET lighthouse/database/reindex
+    let get_lighthouse_database_reindex = database_path
+        .and(warp::path("reindex"))
+        .and(warp::path::param::<u64>())
+        .and(warp::path::end())
+        .and(chain_filter.clone())
+        .and_then(|slots_per_restore_point: u64, chain: Arc<BeaconChain<T>>| {
+            blocking_json_task(move || {
+                chain
+                    .store
+                    .reindex(slots_per_restore_point, true)
+                    .map_err(Into::into)
+                    .map_err(warp_utils::reject::beacon_chain_error)
+            })
+        });
+
     // POST lighthouse/database/historical_blocks
     let post_lighthouse_database_historical_blocks = database_path
         .and(warp::path("historical_blocks"))
@@ -2553,6 +2569,7 @@ pub fn serve<T: BeaconChainTypes>(
                 .or(get_lighthouse_staking.boxed())
                 .or(get_lighthouse_database_info.boxed())
                 .or(get_lighthouse_database_reconstruct.boxed())
+                .or(get_lighthouse_database_reindex.boxed())
                 .or(get_events.boxed()),
         )
         .or(warp::post().and(

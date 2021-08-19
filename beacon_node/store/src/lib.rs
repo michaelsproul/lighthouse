@@ -73,6 +73,12 @@ pub trait KeyValueStore<E: EthSpec>: Sync + Send + Sized + 'static {
 
     /// Compact the database, freeing space used by deleted items.
     fn compact(&self) -> Result<(), Error>;
+
+    /// Return an iterator over all keys in a given column.
+    fn iter_column_keys<'a>(
+        &'a self,
+        column: DBColumn,
+    ) -> Box<dyn Iterator<Item = Result<Hash256, Error>> + 'a>;
 }
 
 pub fn get_key_for_col(column: &str, key: &[u8]) -> Vec<u8> {
@@ -142,6 +148,8 @@ pub enum StoreOp<'a, E: EthSpec> {
     DeleteStateTemporaryFlag(Hash256),
     DeleteBlock(Hash256),
     DeleteState(Hash256, Option<Slot>),
+    DeletePartialState(Hash256),
+    DeleteRestorePointHash(Hash256),
 }
 
 /// A unique column identifier.

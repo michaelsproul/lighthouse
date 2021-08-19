@@ -1,11 +1,12 @@
 //! Implementation of historic state reconstruction (given complete block history).
 use crate::hot_cold_store::{HotColdDB, HotColdDBError};
-use crate::{Error, ItemStore, KeyValueStore};
+use crate::metadata::AnchorInfo;
+use crate::{DBColumn, Error, ItemStore, KeyValueStore, StoreOp};
 use itertools::{process_results, Itertools};
 use slog::info;
 use state_processing::{per_block_processing, per_slot_processing, BlockSignatureStrategy};
 use std::sync::Arc;
-use types::{EthSpec, Hash256};
+use types::{EthSpec, Hash256, Slot};
 
 impl<E, Hot, Cold> HotColdDB<E, Hot, Cold>
 where
@@ -172,11 +173,7 @@ where
         // atomic transaction.
         let split = self.get_split_info();
         let prev_anchor = self.get_anchor_info();
-        if prev_anchor.map_or(false, |anchor| anchor.oldest_block_slot != 0) {
-            return Err(Error::UnableToUnindex {
-                oldest_block_slot: anchor.oldest_block_slot,
-            });
-        }
+
         let new_anchor = AnchorInfo {
             anchor_slot: Slot::new(0),
             oldest_block_slot: Slot::new(0),
@@ -187,7 +184,23 @@ where
         self.compare_and_set_anchor_info(prev_anchor, Some(new_anchor))?;
 
         // Delete all existing restore points.
+        // Note that we don't delete the cold state summaries, as they can be reused when
+        // reindexing. Technically we could also keep some of the partial states too.
+        let mut io_batch = vec![];
 
+        for key in self.cold_db.iter_column_keys(DBColumn::BeaconRestorePoint) {
+            // FIXME(sproul): don't delete genesis state
+            io_batch.push(StoreOp::DeleteRestorePointHash(key?));
+        }
+
+        for key in self.cold_db.iter_column_keys(DBColumn::BeaconState) {
+            io_batch.push(StoreOp::DeletePartialState(key?));
+        }
+
+        let kv_batch = self.convert_to_kv_batch(&io_batch)?;
+        self.cold_db.do_atomically(kv_batch)?;
+
+        drop(lock);
         Ok(())
     }
 
@@ -260,7 +273,7 @@ where
             "from" => format!("{} slots per restore point", current_slots_per_restore_point),
             "to" => format!("{} slots per restore point", slots_per_restore_point),
         );
-        self.unindex(false)?;
+        self.unindex(slots_per_restore_point, false)?;
 
         self.set_slots_per_restore_point(slots_per_restore_point)?;
 

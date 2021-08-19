@@ -1,12 +1,12 @@
 use super::*;
-use crate::metrics;
+use crate::{metrics, DBColumn};
 use db_key::Key;
 use leveldb::compaction::Compaction;
 use leveldb::database::batch::{Batch, Writebatch};
 use leveldb::database::kv::KV;
 use leveldb::database::Database;
 use leveldb::error::Error as LevelDBError;
-use leveldb::iterator::{Iterable, KeyIterator};
+use leveldb::iterator::{Iterable, KeyIterator, LevelDBIterator};
 use leveldb::options::{Options, ReadOptions, WriteOptions};
 use parking_lot::{Mutex, MutexGuard};
 use std::marker::PhantomData;
@@ -173,6 +173,29 @@ impl<E: EthSpec> KeyValueStore<E> for LevelDB<E> {
             self.db.compact(&start_key, &end_key);
         }
         Ok(())
+    }
+
+    fn iter_column_keys<'a>(
+        &'a self,
+        column: DBColumn,
+    ) -> Box<dyn Iterator<Item = Result<Hash256, Error>> + 'a> {
+        let start_key =
+            BytesKey::from_vec(get_key_for_col(column.into(), Hash256::zero().as_bytes()));
+
+        let keys_iter = self.keys_iter();
+        keys_iter.seek(&start_key);
+
+        Box::new(
+            keys_iter
+                .take_while(move |key| key.matches_column(column))
+                .map(move |bytes_key| {
+                    bytes_key
+                        .remove_column(column)
+                        .ok_or_else(|| Error::IterationError {
+                            unexpected_key: bytes_key,
+                        })
+                }),
+        )
     }
 }
 

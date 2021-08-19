@@ -1,4 +1,4 @@
-use super::{Error, ItemStore, KeyValueStore, KeyValueStoreOp};
+use super::{DBColumn, Error, ItemStore, KeyValueStore, KeyValueStoreOp};
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -87,6 +87,13 @@ impl<E: EthSpec> KeyValueStore<E> for MemoryStore<E> {
 
     fn compact(&self) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn iter_column_keys<'a>(
+        &'a self,
+        _: DBColumn,
+    ) -> Box<dyn Iterator<Item = Result<Hash256, Error>> + 'a> {
+        unimplemented!("use the disk store for testing iteration-related behaviour")
     }
 }
 

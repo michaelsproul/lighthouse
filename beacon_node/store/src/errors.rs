@@ -1,6 +1,7 @@
 use crate::chunked_vector::ChunkError;
 use crate::config::StoreConfigError;
 use crate::hot_cold_store::HotColdDBError;
+use crate::leveldb_store::BytesKey;
 use ssz::DecodeError;
 use types::{BeaconStateError, Hash256, Slot};
 
@@ -45,6 +46,9 @@ pub enum Error {
     },
     UnableToUnindex {
         oldest_block_slot: Slot,
+    },
+    IterationError {
+        unexpected_key: BytesKey,
     },
 }
 

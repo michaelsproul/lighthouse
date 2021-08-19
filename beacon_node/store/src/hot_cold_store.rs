@@ -5,7 +5,6 @@ use crate::config::{OnDiskStoreConfig, StoreConfig};
 use crate::forwards_iter::{HybridForwardsBlockRootsIterator, HybridForwardsStateRootsIterator};
 use crate::impls::beacon_state::{get_full_state, store_full_state};
 use crate::iter::{ParentRootBlockIterator, StateRootsIterator};
-use crate::leveldb_store::BytesKey;
 use crate::leveldb_store::LevelDB;
 use crate::memory_store::MemoryStore;
 use crate::metadata::{
@@ -13,12 +12,10 @@ use crate::metadata::{
     COMPACTION_TIMESTAMP_KEY, CONFIG_KEY, CURRENT_SCHEMA_VERSION, PRUNING_CHECKPOINT_KEY,
     SCHEMA_VERSION_KEY, SPLIT_KEY,
 };
-use crate::metrics;
 use crate::{
-    get_key_for_col, DBColumn, Error, ItemStore, KeyValueStoreOp, PartialBeaconState, StoreItem,
-    StoreOp,
+    get_key_for_col, metrics, DBColumn, Error, ItemStore, KeyValueStore, KeyValueStoreOp,
+    PartialBeaconState, StoreItem, StoreOp,
 };
-use leveldb::iterator::LevelDBIterator;
 use lru::LruCache;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use serde_derive::{Deserialize, Serialize};
@@ -112,9 +109,6 @@ pub enum HotColdDBError {
         slots_per_epoch: u64,
     },
     RestorePointBlockHashError(BeaconStateError),
-    IterationError {
-        unexpected_key: BytesKey,
-    },
     AttestationStateIsFinalized {
         split_slot: Slot,
         request_slot: Option<Slot>,
@@ -229,30 +223,7 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
 
     /// Return an iterator over the state roots of all temporary states.
     pub fn iter_temporary_state_roots(&self) -> impl Iterator<Item = Result<Hash256, Error>> + '_ {
-        self.iter_column_keys(DBColumn::BeaconStateTemporary)
-    }
-
-    /// Return an iterator over all
-    pub fn iter_column_keys(
-        &self,
-        column: DBColumn,
-    ) -> impl Iterator<Item = Result<Hash256, Error>> + '_ {
-        let start_key =
-            BytesKey::from_vec(get_key_for_col(column.into(), Hash256::zero().as_bytes()));
-
-        let keys_iter = self.hot_db.keys_iter();
-        keys_iter.seek(&start_key);
-
-        keys_iter
-            .take_while(move |key| key.matches_column(column))
-            .map(move |bytes_key| {
-                bytes_key.remove_column(column).ok_or_else(|| {
-                    HotColdDBError::IterationError {
-                        unexpected_key: bytes_key,
-                    }
-                    .into()
-                })
-            })
+        self.hot_db.iter_column_keys(DBColumn::BeaconStateTemporary)
     }
 }
 
@@ -544,6 +515,16 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
                         key_value_batch.push(KeyValueStoreOp::DeleteKey(state_key));
                     }
                 }
+                StoreOp::DeletePartialState(state_root) => {
+                    let state_key =
+                        get_key_for_col(DBColumn::BeaconState.into(), state_root.as_bytes());
+                    key_value_batch.push(KeyValueStoreOp::DeleteKey(state_key));
+                }
+                StoreOp::DeleteRestorePointHash(key) => {
+                    let bytes_key =
+                        get_key_for_col(DBColumn::BeaconRestorePoint.into(), key.as_bytes());
+                    key_value_batch.push(KeyValueStoreOp::DeleteKey(bytes_key))
+                }
             }
         }
         Ok(key_value_batch)
@@ -560,20 +541,10 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
                 StoreOp::PutBlock(block_root, block) => {
                     guard.put(*block_root, (**block).clone());
                 }
-
-                StoreOp::PutState(_, _) => (),
-
-                StoreOp::PutStateSummary(_, _) => (),
-
-                StoreOp::PutStateTemporaryFlag(_) => (),
-
-                StoreOp::DeleteStateTemporaryFlag(_) => (),
-
                 StoreOp::DeleteBlock(block_root) => {
                     guard.pop(block_root);
                 }
-
-                StoreOp::DeleteState(_, _) => (),
+                _ => (),
             }
         }
         Ok(())
