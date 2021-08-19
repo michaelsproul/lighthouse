@@ -2413,7 +2413,7 @@ pub fn serve<T: BeaconChainTypes>(
             blocking_json_task(move || {
                 chain
                     .store
-                    .reconstruct_historic_states()
+                    .reconstruct_historic_states(true)
                     .map_err(Into::into)
                     .map_err(warp_utils::reject::beacon_chain_error)
             })

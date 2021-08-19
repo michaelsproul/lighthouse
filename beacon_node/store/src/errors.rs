@@ -34,6 +34,18 @@ pub enum Error {
     ///
     /// This should never happen (it's a logic error).
     StateReconstructionDidNotComplete,
+    /// The database cannot be reindexed due an incompatibility between the current state on
+    /// disk and the desired reindex. Usually this can be fixed by unindexing first.
+    UnableToReindex {
+        new_slots_per_restore_point: u64,
+        current_slots_per_restore_point: u64,
+        split_slot: Slot,
+        oldest_block_slot: Slot,
+        state_upper_limit_slot: Slot,
+    },
+    UnableToUnindex {
+        oldest_block_slot: Slot,
+    },
 }
 
 pub trait HandleUnavailable<T> {

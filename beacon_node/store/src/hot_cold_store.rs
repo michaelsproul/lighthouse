@@ -60,7 +60,7 @@ pub struct HotColdDB<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     pub(crate) split: RwLock<Split>,
     /// The starting slots for the range of blocks & states stored in the database.
     anchor_info: RwLock<Option<AnchorInfo>>,
-    pub(crate) config: StoreConfig,
+    config: RwLock<StoreConfig>,
     /// Cold database containing compact historical data.
     pub cold_db: Cold,
     /// Hot database containing duplicated but quick-to-access recent data.
@@ -137,7 +137,7 @@ impl<E: EthSpec> HotColdDB<E, MemoryStore<E>, MemoryStore<E>> {
             hot_db: MemoryStore::open(),
             block_cache: Mutex::new(LruCache::new(config.block_cache_size)),
             migration_mutex: Mutex::new(()),
-            config,
+            config: RwLock::new(config),
             spec,
             log,
             _phantom: PhantomData,
@@ -171,7 +171,7 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
             hot_db: LevelDB::open(hot_path)?,
             block_cache: Mutex::new(LruCache::new(config.block_cache_size)),
             migration_mutex: Mutex::new(()),
-            config,
+            config: RwLock::new(config),
             spec,
             log,
             _phantom: PhantomData,
@@ -193,7 +193,9 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
 
         // Ensure that any on-disk config is compatible with the supplied config.
         if let Some(disk_config) = db.load_config()? {
-            db.config.check_compatibility(&disk_config)?;
+            db.config
+                .read_recursive()
+                .check_compatibility(&disk_config)?;
         }
         db.store_config()?;
 
@@ -216,7 +218,7 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
         db.remove_garbage()?;
 
         // If configured, run a foreground compaction pass.
-        if db.config.compact_on_init {
+        if db.config.read_recursive().compact_on_init {
             info!(db.log, "Running foreground compaction");
             db.compact()?;
             info!(db.log, "Foreground compaction complete");
@@ -227,7 +229,14 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
 
     /// Return an iterator over the state roots of all temporary states.
     pub fn iter_temporary_state_roots(&self) -> impl Iterator<Item = Result<Hash256, Error>> + '_ {
-        let column = DBColumn::BeaconStateTemporary;
+        self.iter_column_keys(DBColumn::BeaconStateTemporary)
+    }
+
+    /// Return an iterator over all
+    pub fn iter_column_keys(
+        &self,
+        column: DBColumn,
+    ) -> impl Iterator<Item = Result<Hash256, Error>> + '_ {
         let start_key =
             BytesKey::from_vec(get_key_for_col(column.into(), Hash256::zero().as_bytes()));
 
@@ -665,7 +674,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     ) -> Result<(), Error> {
         ops.push(ColdStateSummary { slot: state.slot() }.as_kv_store_op(*state_root));
 
-        if state.slot() % self.config.slots_per_restore_point != 0 {
+        if state.slot() % self.slots_per_restore_point() != 0 {
             return Ok(());
         }
 
@@ -689,7 +698,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         store_updated_vector(RandaoMixes, db, state, &self.spec, ops)?;
 
         // 3. Store restore point.
-        let restore_point_index = state.slot().as_u64() / self.config.slots_per_restore_point;
+        let restore_point_index = state.slot().as_u64() / self.slots_per_restore_point();
         self.store_restore_point_hash(restore_point_index, *state_root, ops);
 
         Ok(())
@@ -715,8 +724,8 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         let (lower_limit, upper_limit) = self.get_historic_state_limits();
 
         if slot <= lower_limit || slot >= upper_limit {
-            if slot % self.config.slots_per_restore_point == 0 {
-                let restore_point_idx = slot.as_u64() / self.config.slots_per_restore_point;
+            if slot % self.slots_per_restore_point() == 0 {
+                let restore_point_idx = slot.as_u64() / self.slots_per_restore_point();
                 self.load_restore_point_by_index(restore_point_idx)
             } else {
                 self.load_cold_intermediate_state(slot)
@@ -757,7 +766,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     /// Load a frozen state that lies between restore points.
     fn load_cold_intermediate_state(&self, slot: Slot) -> Result<BeaconState<E>, Error> {
         // 1. Load the restore points either side of the intermediate state.
-        let low_restore_point_idx = slot.as_u64() / self.config.slots_per_restore_point;
+        let low_restore_point_idx = slot.as_u64() / self.slots_per_restore_point();
         let high_restore_point_idx = low_restore_point_idx + 1;
 
         // Acquire the read lock, so that the split can't change while this is happening.
@@ -783,7 +792,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         restore_point_idx: u64,
         split: &Split,
     ) -> Result<BeaconState<E>, Error> {
-        if restore_point_idx * self.config.slots_per_restore_point >= split.slot.as_u64() {
+        if restore_point_idx * self.slots_per_restore_point() >= split.slot.as_u64() {
             self.get_state(&split.state_root, Some(split.slot))?
                 .ok_or(HotColdDBError::MissingSplitState(
                     split.state_root,
@@ -943,10 +952,24 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         *self.split.write() = Split { slot, state_root };
     }
 
+    /// Fetch the value of the slots per restore point parameter.
+    pub fn slots_per_restore_point(&self) -> u64 {
+        self.config.read_recursive().slots_per_restore_point
+    }
+
+    /// Update the slots per restore point, and flush the new config to disk.
+    ///
+    /// This should only be done when the freezer database is not in use, i.e. when
+    /// there is an anchor preventing reads.
+    pub fn set_slots_per_restore_point(&self, slots_per_restore_point: u64) -> Result<(), Error> {
+        self.config.write().slots_per_restore_point = slots_per_restore_point;
+        self.store_config()
+    }
+
     /// Fetch the slot of the most recently stored restore point.
     pub fn get_latest_restore_point_slot(&self) -> Slot {
-        (self.get_split_slot() - 1) / self.config.slots_per_restore_point
-            * self.config.slots_per_restore_point
+        (self.get_split_slot() - 1) / self.slots_per_restore_point()
+            * self.slots_per_restore_point()
     }
 
     /// Load the database schema version from disk.
@@ -962,15 +985,12 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     /// Initialise the anchor info for checkpoint sync starting from `block`.
     pub fn init_anchor_info(&self, block: BeaconBlockRef<'_, E>) -> Result<(), Error> {
         let anchor_slot = block.slot();
-        let slots_per_restore_point = self.config.slots_per_restore_point;
+        let slots_per_restore_point = self.slots_per_restore_point();
 
         // Set the `state_upper_limit` to the slot of the *next* restore point.
         // See `get_state_upper_limit` for rationale.
-        let next_restore_point_slot = if anchor_slot % slots_per_restore_point == 0 {
-            anchor_slot
-        } else {
-            (anchor_slot / slots_per_restore_point + 1) * slots_per_restore_point
-        };
+        let next_restore_point_slot =
+            Self::next_restore_point_slot(anchor_slot, slots_per_restore_point);
         let anchor_info = AnchorInfo {
             anchor_slot,
             oldest_block_slot: anchor_slot,
@@ -979,6 +999,15 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             state_lower_limit: self.spec.genesis_slot,
         };
         self.compare_and_set_anchor_info(None, Some(anchor_info))
+    }
+
+    /// Get the slot of next restore point immediately after `slot`.
+    pub fn next_restore_point_slot(slot: Slot, slots_per_restore_point: u64) -> Slot {
+        if slot % slots_per_restore_point == 0 {
+            slot
+        } else {
+            (slot / slots_per_restore_point + 1) * slots_per_restore_point
+        }
     }
 
     /// Get a clone of the store's anchor info.
@@ -1082,7 +1111,8 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
 
     /// Write the config to disk.
     fn store_config(&self) -> Result<(), Error> {
-        self.hot_db.put(&CONFIG_KEY, &self.config.as_disk_config())
+        self.hot_db
+            .put(&CONFIG_KEY, &self.config.read_recursive().as_disk_config())
     }
 
     /// Load the split point from disk.
@@ -1162,7 +1192,9 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     ///
     /// (2) ensures that restore points align with hot state summaries, making it
     /// quick to migrate hot to cold.
-    fn verify_slots_per_restore_point(slots_per_restore_point: u64) -> Result<(), HotColdDBError> {
+    pub fn verify_slots_per_restore_point(
+        slots_per_restore_point: u64,
+    ) -> Result<(), HotColdDBError> {
         let slots_per_historical_root = E::SlotsPerHistoricalRoot::to_u64();
         let slots_per_epoch = E::slots_per_epoch();
         if slots_per_restore_point > 0
@@ -1187,7 +1219,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
 
     /// Return `true` if compaction on finalization/pruning is enabled.
     pub fn compact_on_prune(&self) -> bool {
-        self.config.compact_on_prune
+        self.config.read_recursive().compact_on_prune
     }
 
     /// Load the checkpoint to begin pruning from (the "old finalized checkpoint").
@@ -1276,18 +1308,18 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
 
         let mut cold_db_ops: Vec<KeyValueStoreOp> = Vec::new();
 
-        if slot % store.config.slots_per_restore_point == 0 {
+        if slot % store.slots_per_restore_point() == 0 {
             let state: BeaconState<E> = get_full_state(&store.hot_db, &state_root, &store.spec)?
                 .ok_or(HotColdDBError::MissingStateToFreeze(state_root))?;
 
             store.store_cold_state(&state_root, &state, &mut cold_db_ops)?;
+        } else {
+            // Store a pointer from this state root to its slot, so we can later reconstruct states
+            // from their state root alone.
+            let cold_state_summary = ColdStateSummary { slot };
+            let op = cold_state_summary.as_kv_store_op(state_root);
+            cold_db_ops.push(op);
         }
-
-        // Store a pointer from this state root to its slot, so we can later reconstruct states
-        // from their state root alone.
-        let cold_state_summary = ColdStateSummary { slot };
-        let op = cold_state_summary.as_kv_store_op(state_root);
-        cold_db_ops.push(op);
 
         // There are data dependencies between calls to `store_cold_state()` that prevent us from
         // doing one big call to `store.cold_db.do_atomically()` at end of the loop.
