@@ -1052,6 +1052,12 @@ impl<'a, T: BeaconChainTypes> FullyVerifiedBlock<'a, T> {
             "slot" => block.slot(),
             "graffiti" => graffiti_string,
         );
+        // Write to file.
+        let output_dir = std::path::Path::new("block_stats");
+        std::fs::create_dir_all(output_dir).unwrap();
+        let filename = output_dir.join(format!("block_{}.json", block.slot()));
+        let f = std::fs::File::create(filename).unwrap();
+        serde_json::to_writer(f, &block_reward).unwrap();
 
         /*
          * Perform `per_block_processing` on the block and state, returning early if the block is

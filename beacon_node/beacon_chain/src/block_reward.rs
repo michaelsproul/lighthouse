@@ -15,6 +15,7 @@ pub struct BlockReward {
     pub curr_epoch_rewards: HashMap<u64, u64>,
     /// Vec of attestation rewards for each attestation included.
     pub per_attestation_rewards: Vec<HashMap<u64, u64>>,
+    pub graffiti: String,
     // FIXME(sproul): other components: slashings, etc
 }
 
@@ -82,6 +83,8 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .map(|cover| cover.fresh_validators_rewards)
             .collect();
 
+        let graffiti = block.body().graffiti().as_utf8_lossy();
+
         Ok(BlockReward {
             total,
             prev_epoch_total,
@@ -89,6 +92,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             prev_epoch_rewards,
             curr_epoch_rewards,
             per_attestation_rewards,
+            graffiti,
         })
     }
 }
