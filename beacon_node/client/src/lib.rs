@@ -1,5 +1,6 @@
 extern crate slog;
 
+mod block_dreamer;
 pub mod config;
 mod metrics;
 mod notifier;

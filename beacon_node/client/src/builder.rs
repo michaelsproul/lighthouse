@@ -1,3 +1,4 @@
+use crate::block_dreamer::spawn_block_dreamer;
 use crate::config::{ClientGenesis, Config as ClientConfig};
 use crate::notifier::spawn_notifier;
 use crate::Client;
@@ -527,6 +528,15 @@ where
             .as_ref()
             .ok_or("slot_notifier requires a chain spec")?
             .seconds_per_slot;
+
+        // FIXME(sproul): make this optional
+        spawn_block_dreamer(
+            context.executor.clone(),
+            beacon_chain.clone(),
+            network_globals.clone(),
+            seconds_per_slot,
+        )
+        .map_err(|e| format!("Unable to start block dreamer: {}", e))?;
 
         spawn_notifier(
             context.executor,

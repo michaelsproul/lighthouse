@@ -53,7 +53,7 @@ use crate::{
 use fork_choice::{ForkChoice, ForkChoiceStore};
 use parking_lot::RwLockReadGuard;
 use proto_array::Block as ProtoBlock;
-use slog::{debug, error, Logger};
+use slog::{debug, error, info, Logger};
 use slot_clock::SlotClock;
 use ssz::Encode;
 use state_processing::{
@@ -1027,6 +1027,31 @@ impl<'a, T: BeaconChainTypes> FullyVerifiedBlock<'a, T> {
         state.build_committee_cache(RelativeEpoch::Current, &chain.spec)?;
 
         metrics::stop_timer(committee_timer);
+
+        /*
+         * Take a sneaky peak at the block's rewards and attestation stats.
+         */
+        let block_reward = chain.compute_block_reward(block.message(), &state)?;
+        let num_attestations = block.message().body().attestations().len();
+        let useless_attestations = block_reward
+            .per_attestation_rewards
+            .iter()
+            .filter(|rewards| rewards.is_empty())
+            .count();
+        let graffiti_string = block.message().body().graffiti().as_utf8_lossy();
+
+        info!(
+            chain.log,
+            "Stats for received block";
+            "block_reward" => block_reward.total,
+            "useless_attestations" => useless_attestations,
+            "num_attestations" => num_attestations,
+            "prev_validators_covered" => block_reward.prev_epoch_rewards.len(),
+            "curr_validators_covered" => block_reward.curr_epoch_rewards.len(),
+            "block_root" => ?block_root,
+            "slot" => block.slot(),
+            "graffiti" => graffiti_string,
+        );
 
         /*
          * Perform `per_block_processing` on the block and state, returning early if the block is

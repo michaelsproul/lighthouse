@@ -315,6 +315,7 @@ fn eth1_logging<T: BeaconChainTypes>(beacon_chain: &BeaconChain<T>, log: &Logger
                     "ready" => status.lighthouse_is_cached_and_ready
                 );
 
+                /* FIXME(sproul): too noisy
                 if !status.lighthouse_is_cached_and_ready {
                     let voting_target_timestamp = status.voting_target_timestamp;
 
@@ -333,6 +334,7 @@ fn eth1_logging<T: BeaconChainTypes>(beacon_chain: &BeaconChain<T>, log: &Logger
                         "est_blocks_remaining" => distance,
                     );
                 }
+                */
             } else {
                 error!(
                     log,

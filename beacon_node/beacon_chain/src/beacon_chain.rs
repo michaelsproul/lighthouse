@@ -2411,6 +2411,19 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                     block.to_ref(),
                     &self.spec,
                 );
+
+                // Add attestations from the block to the op pool, in case this block is re-orged
+                // out.
+                // FIXME(sproul): clean this up?
+                let fork = state.fork();
+                self.op_pool
+                    .insert_attestation(
+                        attestation.clone(),
+                        &fork,
+                        self.genesis_validators_root,
+                        &self.spec,
+                    )
+                    .map_err(Error::from)?;
             }
         }
 
@@ -2603,12 +2616,14 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 (state, None)
             }
         } else {
+            /* FIXME(sproul): too noisy
             warn!(
                 self.log,
                 "Producing block that conflicts with head";
                 "message" => "this block is more likely to be orphaned",
                 "slot" => slot,
             );
+            */
             let state = self
                 .state_at_slot(slot - 1, StateSkipConfig::WithStateRoots)
                 .map_err(|_| BlockProductionError::UnableToProduceAtSlot(slot))?;
@@ -2797,6 +2812,28 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             inner_block,
             // The block is not signed here, that is the task of a validator client.
             Signature::empty(),
+        );
+
+        // Take a cheeky peek at the block reward stats
+        let block_reward = self
+            .compute_block_reward(block.message(), &state)
+            .expect("FIXME(sproul)");
+        let num_attestations = block.message().body().attestations().len();
+        let useless_attestations = block_reward
+            .per_attestation_rewards
+            .iter()
+            .filter(|rewards| rewards.is_empty())
+            .count();
+
+        info!(
+            self.log,
+            "Stats for produced block";
+            "block_reward" => block_reward.total,
+            "useless_attestations" => useless_attestations,
+            "num_attestations" => num_attestations,
+            "prev_validators_covered" => block_reward.prev_epoch_rewards.len(),
+            "curr_validators_covered" => block_reward.curr_epoch_rewards.len(),
+            "slot" => block.slot(),
         );
 
         let process_timer = metrics::start_timer(&metrics::BLOCK_PRODUCTION_PROCESS_TIMES);
