@@ -52,6 +52,7 @@ use itertools::Itertools;
 use operation_pool::{OperationPool, PersistedOperationPool};
 use parking_lot::{Mutex, RwLock};
 use safe_arith::SafeArith;
+use serde::{Deserialize, Serialize};
 use slasher::Slasher;
 use slog::{crit, debug, error, info, trace, warn, Logger};
 use slot_clock::SlotClock;
@@ -65,6 +66,7 @@ use state_processing::{
 };
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::prelude::*;
@@ -98,6 +100,18 @@ pub const BEACON_CHAIN_DB_KEY: Hash256 = Hash256::zero();
 pub const OP_POOL_DB_KEY: Hash256 = Hash256::zero();
 pub const ETH1_CACHE_DB_KEY: Hash256 = Hash256::zero();
 pub const FORK_CHOICE_DB_KEY: Hash256 = Hash256::zero();
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct MissedAttestation {
+    pub subnet: u64,
+    pub validators: BTreeSet<u64>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct MissedAttesters {
+    pub per_attestation: Vec<MissedAttestation>,
+    pub all: BTreeSet<u64>,
+}
 
 /// Defines the behaviour when a block/block-root for a skipped slot is requested.
 pub enum WhenSlotSkipped {
@@ -1560,6 +1574,15 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 }
             }
             metrics::inc_counter(&metrics::AGGREGATED_ATTESTATION_PROCESSING_SUCCESSES);
+
+            // FIXME(sproul): misuse the block attesters cache a little bit
+            let mut observed_block_attesters = self.observed_block_attesters.write();
+            for validator_idx in &v.indexed_attestation().attesting_indices {
+                observed_block_attesters
+                    .observe_validator(v.attestation().data.target.epoch, *validator_idx as usize)
+                    .unwrap();
+            }
+
             v
         })
     }
@@ -2363,6 +2386,8 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         let validator_monitor = self.validator_monitor.read();
 
         // Register each attestation in the block with the fork choice service.
+        let mut missed = MissedAttesters::default();
+
         for attestation in block.body().attestations() {
             let _fork_choice_attestation_timer =
                 metrics::start_timer(&metrics::FORK_CHOICE_PROCESS_ATTESTATION_TIMES);
@@ -2385,21 +2410,51 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             // `observed_block_attesters` if they are from the previous epoch or later.
             if attestation_target_epoch + 1 >= current_epoch {
                 let mut observed_block_attesters = self.observed_block_attesters.write();
+                let mut never_seen = std::collections::BTreeSet::new();
                 for &validator_index in &indexed_attestation.attesting_indices {
-                    if let Err(e) = observed_block_attesters
+                    match observed_block_attesters
                         .observe_validator(attestation_target_epoch, validator_index as usize)
                     {
-                        debug!(
+                        Ok(false) => {
+                            never_seen.insert(validator_index);
+                        }
+                        Ok(true) => {}
+                        Err(e) => debug!(
                             self.log,
                             "Failed to register observed block attester";
                             "error" => ?e,
                             "epoch" => attestation_target_epoch,
                             "validator_index" => validator_index,
-                        )
+                        ),
                     }
                 }
-            }
 
+                let committees_per_slot = state
+                    .get_committee_count_at_slot(attestation.data.slot)
+                    .unwrap();
+                let subnet = SubnetId::compute_subnet_for_attestation_data::<T::EthSpec>(
+                    &attestation.data,
+                    committees_per_slot,
+                    &self.spec,
+                )
+                .unwrap();
+
+                if !never_seen.is_empty() {
+                    info!(
+                        self.log,
+                        "Missed attesters";
+                        "missing" => never_seen.len(),
+                        "slot" => attestation.data.slot,
+                        "committee_index" => attestation.data.index,
+                    );
+                }
+
+                missed.all.extend(&never_seen);
+                missed.per_attestation.push(MissedAttestation {
+                    subnet: subnet.into(),
+                    validators: never_seen,
+                });
+            }
             // Only register this with the validator monitor when the block is sufficiently close to
             // the current slot.
             if VALIDATOR_MONITOR_HISTORIC_EPOCHS as u64 * T::EthSpec::slots_per_epoch()
@@ -2445,6 +2500,19 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 participant_pubkeys,
             );
         }
+
+        if !missed.all.is_empty() {
+            info!(
+                self.log,
+                "Unseen from block";
+                "count" => missed.all.len(),
+            );
+        }
+        let output_dir = std::path::Path::new("missed_atts");
+        std::fs::create_dir_all(output_dir).unwrap();
+        let f =
+            std::fs::File::create(output_dir.join(format!("block_{}.json", block.slot()))).unwrap();
+        serde_json::to_writer(f, &missed).unwrap();
 
         for exit in block.body().voluntary_exits() {
             validator_monitor.register_block_voluntary_exit(&exit.message)

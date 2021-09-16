@@ -1,7 +1,8 @@
 use beacon_chain::{BeaconChain, BeaconChainTypes};
 use eth2_libp2p::{types::SyncState, NetworkGlobals};
-use slog::{debug, error};
+use slog::error;
 use slot_clock::SlotClock;
+use state_processing::common::get_indexed_attestation;
 use std::sync::Arc;
 use std::time::Duration;
 use types::Signature;
@@ -52,10 +53,32 @@ pub fn spawn_block_dreamer<T: BeaconChainTypes>(
                     }
                 };
                 if let SyncState::Synced = network.sync_state() {
+                    // Hold lock to prevent concurrent block application (a bit naughty innit)
+                    let mut observed_block_attesters =
+                        beacon_chain.observed_block_attesters.write();
                     match beacon_chain.produce_block(Signature::empty(), slot, None) {
-                        Ok(_) => {
-                            // FIXME(sproul): write block to disk?
-                            debug!(log, "Constructed dream block"; "slot" => slot);
+                        Ok((block, state)) => {
+                            // Observe block attesters
+                            for attestation in block.body().attestations() {
+                                let committee = state
+                                    .get_beacon_committee(
+                                        attestation.data.slot,
+                                        attestation.data.index,
+                                    )
+                                    .unwrap();
+                                let indexed_attestation =
+                                    get_indexed_attestation(committee.committee, attestation)
+                                        .unwrap();
+
+                                for &validator_index in &indexed_attestation.attesting_indices {
+                                    observed_block_attesters
+                                        .observe_validator(
+                                            attestation.data.target.epoch,
+                                            validator_index as usize,
+                                        )
+                                        .unwrap();
+                                }
+                            }
                         }
                         Err(e) => {
                             error!(

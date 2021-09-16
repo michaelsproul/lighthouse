@@ -273,6 +273,16 @@ impl<T: BeaconChainTypes> Worker<T> {
             )
         }
 
+        let delay = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0))
+            .saturating_sub(seen_timestamp);
+        debug!(
+            self.log,
+            "End-to-end aggregate delay";
+            "delay" => format!("{}ms", delay.as_millis()),
+        );
+
         metrics::inc_counter(&metrics::BEACON_PROCESSOR_AGGREGATED_ATTESTATION_IMPORTED_TOTAL);
     }
 
@@ -933,19 +943,29 @@ impl<T: BeaconChainTypes> Worker<T> {
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
                 return;
             }
-            AttnError::AggregatorAlreadyKnown(_) => {
+            AttnError::AggregatorAlreadyKnown(validator_index) => {
                 /*
                  * There has already been an aggregate attestation seen from this
                  * aggregator index.
                  *
                  * The peer is not necessarily faulty.
                  */
-                trace!(
+                let (committee_index, slot, set_bits) = match &failed_att {
+                    FailedAtt::Aggregate { attestation, .. } => {
+                        let att = &attestation.message.aggregate;
+                        let set_bits = att.aggregation_bits.num_set_bits();
+                        (att.data.index, att.data.slot, set_bits)
+                    }
+                    _ => panic!("impossible"),
+                };
+                warn!(
                     self.log,
                     "Aggregator already known";
-                    "peer_id" => %peer_id,
+                    "validator_index" => validator_index,
                     "block" => ?beacon_block_root,
-                    "type" => ?attestation_type,
+                    "committee_index" => committee_index,
+                    "slot" => slot,
+                    "set_bits" => set_bits,
                 );
                 // This is an allowed behaviour.
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);

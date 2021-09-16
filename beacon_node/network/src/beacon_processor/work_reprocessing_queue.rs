@@ -379,12 +379,25 @@ impl<T: BeaconChainTypes> ReprocessQueue<T> {
                                 .queued_aggregates
                                 .remove(&id)
                                 .map(|(aggregate, delay_key)| {
+                                    slog::info!(
+                                        log,
+                                        "Unqueued aggregate";
+                                        "committee_index" => aggregate.attestation.message.aggregate.data.index,
+                                        "slot" => aggregate.attestation.message.aggregate.data.slot,
+                                        "set_bits" => aggregate.attestation.message.aggregate.aggregation_bits.num_set_bits(),
+                                    );
                                     (ReadyWork::Aggregate(aggregate), delay_key)
                                 }),
                             QueuedAttestationId::Unaggregate(id) => self
                                 .queued_unaggregates
                                 .remove(&id)
                                 .map(|(unaggregate, delay_key)| {
+                                    slog::info!(
+                                        log,
+                                        "Unqueued single attestation";
+                                        "committee_index" => unaggregate.attestation.data.index,
+                                        "slot" => unaggregate.attestation.data.slot,
+                                    );
                                     (ReadyWork::Unaggregate(unaggregate), delay_key)
                                 }),
                         } {
@@ -470,6 +483,12 @@ impl<T: BeaconChainTypes> ReprocessQueue<T> {
                             )
                         }),
                 } {
+                    warn!(
+                        log,
+                        "Attestation expired";
+                        "beacon_block_root" => ?root,
+                    );
+
                     if self.ready_work_tx.try_send(work).is_err() {
                         error!(
                             log,
@@ -482,6 +501,12 @@ impl<T: BeaconChainTypes> ReprocessQueue<T> {
                             queued_atts.swap_remove(index);
                         }
                     }
+                } else {
+                    warn!(
+                        log,
+                        "Missing expired attn";
+                        "id" => ?queued_id
+                    );
                 }
             }
         }

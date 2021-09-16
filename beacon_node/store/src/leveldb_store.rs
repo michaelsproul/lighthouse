@@ -138,6 +138,7 @@ impl<E: EthSpec> KeyValueStore<E> for LevelDB<E> {
         for op in ops_batch {
             match op {
                 KeyValueStoreOp::PutKeyValue(key, value) => {
+                    metrics::inc_counter_by(&metrics::DISK_DB_WRITE_BYTES, value.len() as u64);
                     leveldb_batch.put(BytesKey::from_vec(key), &value);
                 }
 

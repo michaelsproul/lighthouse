@@ -1095,6 +1095,14 @@ impl<T: BeaconChainTypes> BeaconProcessor<T> {
                     gossip_attester_slashing_queue.len() as i64,
                 );
 
+                if aggregate_debounce.elapsed() {
+                    slog::info!(
+                        self.log,
+                        "Attestation queue sizes";
+                        "aggregate" => aggregate_queue.len(),
+                        "unaggregate" => attestation_queue.len(),
+                    )
+                }
                 if aggregate_queue.is_full() && aggregate_debounce.elapsed() {
                     error!(
                         self.log,
