@@ -1,5 +1,5 @@
 use beacon_chain::{BeaconChain, BeaconChainTypes};
-use eth2_libp2p::{types::SyncState, NetworkGlobals};
+use eth2_libp2p::NetworkGlobals;
 use slog::error;
 use slot_clock::SlotClock;
 use state_processing::common::get_indexed_attestation;
@@ -52,7 +52,7 @@ pub fn spawn_block_dreamer<T: BeaconChainTypes>(
                         continue;
                     }
                 };
-                if let SyncState::Synced = network.sync_state() {
+                if network.sync_state().is_synced() {
                     // Hold lock to prevent concurrent block application (a bit naughty innit)
                     let mut observed_block_attesters =
                         beacon_chain.observed_block_attesters.write();

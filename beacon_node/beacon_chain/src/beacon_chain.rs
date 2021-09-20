@@ -2440,7 +2440,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 .unwrap();
 
                 if !never_seen.is_empty() {
-                    info!(
+                    debug!(
                         self.log,
                         "Missed attesters";
                         "missing" => never_seen.len(),
@@ -2506,6 +2506,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 self.log,
                 "Unseen from block";
                 "count" => missed.all.len(),
+                "slot" => block.slot(),
             );
         }
         let output_dir = std::path::Path::new("missed_atts");
