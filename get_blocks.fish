@@ -1,5 +1,7 @@
 #!/usr/bin/env fish
 
+mkdir -p blocks
+
 for file in (ls block_stats/*.json)
     set -x slot (string replace block_ "" (basename $file .json))
     if [ -f blocks/block_$slot.json ]
