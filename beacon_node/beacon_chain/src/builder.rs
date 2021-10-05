@@ -369,6 +369,8 @@ where
         weak_subj_block: SignedBeaconBlock<TEthSpec>,
         genesis_state: BeaconState<TEthSpec>,
     ) -> Result<Self, String> {
+        let panic_at = std::env::var("PANIC_AT").unwrap();
+
         let store = self.store.clone().ok_or("genesis_state requires a store")?;
 
         let weak_subj_slot = weak_subj_state.slot();
@@ -423,14 +425,27 @@ where
         let (_, updated_builder) = self.set_genesis_state(genesis_state)?;
         self = updated_builder;
 
+        if panic_at == "1" {
+            panic!();
+        }
+
         // Write the state and block non-atomically, it doesn't matter if they're forgotten
         // about on a crash restart.
         store
             .put_state(&weak_subj_state_root, &weak_subj_state)
             .map_err(|e| format!("Failed to store weak subjectivity state: {:?}", e))?;
+
+        if panic_at == "2" {
+            panic!();
+        }
+
         store
             .put_block(&weak_subj_block_root, weak_subj_block.clone())
             .map_err(|e| format!("Failed to store weak subjectivity block: {:?}", e))?;
+
+        if panic_at == "3" {
+            panic!();
+        }
 
         // Stage the database's metadata fields for atomic storage when `build` is called.
         // This prevents the database from restarting in an inconsistent state if the anchor
@@ -466,6 +481,10 @@ where
         .map_err(|e| format!("Unable to initialize ForkChoice: {:?}", e))?;
 
         self.fork_choice = Some(fork_choice);
+
+        if panic_at == "4" {
+            panic!();
+        }
 
         Ok(self.empty_op_pool())
     }
@@ -685,6 +704,11 @@ where
             );
         }
 
+        let panic_at = std::env::var("PANIC_AT").unwrap();
+        if panic_at == "5" {
+            panic!();
+        }
+
         // Store the `PersistedBeaconChain` in the database atomically with the metadata so that on
         // restart we can correctly detect the presence of an initialized database.
         //
@@ -762,6 +786,10 @@ where
             slasher: self.slasher.clone(),
             validator_monitor: RwLock::new(validator_monitor),
         };
+
+        if panic_at == "6" {
+            panic!();
+        }
 
         let head = beacon_chain
             .head()
