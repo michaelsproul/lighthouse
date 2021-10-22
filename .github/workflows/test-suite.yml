@@ -247,3 +247,24 @@ jobs:
     env:
       # Allow warnings on Nightly
       RUSTFLAGS: ""
+  consensus-coverage:
+    name: consensus-coverage
+    runs-on: ubuntu-latest
+    needs: cargo-fmt
+    continue-on-error: true
+    steps:
+    - uses: actions/checkout@v1
+    - name: Install Rust (${{ env.PINNED_NIGHTLY }})
+      run: rustup toolchain install $PINNED_NIGHTLY
+    - name: Set Nightly compiler override
+      run: rustup override set $PINNED_NIGHTLY
+    - name: Install LLVM tools
+      run: rustup component add llvm-tools-preview
+    - name: Install grcov
+      run: cargo install grcov
+    - name: Run tests with coverage instrumentation
+      run: |
+        source ./scripts/coverage.env
+        make cov-consensus
+    - name: Upload results to CodeCov
+      run: bash <(curl -s https://codecov.io/bash) -f lcov.info

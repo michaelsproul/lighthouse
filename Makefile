@@ -104,27 +104,62 @@ check-benches:
 check-consensus:
 	cargo check --manifest-path=consensus/state_processing/Cargo.toml --no-default-features
 
+# Pattern rule to run tests in a single crate.
+test-crate-%:
+	cargo test --release -p $*
+
+# Check that the environment is configured for computing coverage data
+assert-cov:
+	@test "$(LLVM_PROFILE_FILE)" \
+		|| (echo "LLVM_PROFILE_FILE not set, try sourcing ./scripts/coverage.env"; exit 1)
+	@echo "$(RUSTFLAGS)" | grep -e "-Zinstrument-coverage" > /dev/null \
+		|| (echo "instrumentation not enabled, try sourcing ./scripts/coverage.env"; exit 1)
+	@rustc --version | grep "nightly" \
+        || (echo "Need Rust nightly, try: rustup override set nightly"; exit 1)
+	@grcov --version \
+        || (echo "Need grcov, try: cargo install grcov"; exit 1)
+
+# Remove all coverage related files to start fresh
+clean-cov:
+	find . -type f -name "*.profraw" | xargs -r rm
+	rm -rf coverage-*
+
+# Runs consensus-related tests
+cov-consensus: assert-cov test-crate-types test-crate-state_processing run-ef-tests-lite
+	grcov . \
+		--binary-path ./target/release/ \
+		-s ./consensus \
+		-t lcov \
+		--ignore-not-existing \
+		--ignore "*{ssz,tree_hash}_derive*" \
+		-o lcov.info
+
+# Runs the ef-test vectors, skipping running with Milagro
+run-ef-tests-lite:
+	cargo test --release -p ef_tests --features "ef_tests"
+	cargo test --release -p ef_tests --features "ef_tests,fake_crypto"
+
 # Runs only the ef-test vectors.
 run-ef-tests:
 	rm -rf $(EF_TESTS)/.accessed_file_log.txt
-	cargo test --release --manifest-path=$(EF_TESTS)/Cargo.toml --features "ef_tests"
-	cargo test --release --manifest-path=$(EF_TESTS)/Cargo.toml --features "ef_tests,fake_crypto"
-	cargo test --release --manifest-path=$(EF_TESTS)/Cargo.toml --features "ef_tests,milagro"
+	cargo test --release -p ef_tests --features "ef_tests"
+	cargo test --release -p ef_tests --features "ef_tests,fake_crypto"
+	cargo test --release -p ef_tests --features "ef_tests,milagro"
 	./$(EF_TESTS)/check_all_files_accessed.py $(EF_TESTS)/.accessed_file_log.txt $(EF_TESTS)/consensus-spec-tests
 
 # Run the tests in the `beacon_chain` crate for all known forks.
 test-beacon-chain: $(patsubst %,test-beacon-chain-%,$(FORKS))
 
 test-beacon-chain-%:
-	env FORK_NAME=$* cargo test --release --features fork_from_env --manifest-path=$(BEACON_CHAIN_CRATE)/Cargo.toml
+	env FORK_NAME=$* cargo test --release --features fork_from_env -p beacon_chain
 
 # Run the tests in the `operation_pool` crate for all known forks.
 test-op-pool: $(patsubst %,test-op-pool-%,$(FORKS))
 
 test-op-pool-%:
 	env FORK_NAME=$* cargo test --release \
-		--features 'beacon_chain/fork_from_env'\
-		--manifest-path=$(OP_POOL_CRATE)/Cargo.toml
+		-p operation_pool \
+		--features 'beacon_chain/fork_from_env' \
 
 # Runs only the tests/state_transition_vectors tests.
 run-state-transition-tests:
@@ -159,7 +194,7 @@ make-ef-tests:
 
 # Verifies that state_processing feature arbitrary-fuzz will compile
 arbitrary-fuzz:
-	cargo check --manifest-path=consensus/state_processing/Cargo.toml --features arbitrary-fuzz
+	cargo check -p state_processing --features arbitrary-fuzz
 
 # Runs cargo audit (Audit Cargo.lock files for crates with security vulnerabilities reported to the RustSec Advisory Database)
 audit:
