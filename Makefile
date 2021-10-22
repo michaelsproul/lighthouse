@@ -135,7 +135,7 @@ cov-consensus: assert-cov test-crate-types test-crate-state_processing run-ef-te
 		-o lcov.info
 
 # Runs the ef-test vectors, skipping running with Milagro
-run-ef-tests-lite:
+run-ef-tests-lite: make-ef-tests
 	cargo test --release -p ef_tests --features "ef_tests"
 	cargo test --release -p ef_tests --features "ef_tests,fake_crypto"
 
