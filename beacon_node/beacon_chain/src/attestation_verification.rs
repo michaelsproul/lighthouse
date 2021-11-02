@@ -32,7 +32,6 @@ mod batch;
 use crate::{
     beacon_chain::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, VALIDATOR_PUBKEY_CACHE_LOCK_TIMEOUT},
     metrics,
-    observed_aggregates::ObserveOutcome,
     observed_attesters::Error as ObservedAttestersError,
     BeaconChain, BeaconChainError, BeaconChainTypes,
 };
@@ -445,7 +444,7 @@ impl<'a, T: BeaconChainTypes> IndexedAggregatedAttestation<'a, T> {
     fn verify_early_checks(
         signed_aggregate: &SignedAggregateAndProof<T::EthSpec>,
         chain: &BeaconChain<T>,
-    ) -> Result<Hash256, Error> {
+    ) -> Result<(), Error> {
         let attestation = &signed_aggregate.message.aggregate;
 
         // Ensure attestation is within the last ATTESTATION_PROPAGATION_SLOT_RANGE slots (within a
@@ -464,22 +463,10 @@ impl<'a, T: BeaconChainTypes> IndexedAggregatedAttestation<'a, T> {
             });
         }
 
-        // Ensure the valid aggregated attestation has not already been seen locally.
-        let attestation_root = attestation.tree_hash_root();
-        if chain
-            .observed_attestations
-            .write()
-            .is_known(attestation, attestation_root)
-            .map_err(|e| Error::BeaconChainError(e.into()))?
-        {
-            return Err(Error::AttestationAlreadyKnown(attestation_root));
-        }
-
-        let aggregator_index = signed_aggregate.message.aggregator_index;
-
         // Ensure there has been no other observed aggregate for the given `aggregator_index`.
         //
         // Note: do not observe yet, only observe once the attestation has been verified.
+        let aggregator_index = signed_aggregate.message.aggregator_index;
         match chain
             .observed_aggregators
             .read()
@@ -518,7 +505,7 @@ impl<'a, T: BeaconChainTypes> IndexedAggregatedAttestation<'a, T> {
         if attestation.aggregation_bits.is_zero() {
             Err(Error::EmptyAggregationBitfield)
         } else {
-            Ok(attestation_root)
+            Ok(())
         }
     }
 
@@ -531,7 +518,7 @@ impl<'a, T: BeaconChainTypes> IndexedAggregatedAttestation<'a, T> {
 
         let attestation = &signed_aggregate.message.aggregate;
         let aggregator_index = signed_aggregate.message.aggregator_index;
-        let attestation_root = match Self::verify_early_checks(signed_aggregate, chain) {
+        match Self::verify_early_checks(signed_aggregate, chain) {
             Ok(root) => root,
             Err(e) => return Err(SignatureNotChecked(&signed_aggregate.message.aggregate, e)),
         };
@@ -563,6 +550,8 @@ impl<'a, T: BeaconChainTypes> IndexedAggregatedAttestation<'a, T> {
                 Err(e) => return Err(SignatureNotChecked(&signed_aggregate.message.aggregate, e)),
             };
 
+        let attestation_root = attestation.tree_hash_root();
+
         Ok(IndexedAggregatedAttestation {
             signed_aggregate,
             indexed_attestation,
@@ -575,24 +564,10 @@ impl<'a, T: BeaconChainTypes> VerifiedAggregatedAttestation<'a, T> {
     /// Run the checks that happen after the indexed attestation and signature have been checked.
     fn verify_late_checks(
         signed_aggregate: &SignedAggregateAndProof<T::EthSpec>,
-        attestation_root: Hash256,
         chain: &BeaconChain<T>,
     ) -> Result<(), Error> {
         let attestation = &signed_aggregate.message.aggregate;
         let aggregator_index = signed_aggregate.message.aggregator_index;
-
-        // Observe the valid attestation so we do not re-process it.
-        //
-        // It's important to double check that the attestation is not already known, otherwise two
-        // attestations processed at the same time could be published.
-        if let ObserveOutcome::AlreadyKnown = chain
-            .observed_attestations
-            .write()
-            .observe_item(attestation, Some(attestation_root))
-            .map_err(|e| Error::BeaconChainError(e.into()))?
-        {
-            return Err(Error::AttestationAlreadyKnown(attestation_root));
-        }
 
         // Observe the aggregator so we don't process another aggregate from them.
         //
@@ -661,6 +636,7 @@ impl<'a, T: BeaconChainTypes> VerifiedAggregatedAttestation<'a, T> {
                     chain,
                     signed_aggregate,
                     &indexed_attestation,
+                    attestation_root,
                 )
                 .and_then(|is_valid| {
                     if !is_valid {
@@ -675,7 +651,7 @@ impl<'a, T: BeaconChainTypes> VerifiedAggregatedAttestation<'a, T> {
             CheckAttestationSignature::No => (),
         };
 
-        if let Err(e) = Self::verify_late_checks(signed_aggregate, attestation_root, chain) {
+        if let Err(e) = Self::verify_late_checks(signed_aggregate, chain) {
             return Err(SignatureValid(indexed_attestation, e));
         }
 
@@ -1152,6 +1128,7 @@ pub fn verify_signed_aggregate_signatures<T: BeaconChainTypes>(
     chain: &BeaconChain<T>,
     signed_aggregate: &SignedAggregateAndProof<T::EthSpec>,
     indexed_attestation: &IndexedAttestation<T::EthSpec>,
+    attestation_root: Hash256,
 ) -> Result<bool, Error> {
     let pubkey_cache = chain
         .validator_pubkey_cache
@@ -1163,11 +1140,13 @@ pub fn verify_signed_aggregate_signatures<T: BeaconChainTypes>(
         return Err(Error::AggregatorPubkeyUnknown(aggregator_index));
     }
 
+    let attestation = &signed_aggregate.message.aggregate;
+
     let fork = chain
         .spec
         .fork_at_epoch(indexed_attestation.data.target.epoch);
 
-    let signature_sets = vec![
+    let mut signature_sets = vec![
         signed_aggregate_selection_proof_signature_set(
             |validator_index| pubkey_cache.get(validator_index).map(Cow::Borrowed),
             signed_aggregate,
@@ -1184,18 +1163,44 @@ pub fn verify_signed_aggregate_signatures<T: BeaconChainTypes>(
             &chain.spec,
         )
         .map_err(BeaconChainError::SignatureSetError)?,
-        indexed_attestation_signature_set_from_pubkeys(
-            |validator_index| pubkey_cache.get(validator_index).map(Cow::Borrowed),
-            &indexed_attestation.signature,
-            indexed_attestation,
-            &fork,
-            chain.genesis_validators_root,
-            &chain.spec,
-        )
-        .map_err(BeaconChainError::SignatureSetError)?,
     ];
 
-    Ok(verify_signature_sets(signature_sets.iter()))
+    // Only check the attestation signature itself if this attestation has not been verified
+    // previously.
+    if !chain
+        .observed_attestations
+        .write()
+        .is_known(attestation, attestation_root)
+        .map_err(|e| Error::BeaconChainError(e.into()))?
+    {
+        signature_sets.push(
+            indexed_attestation_signature_set_from_pubkeys(
+                |validator_index| pubkey_cache.get(validator_index).map(Cow::Borrowed),
+                &indexed_attestation.signature,
+                indexed_attestation,
+                &fork,
+                chain.genesis_validators_root,
+                &chain.spec,
+            )
+            .map_err(BeaconChainError::SignatureSetError)?,
+        );
+    }
+
+    let signatures_ok = verify_signature_sets(signature_sets.iter());
+
+    if signatures_ok {
+        // Observe the attestation root so that we don't try to verify it again.
+        //
+        // It doesn't matter if another thread has concurrently verified the signature and marked
+        // it as observed before us.
+        chain
+            .observed_attestations
+            .write()
+            .observe_item(attestation, Some(attestation_root))
+            .map_err(|e| Error::BeaconChainError(e.into()))?;
+    }
+
+    Ok(signatures_ok)
 }
 
 /// Assists in readability.

@@ -72,6 +72,7 @@ where
         // Iterate, flattening to get only the `Ok` values.
         for indexed in indexing_results.iter().flatten() {
             let signed_aggregate = &indexed.signed_aggregate;
+            let attestation = &signed_aggregate.message.aggregate;
             let indexed_attestation = &indexed.indexed_attestation;
 
             signature_sets.push(
@@ -94,17 +95,27 @@ where
                 )
                 .map_err(BeaconChainError::SignatureSetError)?,
             );
-            signature_sets.push(
-                indexed_attestation_signature_set_from_pubkeys(
-                    |validator_index| pubkey_cache.get(validator_index).map(Cow::Borrowed),
-                    &indexed_attestation.signature,
-                    indexed_attestation,
-                    &fork,
-                    chain.genesis_validators_root,
-                    &chain.spec,
-                )
-                .map_err(BeaconChainError::SignatureSetError)?,
-            );
+
+            // Only check the attestation signature itself if this attestation has not been verified
+            // previously.
+            if !chain
+                .observed_attestations
+                .write()
+                .is_known(attestation, indexed.attestation_root)
+                .map_err(|e| Error::BeaconChainError(e.into()))?
+            {
+                signature_sets.push(
+                    indexed_attestation_signature_set_from_pubkeys(
+                        |validator_index| pubkey_cache.get(validator_index).map(Cow::Borrowed),
+                        &indexed_attestation.signature,
+                        indexed_attestation,
+                        &fork,
+                        chain.genesis_validators_root,
+                        &chain.spec,
+                    )
+                    .map_err(BeaconChainError::SignatureSetError)?,
+                );
+            }
         }
 
         metrics::stop_timer(signature_setup_timer);
@@ -115,7 +126,18 @@ where
         if verify_signature_sets(signature_sets.iter()) {
             // Since all the signatures verified in a batch, there's no reason for them to be
             // checked again later.
-            check_signatures = CheckAttestationSignature::No
+            check_signatures = CheckAttestationSignature::No;
+
+            // Mark all the attestations as seen to prevent repeat signature verification.
+            let mut observed_attestations = chain.observed_attestations.write();
+            for indexed in indexing_results.iter().flatten() {
+                observed_attestations
+                    .observe_item(
+                        &indexed.signed_aggregate.message.aggregate,
+                        Some(indexed.attestation_root),
+                    )
+                    .map_err(|e| Error::BeaconChainError(e.into()))?;
+            }
         }
     }
 
