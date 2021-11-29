@@ -46,6 +46,9 @@ pub(crate) fn update_with_reinitialized_fork_choice<T: BeaconChainTypes>(
         beacon_block_root: anchor_block_root,
         beacon_state: anchor_state,
     };
+    // FIXME(boost): plumb through slot clock from somewhere (yuck)
+    unimplemented!("need to plumb through slot clock")
+    /*
     let store = BeaconForkChoiceStore::get_forkchoice_store(db, &snapshot);
     let fork_choice = ForkChoice::from_anchor(
         store,
@@ -56,6 +59,7 @@ pub(crate) fn update_with_reinitialized_fork_choice<T: BeaconChainTypes>(
     .map_err(|e| format!("{:?}", e))?;
     persisted_fork_choice.fork_choice = fork_choice.to_persisted();
     Ok(())
+    */
 }
 
 pub(crate) fn update_legacy_fork_choice<T: BeaconChainTypes>(

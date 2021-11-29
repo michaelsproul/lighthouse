@@ -231,6 +231,7 @@ pub type BeaconForkChoice<T> = ForkChoice<
         <T as BeaconChainTypes>::EthSpec,
         <T as BeaconChainTypes>::HotStore,
         <T as BeaconChainTypes>::ColdStore,
+        <T as BeaconChainTypes>::SlotClock,
     >,
     <T as BeaconChainTypes>::EthSpec,
 >;
@@ -409,15 +410,21 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     }
 
     /// Load fork choice from disk, returning `None` if it isn't found.
-    pub fn load_fork_choice(store: BeaconStore<T>) -> Result<Option<BeaconForkChoice<T>>, Error> {
+    pub fn load_fork_choice(
+        store: BeaconStore<T>,
+        slot_clock: T::SlotClock,
+    ) -> Result<Option<BeaconForkChoice<T>>, Error> {
         let persisted_fork_choice =
             match store.get_item::<PersistedForkChoice>(&FORK_CHOICE_DB_KEY)? {
                 Some(fc) => fc,
                 None => return Ok(None),
             };
 
-        let fc_store =
-            BeaconForkChoiceStore::from_persisted(persisted_fork_choice.fork_choice_store, store)?;
+        let fc_store = BeaconForkChoiceStore::from_persisted(
+            persisted_fork_choice.fork_choice_store,
+            store,
+            slot_clock,
+        )?;
 
         Ok(Some(ForkChoice::from_persisted(
             persisted_fork_choice.fork_choice,
@@ -2590,7 +2597,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 "msg" => "Restoring fork choice from disk",
                 "error" => ?e,
             );
-            match Self::load_fork_choice(self.store.clone())? {
+            match Self::load_fork_choice(self.store.clone(), self.slot_clock.clone())? {
                 Some(persisted_fork_choice) => {
                     *fork_choice = persisted_fork_choice;
                 }

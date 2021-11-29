@@ -1,4 +1,6 @@
-use crate::beacon_chain::{BEACON_CHAIN_DB_KEY, ETH1_CACHE_DB_KEY, OP_POOL_DB_KEY};
+use crate::beacon_chain::{
+    BeaconForkChoice, BEACON_CHAIN_DB_KEY, ETH1_CACHE_DB_KEY, OP_POOL_DB_KEY,
+};
 use crate::eth1_chain::{CachingEth1Backend, SszEth1};
 use crate::fork_revert::{reset_fork_choice_to_finalization, revert_to_fork_boundary};
 use crate::head_tracker::HeadTracker;
@@ -70,10 +72,7 @@ pub struct BeaconChainBuilder<T: BeaconChainTypes> {
     pub genesis_time: Option<u64>,
     genesis_block_root: Option<Hash256>,
     genesis_state_root: Option<Hash256>,
-    #[allow(clippy::type_complexity)]
-    fork_choice: Option<
-        ForkChoice<BeaconForkChoiceStore<T::EthSpec, T::HotStore, T::ColdStore>, T::EthSpec>,
-    >,
+    fork_choice: Option<BeaconForkChoice<T>>,
     op_pool: Option<OperationPool<T::EthSpec>>,
     eth1_chain: Option<Eth1Chain<T::Eth1Chain, T::EthSpec>>,
     execution_layer: Option<ExecutionLayer>,
@@ -232,6 +231,10 @@ where
             .store
             .clone()
             .ok_or("resume_from_db requires a store.")?;
+        let slot_clock = self
+            .slot_clock
+            .clone()
+            .ok_or("resume_from_db_requires a slot clock")?;
 
         let chain = store
             .get_item::<PersistedBeaconChain>(&BEACON_CHAIN_DB_KEY)
@@ -244,6 +247,7 @@ where
         let fork_choice =
             BeaconChain::<Witness<TSlotClock, TEth1Backend, _, _, _>>::load_fork_choice(
                 store.clone(),
+                slot_clock,
             )
             .map_err(|e| format!("Unable to load fork choice from disk: {:?}", e))?
             .ok_or("Fork choice not found in store")?;
@@ -346,11 +350,15 @@ where
     /// Starts a new chain from a genesis state.
     pub fn genesis_state(mut self, beacon_state: BeaconState<TEthSpec>) -> Result<Self, String> {
         let store = self.store.clone().ok_or("genesis_state requires a store")?;
+        let slot_clock = self
+            .slot_clock
+            .clone()
+            .ok_or("genesis_state requires a slot clock")?;
 
         let (genesis, updated_builder) = self.set_genesis_state(beacon_state)?;
         self = updated_builder;
 
-        let fc_store = BeaconForkChoiceStore::get_forkchoice_store(store, &genesis);
+        let fc_store = BeaconForkChoiceStore::get_forkchoice_store(store, slot_clock, &genesis);
 
         let fork_choice = ForkChoice::from_anchor(
             fc_store,
@@ -372,7 +380,14 @@ where
         weak_subj_block: SignedBeaconBlock<TEthSpec>,
         genesis_state: BeaconState<TEthSpec>,
     ) -> Result<Self, String> {
-        let store = self.store.clone().ok_or("genesis_state requires a store")?;
+        let store = self
+            .store
+            .clone()
+            .ok_or("weak_subjectivity_state requires a store")?;
+        let slot_clock = self
+            .slot_clock
+            .clone()
+            .ok_or("weak_subjectivity_state requires a slot clock")?;
 
         let weak_subj_slot = weak_subj_state.slot();
         let weak_subj_block_root = weak_subj_block.canonical_root();
@@ -458,7 +473,7 @@ where
             beacon_state: weak_subj_state,
         };
 
-        let fc_store = BeaconForkChoiceStore::get_forkchoice_store(store, &snapshot);
+        let fc_store = BeaconForkChoiceStore::get_forkchoice_store(store, slot_clock, &snapshot);
 
         let fork_choice = ForkChoice::from_anchor(
             fc_store,
@@ -637,6 +652,7 @@ where
                 head_block_root,
                 &head_state,
                 store.clone(),
+                slot_clock.clone(),
                 &self.spec,
             )?;
         }

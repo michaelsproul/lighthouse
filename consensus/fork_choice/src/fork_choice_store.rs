@@ -1,3 +1,4 @@
+use std::time::Duration;
 use types::{BeaconBlock, BeaconState, Checkpoint, EthSpec, Hash256, Slot};
 
 /// Approximates the `Store` in "Ethereum 2.0 Phase 0 -- Beacon Chain Fork Choice":
@@ -19,14 +20,20 @@ use types::{BeaconBlock, BeaconState, Checkpoint, EthSpec, Hash256, Slot};
 pub trait ForkChoiceStore<T: EthSpec>: Sized {
     type Error;
 
-    /// Returns the last value passed to `Self::update_time`.
+    /// Returns the slot of the last value passed to `Self::set_current_time`.
     fn get_current_slot(&self) -> Slot;
 
-    /// Set the value to be returned by `Self::get_current_slot`.
+    /// Returns the last value passed to `Self::set_current_time`.
+    fn get_current_time(&self) -> Duration;
+
+    /// Set the value to be returned by `Self::get_current_time`.
     ///
     /// ## Notes
     ///
     /// This should only ever be called from within `ForkChoice::on_tick`.
+    fn set_current_time(&mut self, time: Duration);
+
+    /// Wrapper for `set_current_time` accepting a slot.
     fn set_current_slot(&mut self, slot: Slot);
 
     /// Called whenever `ForkChoice::on_block` has verified a block, but not yet added it to fork
@@ -58,4 +65,7 @@ pub trait ForkChoiceStore<T: EthSpec>: Sized {
 
     /// Sets the `best_justified_checkpoint`.
     fn set_best_justified_checkpoint(&mut self, checkpoint: Checkpoint);
+
+    /// Sets the proposer boost root.
+    fn set_proposer_boost_root(&mut self, proposer_boost_root: Hash256);
 }

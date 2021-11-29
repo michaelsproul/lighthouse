@@ -2,6 +2,7 @@ use crate::{BeaconForkChoiceStore, BeaconSnapshot};
 use fork_choice::{ForkChoice, PayloadVerificationStatus};
 use itertools::process_results;
 use slog::{info, warn, Logger};
+use slot_clock::SlotClock;
 use state_processing::state_advance::complete_state_advance;
 use state_processing::{per_block_processing, per_block_processing::BlockSignatureStrategy};
 use std::sync::Arc;
@@ -84,12 +85,18 @@ pub fn revert_to_fork_boundary<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>
 /// WARNING: this function is destructive and causes fork choice to permanently forget all
 /// chains other than the chain leading to `head_block_root`. It should only be used in extreme
 /// circumstances when there is no better alternative.
-pub fn reset_fork_choice_to_finalization<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
+pub fn reset_fork_choice_to_finalization<
+    E: EthSpec,
+    Hot: ItemStore<E>,
+    Cold: ItemStore<E>,
+    Clock: SlotClock,
+>(
     head_block_root: Hash256,
     head_state: &BeaconState<E>,
     store: Arc<HotColdDB<E, Hot, Cold>>,
+    slot_clock: Clock,
     spec: &ChainSpec,
-) -> Result<ForkChoice<BeaconForkChoiceStore<E, Hot, Cold>, E>, String> {
+) -> Result<ForkChoice<BeaconForkChoiceStore<E, Hot, Cold, Clock>, E>, String> {
     // Fetch finalized block.
     let finalized_checkpoint = head_state.finalized_checkpoint();
     let finalized_block_root = finalized_checkpoint.root;
@@ -133,7 +140,8 @@ pub fn reset_fork_choice_to_finalization<E: EthSpec, Hot: ItemStore<E>, Cold: It
         beacon_state: finalized_state,
     };
 
-    let fc_store = BeaconForkChoiceStore::get_forkchoice_store(store.clone(), &finalized_snapshot);
+    let fc_store =
+        BeaconForkChoiceStore::get_forkchoice_store(store.clone(), slot_clock, &finalized_snapshot);
 
     let mut fork_choice = ForkChoice::from_anchor(
         fc_store,
