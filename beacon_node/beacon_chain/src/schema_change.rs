@@ -1,9 +1,12 @@
 //! Utilities for managing database schema changes.
 mod migrate_schema_6;
 mod migrate_schema_7;
+mod migrate_schema_8;
 
 use crate::beacon_chain::{BeaconChainTypes, FORK_CHOICE_DB_KEY, OP_POOL_DB_KEY};
-use crate::persisted_fork_choice::{PersistedForkChoiceV1, PersistedForkChoiceV7};
+use crate::persisted_fork_choice::{
+    PersistedForkChoiceV1, PersistedForkChoiceV7, PersistedForkChoiceV8,
+};
 use crate::validator_pubkey_cache::ValidatorPubkeyCache;
 use operation_pool::{PersistedOperationPool, PersistedOperationPoolBase};
 use slog::{warn, Logger};
@@ -150,6 +153,20 @@ pub fn migrate_schema<T: BeaconChainTypes>(
 
                 // Store the converted fork choice store under the same key.
                 db.put_item::<PersistedForkChoiceV7>(&FORK_CHOICE_DB_KEY, &persisted_fork_choice)?;
+            }
+
+            db.store_schema_version(to)?;
+
+            Ok(())
+        }
+        // Migration to add an `epoch` key to the fork choice's balances cache.
+        (SchemaVersion(7), SchemaVersion(8)) => {
+            let fork_choice_opt = db.get_item::<PersistedForkChoiceV7>(&FORK_CHOICE_DB_KEY)?;
+            if let Some(fork_choice) = fork_choice_opt {
+                let updated_fork_choice =
+                    migrate_schema_8::update_fork_choice::<T>(fork_choice, db.clone())?;
+
+                db.put_item::<PersistedForkChoiceV8>(&FORK_CHOICE_DB_KEY, &updated_fork_choice)?;
             }
 
             db.store_schema_version(to)?;
