@@ -11,10 +11,12 @@ mod config;
 #[allow(clippy::mutable_key_type)] // PeerId in hashmaps are no longer permitted by clippy
 pub mod discovery;
 mod metrics;
-mod peer_manager;
+pub mod peer_manager;
 pub mod rpc;
 mod service;
 pub mod types;
+
+pub use config::gossip_max_size;
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use std::str::FromStr;
@@ -68,6 +70,7 @@ pub use behaviour::{BehaviourEvent, Gossipsub, PeerRequestId, Request, Response}
 pub use config::Config as NetworkConfig;
 pub use discovery::{CombinedKeyExt, EnrExt, Eth2Enr};
 pub use discv5;
+pub use libp2p;
 pub use libp2p::bandwidth::BandwidthSinks;
 pub use libp2p::gossipsub::{MessageAcceptance, MessageId, Topic, TopicHash};
 pub use libp2p::{core::ConnectedPoint, PeerId, Swarm};

@@ -3,7 +3,6 @@
 
 use crate::Error as ServerError;
 use lighthouse_network::{ConnectionDirection, Enr, Multiaddr, PeerConnectionStatus};
-pub use reqwest::header::ACCEPT;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::fmt;
@@ -216,7 +215,6 @@ impl<'a, T: Serialize> From<&'a T> for GenericResponseRef<'a, T> {
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-// #[serde(bound = "T: Serialize + serde::de::DeserializeOwned")]
 pub struct ForkVersionedResponse<T> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<ForkName>,
@@ -782,7 +780,7 @@ pub struct SseLateHead {
 #[derive(PartialEq, Debug, Serialize, Clone)]
 #[serde(bound = "T: EthSpec", untagged)]
 pub enum EventKind<T: EthSpec> {
-    Attestation(Attestation<T>),
+    Attestation(Box<Attestation<T>>),
     Block(SseBlock),
     FinalizedCheckpoint(SseFinalizedCheckpoint),
     Head(SseHead),
