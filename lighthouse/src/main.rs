@@ -20,6 +20,11 @@ use task_executor::ShutdownReason;
 use types::{EthSpec, EthSpecId};
 use validator_client::ProductionValidatorClient;
 
+use dhat::{Dhat, DhatAlloc};
+
+#[global_allocator]
+static ALLOCATOR: DhatAlloc = DhatAlloc;
+
 fn bls_library_name() -> &'static str {
     if cfg!(feature = "portable") {
         "blst-portable"
@@ -33,6 +38,7 @@ fn bls_library_name() -> &'static str {
 }
 
 fn main() {
+    let _dhat = Dhat::start_heap_profiling();
     // Enable backtraces unless a RUST_BACKTRACE value has already been explicitly provided.
     if std::env::var("RUST_BACKTRACE").is_err() {
         std::env::set_var("RUST_BACKTRACE", "1");
@@ -318,6 +324,7 @@ fn main() {
 
     // `std::process::exit` does not run destructors so we drop manually.
     drop(matches);
+    drop(_dhat);
 
     // Return the appropriate error code.
     match result {

@@ -82,25 +82,10 @@ lazy_static! {
 
 /// Calls `mallinfo` and updates Prometheus metrics with the results.
 pub fn scrape_mallinfo_metrics() {
-    // The docs for this function say it is thread-unsafe since it may return inconsistent results.
-    // Since these are just metrics it's not a concern to us if they're sometimes inconsistent.
-    //
-    // There exists a `mallinfo2` function, however it was released in February 2021 and this seems
-    // too recent to rely on.
-    //
-    // Docs:
-    //
-    // https://man7.org/linux/man-pages/man3/mallinfo.3.html
-    let mallinfo = mallinfo();
+    let mallinfo = mallinfo2();
 
-    /// Cast a C integer as returned by `mallinfo` to an unsigned i64.
-    ///
-    /// A cast from `i32` to `i64` preserves the sign bit, resulting in incorrect negative values.
-    /// Going via `u32` treats the sign bit as part of the number.
-    ///
-    /// Results are still wrong for memory usage over 4GiB due to limitations of mallinfo.
-    fn unsigned_i64(x: i32) -> i64 {
-        x as u32 as i64
+    fn unsigned_i64(x: usize) -> i64 {
+        x as i64
     }
 
     set_gauge(&MALLINFO_ARENA, unsigned_i64(mallinfo.arena));
@@ -120,6 +105,8 @@ pub fn configure_glibc_malloc() -> Result<(), String> {
         if let Err(e) = malloc_mmap_threshold(OPTIMAL_MMAP_THRESHOLD) {
             return Err(format!("failed (code {}) to set malloc mmap threshold", e));
         }
+    } else {
+        println!("not attempting to tune malloc");
     }
 
     Ok(())
@@ -146,10 +133,10 @@ fn mallopt(param: c_int, val: c_int) -> c_int {
     unsafe { libc::mallopt(param, val) }
 }
 
-fn mallinfo() -> libc::mallinfo {
+fn mallinfo2() -> libc::mallinfo2 {
     // Prevent this function from being called in parallel with any other non-thread-safe function.
     let _lock = GLOBAL_LOCK.lock();
-    unsafe { libc::mallinfo() }
+    unsafe { libc::mallinfo2() }
 }
 
 fn into_result(result: c_int) -> Result<(), c_int> {
