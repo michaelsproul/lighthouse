@@ -439,23 +439,39 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     }
 
     pub fn forwards_block_roots_iterator(
-        store: Arc<Self>,
+        &self,
         start_slot: Slot,
         end_state: BeaconState<E>,
         end_block_root: Hash256,
         spec: &ChainSpec,
-    ) -> Result<impl Iterator<Item = Result<(Hash256, Slot), Error>>, Error> {
-        HybridForwardsBlockRootsIterator::new(store, start_slot, end_state, end_block_root, spec)
+    ) -> Result<impl Iterator<Item = Result<(Hash256, Slot), Error>> + '_, Error> {
+        HybridForwardsBlockRootsIterator::new(self, start_slot, end_state, end_block_root, spec)
     }
 
     pub fn forwards_state_roots_iterator(
-        store: Arc<Self>,
+        &self,
         start_slot: Slot,
         end_state_root: Hash256,
         end_state: BeaconState<E>,
         spec: &ChainSpec,
-    ) -> Result<impl Iterator<Item = Result<(Hash256, Slot), Error>>, Error> {
-        HybridForwardsStateRootsIterator::new(store, start_slot, end_state, end_state_root, spec)
+    ) -> Result<impl Iterator<Item = Result<(Hash256, Slot), Error>> + '_, Error> {
+        HybridForwardsStateRootsIterator::new(
+            self,
+            start_slot,
+            None,
+            || (end_state, end_state_root),
+            spec,
+        )
+    }
+
+    pub fn forwards_state_roots_iterator_until(
+        &self,
+        start_slot: Slot,
+        end_slot: Slot,
+        get_state: impl FnOnce() -> (BeaconState<E>, Hash256),
+        spec: &ChainSpec,
+    ) -> Result<HybridForwardsStateRootsIterator<E, Hot, Cold>, Error> {
+        HybridForwardsStateRootsIterator::new(self, start_slot, Some(end_slot), get_state, spec)
     }
 
     /// Load an epoch boundary state by using the hot state summary look-up.
@@ -1309,7 +1325,7 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
 
     // 1. Copy all of the states between the head and the split slot, from the hot DB
     // to the cold DB.
-    let state_root_iter = StateRootsIterator::new(store.clone(), frozen_head);
+    let state_root_iter = StateRootsIterator::new(&store, frozen_head);
     for maybe_pair in state_root_iter.take_while(|result| match result {
         Ok((_, slot)) => {
             slot >= &current_split_slot

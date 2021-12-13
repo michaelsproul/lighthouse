@@ -49,7 +49,7 @@ where
         let upper_limit_block_root = Hash256::repeat_byte(0xff);
 
         let block_root_iter = Self::forwards_block_roots_iterator(
-            self.clone(),
+            &self,
             lower_limit_slot,
             upper_limit_state,
             upper_limit_block_root,
