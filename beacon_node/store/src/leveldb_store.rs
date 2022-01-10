@@ -1,5 +1,5 @@
 use super::*;
-use crate::metrics;
+use crate::{condvar::CondvarAny, errors::DBError, metrics};
 use db_key::Key;
 use leveldb::compaction::Compaction;
 use leveldb::database::batch::{Batch, Writebatch};
@@ -8,22 +8,85 @@ use leveldb::database::Database;
 use leveldb::error::Error as LevelDBError;
 use leveldb::iterator::{Iterable, KeyIterator};
 use leveldb::options::{Options, ReadOptions, WriteOptions};
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::path::Path;
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+
+// FIXME(sproul): configurable
+const QUEUE_BOUND: usize = 8;
 
 /// A wrapped leveldb database.
 pub struct LevelDB<E: EthSpec> {
     db: Database<BytesKey>,
     /// A mutex to synchronise sensitive read-write transactions.
     transaction_mutex: Mutex<()>,
+    io_queue: Arc<IoQueue>,
+    /// Background I/O thread handle.
+    _background_thread: JoinHandle<()>,
     _phantom: PhantomData<E>,
+}
+
+type IoQueueGuard<'a> = RwLockWriteGuard<'a, VecDeque<IoBatch>>;
+
+/// In-memory keys and values that are waiting to be written to disk.
+pub struct IoQueue {
+    queue: RwLock<VecDeque<IoBatch>>,
+    /// Condition variable used by the background thread to indicate when it has flushed
+    /// the entire queue to disk.
+    queue_empty_cvar: CondvarAny,
+    /// Maximum number of batches to keep in-memory before requiring a flush to disk.
+    bound: usize,
+}
+
+impl IoQueue {
+    fn new(bound: usize) -> Self {
+        Self {
+            queue: RwLock::new(VecDeque::new()),
+            queue_empty_cvar: CondvarAny::new(),
+            bound,
+        }
+    }
+
+    /// Wait for the queue to be emptied by the worker thread tasked with processing it.
+    fn await_flush(&self, queue: &mut IoQueueGuard<'_>) {
+        if queue.is_empty() {
+            return;
+        }
+        self.queue_empty_cvar.wait(queue);
+    }
+
+    /// New batches get pushed to the front (they take priority for reads).
+    fn push(&self, batch: IoBatch) {
+        let mut queue = self.queue.write();
+
+        if queue.len() >= self.bound {
+            // TODO: could also try waiting for 1+ empty slots here rather than all of them
+            self.await_flush(&mut queue);
+        }
+        queue.push_front(batch)
+    }
+}
+
+pub struct IoBatch {
+    put: HashMap<Vec<u8>, Vec<u8>>,
+    delete: HashSet<Vec<u8>>,
 }
 
 impl<E: EthSpec> LevelDB<E> {
     /// Open a database at `path`, creating a new database if one does not already exist.
     pub fn open(path: &Path) -> Result<Self, Error> {
         let mut options = Options::new();
+
+        let io_queue = Arc::new(IoQueue::new(QUEUE_BOUND));
+        let thread_queue = io_queue.clone();
+
+        let _background_thread = thread::Builder::new()
+            .name("leveldb_io_queue".to_string())
+            .spawn(|| {})
+            .map_err(|e| DBError::new(format!("failed to start I/O worker thread: {:?}", e)))?;
 
         options.create_if_missing = true;
 
@@ -33,6 +96,8 @@ impl<E: EthSpec> LevelDB<E> {
         Ok(Self {
             db,
             transaction_mutex,
+            io_queue,
+            _background_thread,
             _phantom: PhantomData,
         })
     }

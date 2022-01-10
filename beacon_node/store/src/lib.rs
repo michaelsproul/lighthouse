@@ -13,6 +13,7 @@ extern crate lazy_static;
 mod chunk_writer;
 pub mod chunked_iter;
 pub mod chunked_vector;
+mod condvar;
 pub mod config;
 pub mod errors;
 mod forwards_iter;
