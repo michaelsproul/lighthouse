@@ -11,7 +11,7 @@ use std::convert::TryFrom;
 use std::marker::PhantomData;
 
 macro_rules! define_mod {
-    ($int: ty, $visit_fn: ident) => {
+    ($int: ty, $deserialize_fn: ident) => {
         /// Serde support for deserializing quoted integers.
         ///
         /// Configurable so that quotes are either required or optional.
@@ -98,10 +98,17 @@ macro_rules! define_mod {
             D: Deserializer<'de>,
             T: From<$int> + Into<$int> + Copy + TryFrom<u64>,
         {
-            deserializer.deserialize_any(QuotedIntVisitor {
+            deserializer.deserialize_str(QuotedIntVisitor {
                 require_quotes: false,
                 _phantom: PhantomData,
             })
+            // FIXME(sproul): fucked
+            /*
+            deserializer.$deserialize_fn(QuotedIntVisitor {
+                require_quotes: false,
+                _phantom: PhantomData,
+            })
+            */
         }
 
         /// Requires quotes when deserializing.
@@ -116,7 +123,7 @@ macro_rules! define_mod {
                 D: Deserializer<'de>,
                 T: From<$int> + Into<$int> + Copy + TryFrom<u64>,
             {
-                deserializer.deserialize_any(QuotedIntVisitor {
+                deserializer.deserialize_str(QuotedIntVisitor {
                     require_quotes: true,
                     _phantom: PhantomData,
                 })
@@ -140,19 +147,19 @@ macro_rules! define_mod {
 pub mod quoted_u8 {
     use super::*;
 
-    define_mod!(u8, visit_u8);
+    define_mod!(u8, deserialize_u8);
 }
 
 pub mod quoted_u32 {
     use super::*;
 
-    define_mod!(u32, visit_u32);
+    define_mod!(u32, deserialize_u32);
 }
 
 pub mod quoted_u64 {
     use super::*;
 
-    define_mod!(u64, visit_u64);
+    define_mod!(u64, deserialize_u64);
 }
 
 pub mod quoted_u256 {
