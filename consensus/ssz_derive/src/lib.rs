@@ -206,7 +206,10 @@ fn ssz_encode_derive_struct(derive_input: &DeriveInput, struct_data: &DataStruct
                         .expect("encode ssz_append offset overflow");
                 )*
 
-                let mut encoder = ssz::SszEncoder::container(buf, offset);
+                // Number of variable bytes is total length minus offset.
+                let num_variable_bytes = self.ssz_bytes_len().saturating_sub(offset);
+
+                let mut encoder = ssz::SszEncoder::container(buf, offset, num_variable_bytes);
 
                 #(
                     #field_encoder_append;

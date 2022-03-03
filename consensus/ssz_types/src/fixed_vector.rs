@@ -208,8 +208,10 @@ where
                 item.ssz_append(buf);
             }
         } else {
-            let mut encoder =
-                ssz::SszEncoder::container(buf, self.len() * ssz::BYTES_PER_LENGTH_OFFSET);
+            let fixed_len = self.len() * ssz::BYTES_PER_LENGTH_OFFSET;
+            // FIXME(sproul): this might be slow for lists of variable length items
+            let variable_len = self.ssz_bytes_len().saturating_sub(fixed_len);
+            let mut encoder = ssz::SszEncoder::container(buf, fixed_len, variable_len);
 
             for item in &self.vec {
                 encoder.append(item);

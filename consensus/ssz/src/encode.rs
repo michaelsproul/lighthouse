@@ -92,13 +92,17 @@ pub struct SszEncoder<'a> {
 
 impl<'a> SszEncoder<'a> {
     /// Instantiate a new encoder for encoding a SSZ container.
-    pub fn container(buf: &'a mut Vec<u8>, num_fixed_bytes: usize) -> Self {
-        buf.reserve(num_fixed_bytes);
+    pub fn container(
+        buf: &'a mut Vec<u8>,
+        num_fixed_bytes: usize,
+        num_variable_bytes: usize,
+    ) -> Self {
+        buf.reserve(num_fixed_bytes + num_variable_bytes);
 
         Self {
             offset: num_fixed_bytes,
             buf,
-            variable_bytes: vec![],
+            variable_bytes: Vec::with_capacity(num_variable_bytes),
         }
     }
 

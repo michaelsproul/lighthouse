@@ -88,7 +88,8 @@ macro_rules! impl_encode_for_tuples {
                         )*
                             0;
 
-                    let mut encoder = SszEncoder::container(buf, offset);
+                    let num_variable_bytes = self.ssz_bytes_len().saturating_sub(offset);
+                    let mut encoder = SszEncoder::container(buf, offset, num_variable_bytes);
 
                     $(
                         encoder.append(&self.$idx);
@@ -258,7 +259,7 @@ where
 }
 
 /// Encode a vector-like sequence of `T`.
-pub fn sequence_ssz_append<I, T>(iter: I, buf: &mut Vec<u8>)
+pub fn sequence_ssz_append<I, T>(iter: I, buf: &mut Vec<u8>, ssz_bytes_len: usize)
 where
     I: Iterator<Item = T> + ExactSizeIterator,
     T: Encode,
@@ -270,7 +271,10 @@ where
             item.ssz_append(buf);
         }
     } else {
-        let mut encoder = SszEncoder::container(buf, iter.len() * BYTES_PER_LENGTH_OFFSET);
+        let num_fixed_bytes = iter.len() * BYTES_PER_LENGTH_OFFSET;
+        let num_variable_bytes = ssz_bytes_len.saturating_sub(num_fixed_bytes);
+
+        let mut encoder = SszEncoder::container(buf, num_fixed_bytes, num_variable_bytes);
 
         for item in iter {
             encoder.append(&item);
@@ -292,7 +296,8 @@ macro_rules! impl_for_vec {
             }
 
             fn ssz_append(&self, buf: &mut Vec<u8>) {
-                sequence_ssz_append(self.iter(), buf)
+                let len = self.ssz_bytes_len();
+                sequence_ssz_append(self.iter(), buf, len)
             }
         }
     };
@@ -322,7 +327,8 @@ where
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        sequence_ssz_append(self.iter(), buf)
+        let len = self.ssz_bytes_len();
+        sequence_ssz_append(self.iter(), buf, len)
     }
 }
 
