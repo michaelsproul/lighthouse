@@ -1919,6 +1919,23 @@ impl ApiTester {
         self
     }
 
+    pub async fn test_block_production_no_verify_randao(self) -> Self {
+        for _ in 0..E::slots_per_epoch() * 3 {
+            let slot = self.chain.slot().unwrap();
+
+            let block = self
+                .client
+                .get_validator_blocks_with_verify_randao::<E>(slot, None, None, Some(false))
+                .await
+                .unwrap()
+                .data;
+            assert_eq!(block.slot(), slot);
+            self.chain.slot_clock.set_slot(slot.as_u64() + 1);
+        }
+
+        self
+    }
+
     pub async fn test_get_validator_attestation_data(self) -> Self {
         let mut state = self.chain.head_beacon_state().unwrap();
         let slot = state.slot();
@@ -2767,6 +2784,14 @@ async fn block_production_with_skip_slots() {
         .await
         .skip_slots(E::slots_per_epoch() * 2)
         .test_block_production()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn block_production_no_verify_randao() {
+    ApiTester::new()
+        .await
+        .test_block_production_no_verify_randao()
         .await;
 }
 
