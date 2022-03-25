@@ -4,10 +4,9 @@ use eth1::http::{get_deposit_count, get_deposit_logs_in_range, get_deposit_root,
 use eth1::{Config, Service};
 use eth1::{DepositCache, DEFAULT_CHAIN_ID, DEFAULT_NETWORK_ID};
 use eth1_test_rig::GanacheEth1Instance;
+use logging::test_logger;
 use merkle_proof::verify_merkle_proof;
 use sensitive_url::SensitiveUrl;
-use slog::Logger;
-use sloggers::{null::NullLoggerBuilder, Build};
 use std::ops::Range;
 use std::time::Duration;
 use tree_hash::TreeHash;
@@ -16,16 +15,11 @@ use web3::{transports::Http, Web3};
 
 const DEPOSIT_CONTRACT_TREE_DEPTH: usize = 32;
 
-pub fn null_logger() -> Logger {
-    let log_builder = NullLoggerBuilder;
-    log_builder.build().expect("should build logger")
-}
-
 pub fn new_env() -> Environment<MinimalEthSpec> {
     EnvironmentBuilder::minimal()
         .multi_threaded_tokio_runtime()
         .expect("should start tokio runtime")
-        .null_logger()
+        .test_logger()
         .expect("should start null logger")
         .build()
         .expect("should build env")
@@ -105,7 +99,7 @@ mod eth1_cache {
     #[tokio::test]
     async fn simple_scenario() {
         async {
-            let log = null_logger();
+            let log = test_logger();
 
             for follow_distance in 0..2 {
                 let eth1 = new_ganache_instance()
@@ -186,7 +180,7 @@ mod eth1_cache {
     #[tokio::test]
     async fn big_skip() {
         async {
-            let log = null_logger();
+            let log = test_logger();
 
             let eth1 = new_ganache_instance()
                 .await
@@ -240,7 +234,7 @@ mod eth1_cache {
     #[tokio::test]
     async fn pruning() {
         async {
-            let log = null_logger();
+            let log = test_logger();
 
             let eth1 = new_ganache_instance()
                 .await
@@ -290,7 +284,7 @@ mod eth1_cache {
     #[tokio::test]
     async fn double_update() {
         async {
-            let log = null_logger();
+            let log = test_logger();
 
             let n = 16;
 
@@ -340,7 +334,7 @@ mod deposit_tree {
     #[tokio::test]
     async fn updating() {
         async {
-            let log = null_logger();
+            let log = test_logger();
 
             let n = 4;
 
@@ -420,7 +414,7 @@ mod deposit_tree {
     #[tokio::test]
     async fn double_update() {
         async {
-            let log = null_logger();
+            let log = test_logger();
 
             let n = 8;
 
@@ -678,7 +672,7 @@ mod fast {
     #[tokio::test]
     async fn deposit_cache_query() {
         async {
-            let log = null_logger();
+            let log = test_logger();
 
             let eth1 = new_ganache_instance()
                 .await
@@ -755,7 +749,7 @@ mod persist {
     #[tokio::test]
     async fn test_persist_caches() {
         async {
-            let log = null_logger();
+            let log = test_logger();
 
             let eth1 = new_ganache_instance()
                 .await
@@ -839,7 +833,7 @@ mod fallbacks {
     #[tokio::test]
     async fn test_fallback_when_offline() {
         async {
-            let log = null_logger();
+            let log = test_logger();
             let endpoint2 = new_ganache_instance()
                 .await
                 .expect("should start eth1 environment");
@@ -888,6 +882,9 @@ mod fallbacks {
             );
 
             let endpoint1_block_number = get_block_number(&endpoint1.web3).await;
+            let endpoint2_block_number = get_block_number(&endpoint2.web3()).await;
+            assert!(endpoint1_block_number < endpoint2_block_number);
+
             //the first call will only query endpoint1
             service.update().await.expect("should update deposit cache");
             assert_eq!(
@@ -897,8 +894,6 @@ mod fallbacks {
 
             drop(endpoint1);
 
-            let endpoint2_block_number = get_block_number(&endpoint2.web3()).await;
-            assert!(endpoint1_block_number < endpoint2_block_number);
             //endpoint1 is offline => query will import blocks from endpoint2
             service.update().await.expect("should update deposit cache");
             assert_eq!(
@@ -912,7 +907,7 @@ mod fallbacks {
     #[tokio::test]
     async fn test_fallback_when_wrong_network_id() {
         async {
-            let log = null_logger();
+            let log = test_logger();
             let correct_network_id: u64 = DEFAULT_NETWORK_ID.into();
             let wrong_network_id = correct_network_id + 1;
             let endpoint1 = GanacheEth1Instance::new(wrong_network_id, DEFAULT_CHAIN_ID.into())
@@ -981,7 +976,7 @@ mod fallbacks {
     #[tokio::test]
     async fn test_fallback_when_wrong_chain_id() {
         async {
-            let log = null_logger();
+            let log = test_logger();
             let correct_chain_id: u64 = DEFAULT_CHAIN_ID.into();
             let wrong_chain_id = correct_chain_id + 1;
             let endpoint1 = GanacheEth1Instance::new(DEFAULT_NETWORK_ID.into(), wrong_chain_id)
@@ -1050,7 +1045,7 @@ mod fallbacks {
     #[tokio::test]
     async fn test_fallback_when_node_far_behind() {
         async {
-            let log = null_logger();
+            let log = test_logger();
             let endpoint2 = new_ganache_instance()
                 .await
                 .expect("should start eth1 environment");

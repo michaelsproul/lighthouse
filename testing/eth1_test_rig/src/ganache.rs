@@ -79,6 +79,7 @@ impl GanacheInstance {
         };
         let child = Command::new(binary)
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .arg("--defaultBalanceEther")
             .arg("1000000000")
             .arg("--gasLimit")
@@ -113,6 +114,7 @@ impl GanacheInstance {
         };
         let child = Command::new(binary)
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .arg("--fork")
             .arg(self.endpoint())
             .arg("--port")
@@ -201,7 +203,32 @@ impl Drop for GanacheInstance {
                 .output()
                 .expect("failed to execute taskkill");
         } else {
-            let _ = self.child.kill();
+            // Use SIGTERM on Linux to give Docker-based ganache a chance to catch the signal and
+            // pass it to the container.
+            #[cfg(unix)]
+            {
+                use nix::{
+                    sys::signal::{kill, Signal},
+                    unistd::Pid,
+                };
+                let pid = Pid::from_raw(
+                    self.child
+                        .id()
+                        .try_into()
+                        .expect("child PID fits in Pid type"),
+                );
+                if let Err(e) = kill(pid, Some(Signal::SIGTERM)) {
+                    eprintln!("Error sending SIGTERM to child: {:?}", e);
+                }
+                if let Err(e) = self.child.wait() {
+                    eprintln!("Child exited with irregular status: {:?}", e);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                // Failing that, restort to a kill.
+                let _ = self.child.kill();
+            }
         }
     }
 }

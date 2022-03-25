@@ -120,6 +120,12 @@ impl<E: EthSpec> EnvironmentBuilder<E> {
         Ok(self)
     }
 
+    /// Configure logging using the `test_logger` (see `logging` crate for more details).
+    pub fn test_logger(mut self) -> Result<Self, String> {
+        self.log = Some(logging::test_logger());
+        Ok(self)
+    }
+
     /// Initializes the logger using the specified configuration.
     /// The logger is "async" because it has a dedicated thread that accepts logs and then
     /// asynchronously flushes them to stdout/files/etc. This means the thread that raised the log

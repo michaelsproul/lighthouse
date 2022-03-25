@@ -1482,6 +1482,7 @@ dependencies = [
  "hex",
  "lazy_static",
  "lighthouse_metrics",
+ "logging",
  "merkle_proof",
  "parking_lot 0.11.2",
  "reqwest",
@@ -1504,6 +1505,7 @@ name = "eth1_test_rig"
 version = "0.2.0"
 dependencies = [
  "deposit_contract",
+ "nix 0.23.1",
  "serde_json",
  "tokio",
  "types",
