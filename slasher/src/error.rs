@@ -1,10 +1,14 @@
 use crate::config::{Config, DiskConfig};
+use sled::transaction::{
+    ConflictableTransactionError, TransactionError, UnabortableTransactionError,
+};
 use std::io;
 use types::Epoch;
 
 #[derive(Debug)]
 pub enum Error {
-    DatabaseError(mdbx::Error),
+    DatabaseError(sled::Error),
+    DatabaseConflict,
     DatabaseIOError(io::Error),
     DatabasePermissionsError(filesystem::Error),
     SszDecodeError(ssz::DecodeError),
@@ -57,18 +61,49 @@ pub enum Error {
         id: u64,
     },
     MissingAttesterKey,
-    MissingProposerKey,
+    MissingProposerValue,
     MissingIndexedAttestationId,
     MissingIndexedAttestationIdKey,
     InconsistentAttestationDataRoot,
 }
 
-impl From<mdbx::Error> for Error {
-    fn from(e: mdbx::Error) -> Self {
+impl From<sled::Error> for Error {
+    fn from(e: sled::Error) -> Self {
+        Error::DatabaseError(e)
+    }
+}
+
+impl From<UnabortableTransactionError> for Error {
+    fn from(e: UnabortableTransactionError) -> Self {
         match e {
-            mdbx::Error::Other(os_error) => Error::from(io::Error::from_raw_os_error(os_error)),
-            _ => Error::DatabaseError(e),
+            UnabortableTransactionError::Conflict => Self::DatabaseConflict,
+            UnabortableTransactionError::Storage(e) => Self::DatabaseError(e),
         }
+    }
+}
+
+impl From<ConflictableTransactionError<Error>> for Error {
+    fn from(e: ConflictableTransactionError<Error>) -> Self {
+        match e {
+            ConflictableTransactionError::Abort(error) => error,
+            ConflictableTransactionError::Storage(e) => Self::DatabaseError(e),
+            _ => panic!("unexpected error"),
+        }
+    }
+}
+
+impl From<TransactionError<Error>> for Error {
+    fn from(e: TransactionError<Error>) -> Self {
+        match e {
+            TransactionError::Abort(error) => error,
+            TransactionError::Storage(e) => Self::DatabaseError(e),
+        }
+    }
+}
+
+impl From<Error> for ConflictableTransactionError<Error> {
+    fn from(e: Error) -> Self {
+        ConflictableTransactionError::Abort(e)
     }
 }
 

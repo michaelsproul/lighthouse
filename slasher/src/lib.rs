@@ -1,5 +1,3 @@
-#![deny(missing_debug_implementations)]
-
 mod array;
 mod attestation_queue;
 mod attester_record;
@@ -12,21 +10,16 @@ pub mod metrics;
 mod migrate;
 mod slasher;
 pub mod test_utils;
-mod utils;
 
 pub use crate::slasher::Slasher;
 pub use attestation_queue::{AttestationBatch, AttestationQueue, SimpleBatch};
 pub use attester_record::{AttesterRecord, CompactAttesterRecord, IndexedAttesterRecord};
 pub use block_queue::BlockQueue;
 pub use config::Config;
-pub use database::{IndexedAttestationId, SlasherDB};
+pub use database::{IndexedAttestationId, SlasherDB, Transaction};
 pub use error::Error;
 
 use types::{AttesterSlashing, EthSpec, IndexedAttestation, ProposerSlashing};
-
-/// LMDB-to-MDBX compatibility shims.
-pub type Environment = mdbx::Environment<mdbx::NoWriteMap>;
-pub type RwTransaction<'env> = mdbx::Transaction<'env, mdbx::RW, mdbx::NoWriteMap>;
 
 #[derive(Debug, PartialEq)]
 pub enum AttesterSlashingStatus<E: EthSpec> {

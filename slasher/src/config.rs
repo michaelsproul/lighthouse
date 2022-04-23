@@ -13,7 +13,6 @@ pub const DEFAULT_ATTESTATION_ROOT_CACHE_SIZE: usize = 100_000;
 pub const DEFAULT_BROADCAST: bool = false;
 
 pub const MAX_HISTORY_LENGTH: usize = 1 << 16;
-pub const MDBX_GROWTH_STEP: isize = 256 * (1 << 20); // 256 MiB
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {

@@ -25,6 +25,7 @@ sloggers = { version = "2.1.1", features = ["json"] }
 tree_hash = "0.4.1"
 tree_hash_derive = "0.4.0"
 types = { path = "../consensus/types" }
+sled = { version = "0.34.7", features = ["compression"] }
 
 [dev-dependencies]
 maplit = "1.0.2"

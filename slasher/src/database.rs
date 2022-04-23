@@ -1,18 +1,18 @@
-use crate::config::MDBX_GROWTH_STEP;
 use crate::{
-    metrics, utils::TxnMapFull, AttesterRecord, AttesterSlashingStatus, CompactAttesterRecord,
-    Config, Environment, Error, ProposerSlashingStatus, RwTransaction,
+    metrics, AttesterRecord, AttesterSlashingStatus, CompactAttesterRecord, Config, Error,
+    ProposerSlashingStatus,
 };
 use byteorder::{BigEndian, ByteOrder};
 use lru::LruCache;
-use mdbx::{Database, DatabaseFlags, Geometry, WriteFlags};
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
+use sled::{
+    transaction::{ConflictableTransactionResult, TransactionalTree},
+    Db, IVec, Transactional, Tree,
+};
 use slog::{info, Logger};
 use ssz::{Decode, Encode};
-use std::borrow::{Borrow, Cow};
 use std::marker::PhantomData;
-use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 use tree_hash::TreeHash;
@@ -47,9 +47,6 @@ const CURRENT_EPOCHS_DB: &str = "current_epochs";
 /// Map from `(slot, validator_index)` to `SignedBeaconBlockHeader`.
 const PROPOSERS_DB: &str = "proposers";
 
-/// The number of DBs for MDBX to use (equal to the number of DBs defined above).
-const MAX_NUM_DBS: usize = 9;
-
 /// Filename for the legacy (LMDB) database file, so that it may be deleted.
 const LEGACY_DB_FILENAME: &str = "data.mdb";
 const LEGACY_DB_LOCK_FILENAME: &str = "lock.mdb";
@@ -64,15 +61,36 @@ const PROPOSER_KEY_SIZE: usize = 16;
 const CURRENT_EPOCH_KEY_SIZE: usize = 8;
 const INDEXED_ATTESTATION_ID_SIZE: usize = 6;
 const INDEXED_ATTESTATION_ID_KEY_SIZE: usize = 40;
-const MEGABYTE: usize = 1 << 20;
 
 #[derive(Debug)]
 pub struct SlasherDB<E: EthSpec> {
-    pub(crate) env: Environment,
+    pub(crate) _db: Db,
+    indexed_attestation: Tree,
+    indexed_attestation_id: Tree,
+    attesters: Tree,
+    attesters_max_targets: Tree,
+    min_targets: Tree,
+    max_targets: Tree,
+    current_epochs: Tree,
+    proposers: Tree,
+    metadata: Tree,
     /// LRU cache mapping indexed attestation IDs to their attestation data roots.
     attestation_root_cache: Mutex<LruCache<IndexedAttestationId, Hash256>>,
     pub(crate) config: Arc<Config>,
     _phantom: PhantomData<E>,
+}
+
+/// Transaction over all the trees of the database.
+pub struct Transaction<'a> {
+    pub indexed_attestation: &'a TransactionalTree,
+    pub indexed_attestation_id: &'a TransactionalTree,
+    pub attesters: &'a TransactionalTree,
+    pub attesters_max_targets: &'a TransactionalTree,
+    pub min_targets: &'a TransactionalTree,
+    pub max_targets: &'a TransactionalTree,
+    pub current_epochs: &'a TransactionalTree,
+    pub proposers: &'a TransactionalTree,
+    pub metadata: &'a TransactionalTree,
 }
 
 /// Database key for the `attesters` database.
@@ -126,7 +144,7 @@ impl ProposerKey {
         ProposerKey { data }
     }
 
-    pub fn parse(data: Cow<[u8]>) -> Result<(Slot, u64), Error> {
+    pub fn parse(data: IVec) -> Result<(Slot, u64), Error> {
         if data.len() == PROPOSER_KEY_SIZE {
             let slot = Slot::new(BigEndian::read_u64(&data[..8]));
             let validator_index = BigEndian::read_u64(&data[8..]);
@@ -178,7 +196,7 @@ impl IndexedAttestationIdKey {
         }
     }
 
-    pub fn parse(data: Cow<[u8]>) -> Result<(Epoch, Hash256), Error> {
+    pub fn parse(data: IVec) -> Result<(Epoch, Hash256), Error> {
         if data.len() == INDEXED_ATTESTATION_ID_KEY_SIZE {
             let target_epoch = Epoch::new(BigEndian::read_u64(&data[..8]));
             let indexed_attestation_root = Hash256::from_slice(&data[8..]);
@@ -208,10 +226,10 @@ impl IndexedAttestationId {
         Self { id: data }
     }
 
-    pub fn parse(data: Cow<[u8]>) -> Result<u64, Error> {
+    pub fn parse(data: IVec) -> Result<u64, Error> {
         if data.len() == INDEXED_ATTESTATION_ID_SIZE {
             Ok(BigEndian::read_uint(
-                data.borrow(),
+                data.as_ref(),
                 INDEXED_ATTESTATION_ID_SIZE,
             ))
         } else {
@@ -238,13 +256,13 @@ impl AsRef<[u8]> for IndexedAttestationId {
     }
 }
 
-/// Bincode deserialization specialised to `Cow<[u8]>`.
-fn bincode_deserialize<T: DeserializeOwned>(bytes: Cow<[u8]>) -> Result<T, Error> {
-    Ok(bincode::deserialize(bytes.borrow())?)
+/// Bincode deserialization specialised to `IVec`.
+fn bincode_deserialize<T: DeserializeOwned>(bytes: IVec) -> Result<T, Error> {
+    Ok(bincode::deserialize(&bytes)?)
 }
 
-fn ssz_decode<T: Decode>(bytes: Cow<[u8]>) -> Result<T, Error> {
-    Ok(T::from_ssz_bytes(bytes.borrow())?)
+fn ssz_decode<T: Decode>(bytes: IVec) -> Result<T, Error> {
+    Ok(T::from_ssz_bytes(&bytes)?)
 }
 
 impl<E: EthSpec> SlasherDB<E> {
@@ -255,23 +273,26 @@ impl<E: EthSpec> SlasherDB<E> {
 
         std::fs::create_dir_all(&config.database_path)?;
 
-        let env = Environment::new()
-            .set_max_dbs(MAX_NUM_DBS)
-            .set_geometry(Self::geometry(&config))
-            .open_with_permissions(&config.database_path, 0o600)?;
+        // FIXME(sproul): enable compression
+        let db = sled::Config::new()
+            .use_compression(false)
+            .mode(sled::Mode::HighThroughput)
+            .cache_capacity(6 * 1024 * 1024 * 1024)
+            .path(&config.database_path)
+            .print_profile_on_drop(true)
+            .open()?;
 
-        let txn = env.begin_rw_txn()?;
-        txn.create_db(Some(INDEXED_ATTESTATION_DB), Self::db_flags())?;
-        txn.create_db(Some(INDEXED_ATTESTATION_ID_DB), Self::db_flags())?;
-        txn.create_db(Some(ATTESTERS_DB), Self::db_flags())?;
-        txn.create_db(Some(ATTESTERS_MAX_TARGETS_DB), Self::db_flags())?;
-        txn.create_db(Some(MIN_TARGETS_DB), Self::db_flags())?;
-        txn.create_db(Some(MAX_TARGETS_DB), Self::db_flags())?;
-        txn.create_db(Some(CURRENT_EPOCHS_DB), Self::db_flags())?;
-        txn.create_db(Some(PROPOSERS_DB), Self::db_flags())?;
-        txn.create_db(Some(METADATA_DB), Self::db_flags())?;
-        txn.commit()?;
+        let indexed_attestation = db.open_tree(INDEXED_ATTESTATION_DB)?;
+        let indexed_attestation_id = db.open_tree(INDEXED_ATTESTATION_ID_DB)?;
+        let attesters = db.open_tree(ATTESTERS_DB)?;
+        let attesters_max_targets = db.open_tree(ATTESTERS_MAX_TARGETS_DB)?;
+        let min_targets = db.open_tree(MIN_TARGETS_DB)?;
+        let max_targets = db.open_tree(MAX_TARGETS_DB)?;
+        let current_epochs = db.open_tree(CURRENT_EPOCHS_DB)?;
+        let proposers = db.open_tree(PROPOSERS_DB)?;
+        let metadata = db.open_tree(METADATA_DB)?;
 
+        // FIXME(sproul): permissions
         #[cfg(windows)]
         {
             use filesystem::restrict_file_permissions;
@@ -284,7 +305,16 @@ impl<E: EthSpec> SlasherDB<E> {
         let attestation_root_cache = Mutex::new(LruCache::new(config.attestation_root_cache_size));
 
         let mut db = Self {
-            env,
+            _db: db,
+            indexed_attestation,
+            indexed_attestation_id,
+            attesters,
+            attesters_max_targets,
+            min_targets,
+            max_targets,
+            current_epochs,
+            proposers,
+            metadata,
             attestation_root_cache,
             config,
             _phantom: PhantomData,
@@ -292,19 +322,65 @@ impl<E: EthSpec> SlasherDB<E> {
 
         db = db.migrate()?;
 
-        let mut txn = db.begin_rw_txn()?;
-        if let Some(on_disk_config) = db.load_config(&mut txn)? {
-            let current_disk_config = db.config.disk_config();
-            if current_disk_config != on_disk_config {
-                return Err(Error::ConfigIncompatible {
-                    on_disk_config,
-                    config: current_disk_config,
-                });
+        db.transaction(|txn| {
+            if let Some(on_disk_config) = db.load_config(&txn)? {
+                let current_disk_config = db.config.disk_config();
+                if current_disk_config != on_disk_config {
+                    return Err(Error::ConfigIncompatible {
+                        on_disk_config,
+                        config: current_disk_config,
+                    }
+                    .into());
+                }
             }
-        }
-        txn.commit()?;
+            Ok(())
+        })?;
 
         Ok(db)
+    }
+
+    pub fn transaction<T, F>(&self, f: F) -> Result<T, Error>
+    where
+        F: Fn(&Transaction) -> ConflictableTransactionResult<T, Error>,
+    {
+        (
+            &self.indexed_attestation,
+            &self.indexed_attestation_id,
+            &self.attesters,
+            &self.attesters_max_targets,
+            &self.min_targets,
+            &self.max_targets,
+            &self.current_epochs,
+            &self.proposers,
+            &self.metadata,
+        )
+            .transaction(
+                |(
+                    indexed_attestation,
+                    indexed_attestation_id,
+                    attesters,
+                    attesters_max_targets,
+                    min_targets,
+                    max_targets,
+                    current_epochs,
+                    proposers,
+                    metadata,
+                )| {
+                    let txn = Transaction {
+                        indexed_attestation,
+                        indexed_attestation_id,
+                        attesters,
+                        attesters_max_targets,
+                        min_targets,
+                        max_targets,
+                        current_epochs,
+                        proposers,
+                        metadata,
+                    };
+                    f(&txn)
+                },
+            )
+            .map_err(Into::into)
     }
 
     fn delete_legacy_file(slasher_dir: &Path, filename: &str, log: &Logger) -> Result<(), Error> {
@@ -321,88 +397,17 @@ impl<E: EthSpec> SlasherDB<E> {
         Ok(())
     }
 
-    fn open_db<'a>(&self, txn: &'a RwTransaction<'a>, name: &str) -> Result<Database<'a>, Error> {
-        Ok(txn.open_db(Some(name))?)
-    }
-
-    pub fn indexed_attestation_db<'a>(
-        &self,
-        txn: &'a RwTransaction<'a>,
-    ) -> Result<Database<'a>, Error> {
-        self.open_db(txn, INDEXED_ATTESTATION_DB)
-    }
-
-    pub fn indexed_attestation_id_db<'a>(
-        &self,
-        txn: &'a RwTransaction<'a>,
-    ) -> Result<Database<'a>, Error> {
-        self.open_db(txn, INDEXED_ATTESTATION_ID_DB)
-    }
-
-    pub fn attesters_db<'a>(&self, txn: &'a RwTransaction<'a>) -> Result<Database<'a>, Error> {
-        self.open_db(txn, ATTESTERS_DB)
-    }
-
-    pub fn attesters_max_targets_db<'a>(
-        &self,
-        txn: &'a RwTransaction<'a>,
-    ) -> Result<Database<'a>, Error> {
-        self.open_db(txn, ATTESTERS_MAX_TARGETS_DB)
-    }
-
-    pub fn min_targets_db<'a>(&self, txn: &'a RwTransaction<'a>) -> Result<Database<'a>, Error> {
-        self.open_db(txn, MIN_TARGETS_DB)
-    }
-
-    pub fn max_targets_db<'a>(&self, txn: &'a RwTransaction<'a>) -> Result<Database<'a>, Error> {
-        self.open_db(txn, MAX_TARGETS_DB)
-    }
-
-    pub fn current_epochs_db<'a>(&self, txn: &'a RwTransaction<'a>) -> Result<Database<'a>, Error> {
-        self.open_db(txn, CURRENT_EPOCHS_DB)
-    }
-
-    pub fn proposers_db<'a>(&self, txn: &'a RwTransaction<'a>) -> Result<Database<'a>, Error> {
-        self.open_db(txn, PROPOSERS_DB)
-    }
-
-    pub fn metadata_db<'a>(&self, txn: &'a RwTransaction<'a>) -> Result<Database<'a>, Error> {
-        self.open_db(txn, METADATA_DB)
-    }
-
-    pub fn db_flags() -> DatabaseFlags {
-        DatabaseFlags::default()
-    }
-
-    pub fn write_flags() -> WriteFlags {
-        WriteFlags::default()
-    }
-
-    pub fn begin_rw_txn(&self) -> Result<RwTransaction<'_>, Error> {
-        Ok(self.env.begin_rw_txn()?)
-    }
-
-    pub fn geometry(config: &Config) -> Geometry<Range<usize>> {
-        Geometry {
-            size: Some(0..config.max_db_size_mbs * MEGABYTE),
-            growth_step: Some(MDBX_GROWTH_STEP),
-            shrink_threshold: None,
-            page_size: None,
-        }
-    }
-
-    pub fn load_schema_version(&self, txn: &mut RwTransaction<'_>) -> Result<Option<u64>, Error> {
-        txn.get(&self.metadata_db(txn)?, METADATA_VERSION_KEY)?
+    pub fn load_schema_version(&self, txn: &Transaction) -> Result<Option<u64>, Error> {
+        txn.metadata
+            .get(&METADATA_VERSION_KEY)?
             .map(bincode_deserialize)
             .transpose()
     }
 
-    pub fn store_schema_version(&self, txn: &mut RwTransaction<'_>) -> Result<(), Error> {
-        txn.put(
-            &self.metadata_db(txn)?,
-            &METADATA_VERSION_KEY,
-            &bincode::serialize(&CURRENT_SCHEMA_VERSION)?,
-            Self::write_flags(),
+    pub fn store_schema_version(&self, txn: &Transaction) -> Result<(), Error> {
+        txn.metadata.insert(
+            METADATA_VERSION_KEY,
+            bincode::serialize(&CURRENT_SCHEMA_VERSION)?,
         )?;
         Ok(())
     }
@@ -413,34 +418,29 @@ impl<E: EthSpec> SlasherDB<E> {
     /// Care should be taken to ensure it is only called for `Config`-like `T`.
     pub fn load_config<T: DeserializeOwned>(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
     ) -> Result<Option<T>, Error> {
-        txn.get(&self.metadata_db(txn)?, METADATA_CONFIG_KEY)?
+        txn.metadata
+            .get(METADATA_CONFIG_KEY)?
             .map(bincode_deserialize)
             .transpose()
     }
 
-    pub fn store_config(&self, config: &Config, txn: &mut RwTransaction<'_>) -> Result<(), Error> {
-        txn.put(
-            &self.metadata_db(txn)?,
-            &METADATA_CONFIG_KEY,
-            &bincode::serialize(config)?,
-            Self::write_flags(),
-        )?;
+    pub fn store_config(&self, config: &Config, txn: &Transaction<'_>) -> Result<(), Error> {
+        txn.metadata
+            .insert(METADATA_CONFIG_KEY, bincode::serialize(config)?)?;
         Ok(())
     }
 
     pub fn get_attester_max_target(
         &self,
         validator_index: u64,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
     ) -> Result<Option<Epoch>, Error> {
-        txn.get(
-            &self.attesters_max_targets_db(txn)?,
-            CurrentEpochKey::new(validator_index).as_ref(),
-        )?
-        .map(ssz_decode)
-        .transpose()
+        txn.attesters_max_targets
+            .get(CurrentEpochKey::new(validator_index))?
+            .map(ssz_decode)
+            .transpose()
     }
 
     pub fn update_attester_max_target(
@@ -448,7 +448,7 @@ impl<E: EthSpec> SlasherDB<E> {
         validator_index: u64,
         previous_max_target: Option<Epoch>,
         max_target: Epoch,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
     ) -> Result<(), Error> {
         // Don't update maximum if new target is less than or equal to previous. In the case of
         // no previous we *do* want to update.
@@ -465,20 +465,16 @@ impl<E: EthSpec> SlasherDB<E> {
                 (max_target.as_u64() + 1).saturating_sub(self.config.history_length as u64),
             );
             for target_epoch in (start_epoch..max_target.as_u64()).map(Epoch::new) {
-                txn.put(
-                    &self.attesters_db(txn)?,
-                    &AttesterKey::new(validator_index, target_epoch, &self.config),
-                    &CompactAttesterRecord::null().as_bytes(),
-                    Self::write_flags(),
+                txn.attesters.insert(
+                    AttesterKey::new(validator_index, target_epoch, &self.config).as_ref(),
+                    CompactAttesterRecord::null().as_bytes(),
                 )?;
             }
         }
 
-        txn.put(
-            &self.attesters_max_targets_db(txn)?,
-            &CurrentEpochKey::new(validator_index),
-            &max_target.as_ssz_bytes(),
-            Self::write_flags(),
+        txn.attesters_max_targets.insert(
+            CurrentEpochKey::new(validator_index).as_ref(),
+            max_target.as_ssz_bytes(),
         )?;
         Ok(())
     }
@@ -486,53 +482,46 @@ impl<E: EthSpec> SlasherDB<E> {
     pub fn get_current_epoch_for_validator(
         &self,
         validator_index: u64,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction,
     ) -> Result<Option<Epoch>, Error> {
-        txn.get(
-            &self.current_epochs_db(txn)?,
-            CurrentEpochKey::new(validator_index).as_ref(),
-        )?
-        .map(ssz_decode)
-        .transpose()
+        txn.current_epochs
+            .get(CurrentEpochKey::new(validator_index))?
+            .map(ssz_decode)
+            .transpose()
     }
 
     pub fn update_current_epoch_for_validator(
         &self,
         validator_index: u64,
         current_epoch: Epoch,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction,
     ) -> Result<(), Error> {
-        txn.put(
-            &self.current_epochs_db(txn)?,
-            &CurrentEpochKey::new(validator_index),
-            &current_epoch.as_ssz_bytes(),
-            Self::write_flags(),
+        txn.current_epochs.insert(
+            CurrentEpochKey::new(validator_index).as_ref(),
+            current_epoch.as_ssz_bytes(),
         )?;
         Ok(())
     }
 
     fn get_indexed_attestation_id(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
         key: &IndexedAttestationIdKey,
     ) -> Result<Option<u64>, Error> {
-        txn.get(&self.indexed_attestation_id_db(txn)?, key.as_ref())?
+        txn.indexed_attestation_id
+            .get(key)?
             .map(IndexedAttestationId::parse)
             .transpose()
     }
 
     fn put_indexed_attestation_id(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
         key: &IndexedAttestationIdKey,
         value: IndexedAttestationId,
     ) -> Result<(), Error> {
-        txn.put(
-            &self.indexed_attestation_id_db(txn)?,
-            key,
-            &value,
-            Self::write_flags(),
-        )?;
+        txn.indexed_attestation_id
+            .insert(key.as_ref(), value.as_ref())?;
         Ok(())
     }
 
@@ -541,7 +530,7 @@ impl<E: EthSpec> SlasherDB<E> {
     /// If the attestation is already stored then the existing ID will be returned without a write.
     pub fn store_indexed_attestation(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
         indexed_attestation_hash: Hash256,
         indexed_attestation: &IndexedAttestation<E>,
     ) -> Result<u64, Error> {
@@ -556,19 +545,14 @@ impl<E: EthSpec> SlasherDB<E> {
         }
 
         // Store the new indexed attestation at the end of the current table.
-        let mut cursor = txn.cursor(&self.indexed_attestation_db(txn)?)?;
-
-        let indexed_att_id = match cursor.last::<_, ()>()? {
-            // First ID is 1 so that 0 can be used to represent `null` in `CompactAttesterRecord`.
-            None => 1,
-            Some((key_bytes, _)) => IndexedAttestationId::parse(key_bytes)? + 1,
-        };
+        // Ensure ID is non-zero by adding 1.
+        let indexed_att_id = txn.indexed_attestation.generate_id()? + 1;
 
         let attestation_key = IndexedAttestationId::new(indexed_att_id);
         let data = indexed_attestation.as_ssz_bytes();
 
-        cursor.put(attestation_key.as_ref(), &data, Self::write_flags())?;
-        drop(cursor);
+        txn.indexed_attestation
+            .insert(attestation_key.as_ref(), data)?;
 
         // Update the (epoch, hash) to ID mapping.
         self.put_indexed_attestation_id(txn, &id_key, attestation_key)?;
@@ -578,14 +562,12 @@ impl<E: EthSpec> SlasherDB<E> {
 
     pub fn get_indexed_attestation(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
         indexed_attestation_id: IndexedAttestationId,
     ) -> Result<IndexedAttestation<E>, Error> {
         let bytes = txn
-            .get(
-                &self.indexed_attestation_db(txn)?,
-                indexed_attestation_id.as_ref(),
-            )?
+            .indexed_attestation
+            .get(indexed_attestation_id.as_ref())?
             .ok_or(Error::MissingIndexedAttestation {
                 id: indexed_attestation_id.as_u64(),
             })?;
@@ -594,7 +576,7 @@ impl<E: EthSpec> SlasherDB<E> {
 
     fn get_attestation_data_root(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
         indexed_id: IndexedAttestationId,
     ) -> Result<(Hash256, Option<IndexedAttestation<E>>), Error> {
         metrics::inc_counter(&metrics::SLASHER_NUM_ATTESTATION_ROOT_QUERIES);
@@ -637,7 +619,7 @@ impl<E: EthSpec> SlasherDB<E> {
 
     pub fn check_and_update_attester_record(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
         validator_index: u64,
         attestation: &IndexedAttestation<E>,
         record: &AttesterRecord,
@@ -684,11 +666,9 @@ impl<E: EthSpec> SlasherDB<E> {
         else {
             self.update_attester_max_target(validator_index, prev_max_target, target_epoch, txn)?;
 
-            txn.put(
-                &self.attesters_db(txn)?,
-                &AttesterKey::new(validator_index, target_epoch, &self.config),
-                &indexed_attestation_id,
-                Self::write_flags(),
+            txn.attesters.insert(
+                AttesterKey::new(validator_index, target_epoch, &self.config).as_ref(),
+                indexed_attestation_id.as_ref(),
             )?;
 
             Ok(AttesterSlashingStatus::NotSlashable)
@@ -697,7 +677,7 @@ impl<E: EthSpec> SlasherDB<E> {
 
     pub fn get_attestation_for_validator(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction,
         validator_index: u64,
         target_epoch: Epoch,
     ) -> Result<IndexedAttestation<E>, Error> {
@@ -714,7 +694,7 @@ impl<E: EthSpec> SlasherDB<E> {
 
     pub fn get_attester_record(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction,
         validator_index: u64,
         target: Epoch,
         prev_max_target: Option<Epoch>,
@@ -725,7 +705,8 @@ impl<E: EthSpec> SlasherDB<E> {
 
         let attester_key = AttesterKey::new(validator_index, target, &self.config);
         Ok(txn
-            .get(&self.attesters_db(txn)?, attester_key.as_ref())?
+            .attesters
+            .get(attester_key)?
             .map(CompactAttesterRecord::parse)
             .transpose()?
             .filter(|record| !record.is_null()))
@@ -733,19 +714,17 @@ impl<E: EthSpec> SlasherDB<E> {
 
     pub fn get_block_proposal(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
         proposer_index: u64,
         slot: Slot,
     ) -> Result<Option<SignedBeaconBlockHeader>, Error> {
         let proposer_key = ProposerKey::new(proposer_index, slot);
-        txn.get(&self.proposers_db(txn)?, proposer_key.as_ref())?
-            .map(ssz_decode)
-            .transpose()
+        txn.proposers.get(proposer_key)?.map(ssz_decode).transpose()
     }
 
     pub fn check_or_insert_block_proposal(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
         block_header: SignedBeaconBlockHeader,
     ) -> Result<ProposerSlashingStatus, Error> {
         let proposer_index = block_header.message.proposer_index;
@@ -763,11 +742,9 @@ impl<E: EthSpec> SlasherDB<E> {
                 )))
             }
         } else {
-            txn.put(
-                &self.proposers_db(txn)?,
-                &ProposerKey::new(proposer_index, slot),
-                &block_header.as_ssz_bytes(),
-                Self::write_flags(),
+            txn.proposers.insert(
+                ProposerKey::new(proposer_index, slot).as_ref(),
+                block_header.as_ssz_bytes(),
             )?;
             Ok(ProposerSlashingStatus::NotSlashable)
         }
@@ -775,109 +752,78 @@ impl<E: EthSpec> SlasherDB<E> {
 
     /// Attempt to prune the database, deleting old blocks and attestations.
     pub fn prune(&self, current_epoch: Epoch) -> Result<(), Error> {
-        let mut txn = self.begin_rw_txn()?;
-        self.try_prune(current_epoch, &mut txn).allow_map_full()?;
-        txn.commit()?;
+        self.prune_proposers(current_epoch)?;
+        self.prune_indexed_attestations(current_epoch)?;
         Ok(())
     }
 
-    /// Try to prune the database.
-    ///
-    /// This is a separate method from `prune` so that `allow_map_full` may be used.
-    pub fn try_prune(
-        &self,
-        current_epoch: Epoch,
-        txn: &mut RwTransaction<'_>,
-    ) -> Result<(), Error> {
-        self.prune_proposers(current_epoch, txn)?;
-        self.prune_indexed_attestations(current_epoch, txn)?;
-        Ok(())
-    }
-
-    fn prune_proposers(
-        &self,
-        current_epoch: Epoch,
-        txn: &mut RwTransaction<'_>,
-    ) -> Result<(), Error> {
+    fn prune_proposers(&self, current_epoch: Epoch) -> Result<(), Error> {
         let min_slot = current_epoch
             .saturating_add(1u64)
             .saturating_sub(self.config.history_length)
             .start_slot(E::slots_per_epoch());
 
-        let mut cursor = txn.cursor(&self.proposers_db(txn)?)?;
+        // Collect keys to delete.
+        let mut to_prune = vec![];
 
-        // Position cursor at first key, bailing out if the database is empty.
-        if cursor.first::<(), ()>()?.is_none() {
-            return Ok(());
-        }
-
-        loop {
-            let (key_bytes, ()) = cursor.get_current()?.ok_or(Error::MissingProposerKey)?;
-
-            let (slot, _) = ProposerKey::parse(key_bytes)?;
+        for res in self.proposers.range::<IVec, _>(..).keys() {
+            let key_bytes = res?;
+            let (slot, _) = ProposerKey::parse(key_bytes.clone())?;
             if slot < min_slot {
-                cursor.del(Self::write_flags())?;
-
-                // End the loop if there is no next entry.
-                if cursor.next::<(), ()>()?.is_none() {
-                    break;
-                }
+                to_prune.push(key_bytes);
             } else {
+                // End the loop if we've reached a slot that doesn't need pruning.
                 break;
             }
         }
 
+        self.transaction(|txn| {
+            for key in &to_prune {
+                txn.proposers
+                    .remove(key)?
+                    .ok_or(Error::MissingProposerValue)?;
+            }
+            Ok(())
+        })?;
+
         Ok(())
     }
 
-    fn prune_indexed_attestations(
-        &self,
-        current_epoch: Epoch,
-        txn: &mut RwTransaction<'_>,
-    ) -> Result<(), Error> {
+    fn prune_indexed_attestations(&self, current_epoch: Epoch) -> Result<(), Error> {
         let min_epoch = current_epoch
             .saturating_add(1u64)
             .saturating_sub(self.config.history_length as u64);
 
         // Collect indexed attestation IDs to delete.
+        let mut indexed_attestation_id_keys = vec![];
         let mut indexed_attestation_ids = vec![];
 
-        let mut cursor = txn.cursor(&self.indexed_attestation_id_db(txn)?)?;
-
-        // Position cursor at first key, bailing out if the database is empty.
-        if cursor.first::<(), ()>()?.is_none() {
-            return Ok(());
-        }
-
-        loop {
-            let (key_bytes, value) = cursor
-                .get_current()?
-                .ok_or(Error::MissingIndexedAttestationIdKey)?;
-
-            let (target_epoch, _) = IndexedAttestationIdKey::parse(key_bytes)?;
+        for res in self.indexed_attestation_id.range::<IVec, _>(..) {
+            let (key_bytes, value) = res?;
+            // FIXME(sproul): remove clone
+            let (target_epoch, _) = IndexedAttestationIdKey::parse(key_bytes.clone())?;
 
             if target_epoch < min_epoch {
+                indexed_attestation_id_keys.push(key_bytes);
                 indexed_attestation_ids.push(IndexedAttestationId::new(
                     IndexedAttestationId::parse(value)?,
                 ));
-
-                cursor.del(Self::write_flags())?;
-
-                if cursor.next::<(), ()>()?.is_none() {
-                    break;
-                }
             } else {
+                // End the loop if we've reached an epoch that doesn't need pruning.
                 break;
             }
         }
-        drop(cursor);
 
-        // Delete the indexed attestations.
-        // Optimisation potential: use a cursor here.
-        let indexed_attestation_db = self.indexed_attestation_db(txn)?;
-        for indexed_attestation_id in &indexed_attestation_ids {
-            txn.del(&indexed_attestation_db, indexed_attestation_id, None)?;
-        }
+        // Delete the IDs themselves _and_ the indexed attestations they point to.
+        self.transaction(|txn| {
+            for attestation_id_key in &indexed_attestation_id_keys {
+                txn.indexed_attestation_id.remove(attestation_id_key)?;
+            }
+            for attestation_id in &indexed_attestation_ids {
+                txn.indexed_attestation.remove(attestation_id.as_ref())?;
+            }
+            Ok(())
+        })?;
         self.delete_attestation_data_roots(indexed_attestation_ids);
 
         Ok(())

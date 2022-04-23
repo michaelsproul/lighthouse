@@ -6,7 +6,7 @@ use crate::metrics::{
 };
 use crate::{
     array, AttestationBatch, AttestationQueue, AttesterRecord, BlockQueue, Config, Error,
-    IndexedAttestationId, ProposerSlashingStatus, RwTransaction, SimpleBatch, SlasherDB,
+    IndexedAttestationId, ProposerSlashingStatus, SimpleBatch, SlasherDB, Transaction,
 };
 use parking_lot::Mutex;
 use slog::{debug, error, info, Logger};
@@ -36,6 +36,13 @@ impl<E: EthSpec> Slasher<E> {
         let proposer_slashings = Mutex::new(HashSet::new());
         let attestation_queue = AttestationQueue::default();
         let block_queue = BlockQueue::default();
+
+        info!(log, "Initializing min targets array");
+        array::init::<_, array::MinTargetChunk>(&db, &config, 350_000)?;
+        info!(log, "Initializing max targets array");
+        array::init::<_, array::MaxTargetChunk>(&db, &config, 350_000)?;
+        info!(log, "Target arrays initialized");
+
         Ok(Self {
             db,
             attestation_queue,
@@ -77,20 +84,20 @@ impl<E: EthSpec> Slasher<E> {
 
     /// Apply queued blocks and attestations to the on-disk database, and detect slashings!
     pub fn process_queued(&self, current_epoch: Epoch) -> Result<BatchStats, Error> {
-        let mut txn = self.db.begin_rw_txn()?;
-        let block_stats = self.process_blocks(&mut txn)?;
-        let attestation_stats = self.process_attestations(current_epoch, &mut txn)?;
-        txn.commit()?;
-        Ok(BatchStats {
-            block_stats,
-            attestation_stats,
+        self.db.transaction(|txn| {
+            let block_stats = self.process_blocks(txn)?;
+            let attestation_stats = self.process_attestations(current_epoch, txn)?;
+            Ok(BatchStats {
+                block_stats,
+                attestation_stats,
+            })
         })
     }
 
     /// Apply queued blocks to the on-disk database.
     ///
     /// Return the number of blocks
-    pub fn process_blocks(&self, txn: &mut RwTransaction<'_>) -> Result<BlockStats, Error> {
+    pub fn process_blocks(&self, txn: &Transaction<'_>) -> Result<BlockStats, Error> {
         let blocks = self.block_queue.dequeue();
         let num_processed = blocks.len();
         let mut slashings = vec![];
@@ -125,7 +132,7 @@ impl<E: EthSpec> Slasher<E> {
     pub fn process_attestations(
         &self,
         current_epoch: Epoch,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
     ) -> Result<AttestationStats, Error> {
         let snapshot = self.attestation_queue.dequeue();
         let num_processed = snapshot.len();
@@ -203,7 +210,7 @@ impl<E: EthSpec> Slasher<E> {
     /// Process a batch of attestations for a range of validator indices.
     fn process_batch(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
         subqueue_id: usize,
         batch: SimpleBatch<E>,
         current_epoch: Epoch,
@@ -274,7 +281,7 @@ impl<E: EthSpec> Slasher<E> {
     /// Check for double votes from all validators on `attestation` who match the `subqueue_id`.
     fn check_double_votes(
         &self,
-        txn: &mut RwTransaction<'_>,
+        txn: &Transaction<'_>,
         subqueue_id: usize,
         attestation: &IndexedAttestation<E>,
         attester_record: &AttesterRecord,
