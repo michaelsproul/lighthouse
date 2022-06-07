@@ -14,6 +14,8 @@ lazy_static = "1.4.0"
 lighthouse_metrics = { path = "../common/lighthouse_metrics" }
 filesystem = { path = "../common/filesystem" }
 mdbx = { package = "libmdbx", version = "0.1.0" }
+# jammdb = { git = "https://github.com/pjtatlow/jammdb", branch = "master" }
+jammdb = { path = "../../jammdb" }
 lru = "0.7.1"
 parking_lot = "0.12.0"
 rand = "0.8.5"

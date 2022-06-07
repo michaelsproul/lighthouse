@@ -16,7 +16,6 @@ use types::{
     AttesterSlashing, Epoch, EthSpec, IndexedAttestation, ProposerSlashing, SignedBeaconBlockHeader,
 };
 
-#[derive(Debug)]
 pub struct Slasher<E: EthSpec> {
     db: SlasherDB<E>,
     attestation_queue: AttestationQueue<E>,
@@ -77,7 +76,7 @@ impl<E: EthSpec> Slasher<E> {
 
     /// Apply queued blocks and attestations to the on-disk database, and detect slashings!
     pub fn process_queued(&self, current_epoch: Epoch) -> Result<BatchStats, Error> {
-        let mut txn = self.db.begin_rw_txn()?;
+        let mut txn = self.db.tx()?;
         let block_stats = self.process_blocks(&mut txn)?;
         let attestation_stats = self.process_attestations(current_epoch, &mut txn)?;
         txn.commit()?;

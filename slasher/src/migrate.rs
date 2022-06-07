@@ -4,7 +4,7 @@ use types::EthSpec;
 impl<E: EthSpec> SlasherDB<E> {
     /// If the database exists, and has a schema, attempt to migrate it to the current version.
     pub fn migrate(self) -> Result<Self, Error> {
-        let mut txn = self.begin_rw_txn()?;
+        let mut txn = self.tx()?;
         let schema_version = self.load_schema_version(&mut txn)?;
         drop(txn);
 

@@ -1,6 +1,5 @@
 use crate::{database::IndexedAttestationId, Error};
 use ssz_derive::{Decode, Encode};
-use std::borrow::Cow;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -34,7 +33,7 @@ impl CompactAttesterRecord {
         Self::new(IndexedAttestationId::null())
     }
 
-    pub fn parse(bytes: Cow<[u8]>) -> Result<Self, Error> {
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         let id = IndexedAttestationId::parse(bytes)?;
         Ok(Self::new(IndexedAttestationId::new(id)))
     }
