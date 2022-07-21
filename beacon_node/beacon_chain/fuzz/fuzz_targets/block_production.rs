@@ -27,6 +27,8 @@ pub const AGGREGATE_TICK: usize = 2 * ATTESTATION_TICK;
 pub const MIN_ATTACKER_PROPOSERS_PER_SLOT: u32 = 0;
 pub const MAX_ATTACKER_PROPOSERS_PER_SLOT: u32 = 4;
 
+const DEBUG_LOGS: bool = false;
+
 lazy_static! {
     /// A cached set of keys.
     static ref KEYPAIRS: Vec<Keypair> = types::test_utils::generate_deterministic_keypairs(TOTAL_VALIDATORS);
@@ -47,6 +49,7 @@ fn get_harness() -> TestHarness {
     harness
 }
 
+#[derive(Clone)]
 pub enum Message {
     Attestation(Attestation<E>),
     Block(SignedBeaconBlock<E>),
@@ -60,6 +63,12 @@ struct Node {
     message_queue: VecDeque<(usize, Message)>,
     /// Validator indices assigned to this node.
     validators: Vec<usize>,
+}
+
+async fn deliver_all(message: &Message, nodes: &[Node]) {
+    for node in nodes {
+        node.deliver_message(message.clone()).await;
+    }
 }
 
 impl Node {
@@ -110,19 +119,18 @@ impl Hydra {
                 .unwrap()
                 .map(Result::unwrap)
                 .take_while(|(_, slot)| *slot >= finalized_slot)
-                .map(|(block_root, _)| block_root)
                 .collect::<Vec<_>>();
 
             // Discard this head if it isn't descended from the finalized checkpoint (special case
             // for genesis).
-            if relevant_block_roots.last() != Some(&finalized_checkpoint.root)
+            if relevant_block_roots.last().map(|(root, _)| root) != Some(&finalized_checkpoint.root)
                 && finalized_slot != 0
             {
                 continue;
             }
 
-            for block_root in relevant_block_roots {
-                self.ensure_block(harness, block_root, current_epoch, spec);
+            for (block_root, _) in relevant_block_roots {
+                self.ensure_block(harness, block_root, current_epoch, finalized_slot, spec);
             }
         }
 
@@ -135,18 +143,40 @@ impl Hydra {
         harness: &TestHarness,
         block_root: Hash256,
         current_epoch: Epoch,
+        finalized_slot: Slot,
         spec: &ChainSpec,
     ) {
-        let state = self.states.entry(block_root).or_insert_with(|| {
-            let block = harness
-                .chain
-                .get_blinded_block(&block_root)
-                .unwrap()
-                .unwrap();
-            let mut state = harness.get_hot_state(block.state_root().into()).unwrap();
-            state.build_all_caches(spec).unwrap();
-            state
-        });
+        use std::collections::hash_map::Entry;
+
+        let state = match self.states.entry(block_root) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                let block = harness
+                    .chain
+                    .get_blinded_block(&block_root)
+                    .unwrap()
+                    .unwrap();
+
+                // This check necessary to prevent freakouts at skipped slots.
+                if block.slot() < finalized_slot {
+                    return;
+                }
+
+                let mut state = harness
+                    .get_hot_state(block.state_root().into())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "missing state for block {:?} at slot {}, current epoch: {:?}",
+                            block_root,
+                            block.slot(),
+                            current_epoch
+                        );
+                    });
+                state.build_all_caches(spec).unwrap();
+                e.insert(state)
+            }
+        };
+
         if state.current_epoch() != current_epoch {
             complete_state_advance(
                 state,
@@ -160,8 +190,7 @@ impl Hydra {
 
     fn prune(&mut self, finalized_checkpoint: Checkpoint) {
         self.states.retain(|_, state| {
-            state.finalized_checkpoint() == finalized_checkpoint
-                || state.finalized_checkpoint().epoch == 0
+            state.finalized_checkpoint() == finalized_checkpoint || finalized_checkpoint.epoch == 0
         })
     }
 
@@ -266,17 +295,44 @@ async fn run(data: &[u8]) -> arbitrary::Result<()> {
             }
         }
 
+        // Unaggregated attestations from the honest nodes.
+        if tick % TICKS_PER_SLOT == ATTESTATION_TICK {
+            let mut new_attestations = vec![];
+            for node in &honest_nodes {
+                let head = node.harness.chain.canonical_head.cached_head();
+                let attestations = node.harness.make_unaggregated_attestations(
+                    &node.validators,
+                    &head.snapshot.beacon_state,
+                    head.head_state_root(),
+                    head.head_block_root().into(),
+                    current_slot,
+                );
+                new_attestations.extend(
+                    attestations
+                        .into_iter()
+                        .flat_map(|atts| atts.into_iter().map(|(att, _)| att)),
+                );
+            }
+            for attestation in new_attestations {
+                let message = Message::Attestation(attestation);
+                deliver_all(&message, &honest_nodes).await;
+                attacker.deliver_message(message).await;
+            }
+        }
+
         // Slot start activities for the attacker.
         if tick % TICKS_PER_SLOT == 0 && tick != 0 {
             hydra.update(&attacker.harness, current_epoch, &spec);
-            println!(
-                "number of hydra heads at slot {}: {}",
-                current_slot,
-                hydra.num_heads()
-            );
             let proposer_heads =
                 hydra.proposer_heads_at_slot(current_slot, &attacker.validators, &spec);
-            println!("number of attacker proposers: {}", proposer_heads.len());
+            if DEBUG_LOGS {
+                println!(
+                    "number of hydra heads at slot {}: {}, attacker proposers: {}",
+                    current_slot,
+                    hydra.num_heads(),
+                    proposer_heads.len(),
+                );
+            }
 
             if !proposer_heads.is_empty() {
                 let mut proposers = proposer_heads.iter();
@@ -289,11 +345,10 @@ async fn run(data: &[u8]) -> arbitrary::Result<()> {
                         proposer_heads.len() as u32,
                     )),
                     |ux| {
-                        let (proposer_index, head_choices) = proposers.next().unwrap();
+                        let (_, head_choices) = proposers.next().unwrap();
                         let (block_root, state_ref) = ux.choose(&head_choices)?;
                         let state: BeaconState<E> = (*state_ref).clone();
 
-                        println!("proposing a block from {proposer_index} on {block_root:?}");
                         selected_proposals.push((block_root, state));
                         Ok(ControlFlow::Continue(()))
                     },
@@ -338,9 +393,9 @@ async fn run(data: &[u8]) -> arbitrary::Result<()> {
             .set_current_time(current_time);
     }
     println!(
-        "finished a run that generated {} blocks at slots: {:?}",
+        "finished a run that generated {} blocks up to slot {}",
         all_blocks.len(),
-        all_blocks.iter().map(|(_, slot)| slot).collect::<Vec<_>>()
+        all_blocks.iter().map(|(_, slot)| slot).max().unwrap()
     );
     Ok(())
 }
