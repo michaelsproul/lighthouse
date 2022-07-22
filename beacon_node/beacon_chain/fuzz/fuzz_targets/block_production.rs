@@ -4,49 +4,91 @@ use arbitrary::Unstructured;
 use beacon_chain::beacon_proposer_cache::compute_proposer_duties_from_head;
 use beacon_chain::slot_clock::SlotClock;
 use beacon_chain::test_utils::{test_spec, BeaconChainHarness, EphemeralHarnessType};
-use lazy_static::lazy_static;
 use libfuzzer_sys::fuzz_target;
 use state_processing::state_advance::complete_state_advance;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::ControlFlow;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use types::*;
-
-pub const NUM_HONEST_NODES: usize = 9;
-pub const TOTAL_VALIDATORS: usize = 80;
-pub const ATTACKER_VALIDATORS: usize = TOTAL_VALIDATORS / 10;
-pub const HONEST_VALIDATORS: usize = TOTAL_VALIDATORS - ATTACKER_VALIDATORS;
-
-pub const TICKS_PER_SLOT: usize = 3;
-pub const MAX_DELAY_TICKS: usize = TICKS_PER_SLOT * 2;
-
-pub const ATTESTATION_TICK: usize = TICKS_PER_SLOT / 3;
-pub const AGGREGATE_TICK: usize = 2 * ATTESTATION_TICK;
-
-pub const MIN_ATTACKER_PROPOSERS_PER_SLOT: u32 = 0;
-pub const MAX_ATTACKER_PROPOSERS_PER_SLOT: u32 = 4;
+use types::{test_utils::generate_deterministic_keypairs, *};
 
 const DEBUG_LOGS: bool = false;
-
-lazy_static! {
-    /// A cached set of keys.
-    static ref KEYPAIRS: Vec<Keypair> = types::test_utils::generate_deterministic_keypairs(TOTAL_VALIDATORS);
-}
 
 type E = MinimalEthSpec;
 type TestHarness = BeaconChainHarness<EphemeralHarnessType<E>>;
 
-fn get_harness() -> TestHarness {
+fn get_harness(keypairs: &[Keypair]) -> TestHarness {
     let spec = test_spec::<E>();
 
     let harness = BeaconChainHarness::builder(MinimalEthSpec)
         .spec(spec)
-        .keypairs(KEYPAIRS.to_vec())
+        .keypairs(keypairs.to_vec())
         .fresh_ephemeral_store()
         .mock_execution_layer()
         .build();
     harness
+}
+
+pub struct Config {
+    pub num_honest_nodes: usize,
+    pub total_validators: usize,
+    pub attacker_validators: usize,
+    pub ticks_per_slot: usize,
+    pub min_attacker_proposers_per_slot: usize,
+    pub max_attacker_proposers_per_slot: usize,
+}
+
+impl Default for Config {
+    fn default() -> Config {
+        Config {
+            num_honest_nodes: 6,
+            total_validators: 90,
+            attacker_validators: 30,
+            ticks_per_slot: 3,
+            min_attacker_proposers_per_slot: 0,
+            max_attacker_proposers_per_slot: 4,
+        }
+    }
+}
+
+impl Config {
+    pub fn is_valid(&self) -> bool {
+        self.ticks_per_slot % 3 == 0
+            && self.honest_validators() % self.num_honest_nodes == 0
+            && self.max_attacker_proposers_per_slot >= self.min_attacker_proposers_per_slot
+    }
+
+    pub fn honest_validators(&self) -> usize {
+        self.total_validators - self.attacker_validators
+    }
+
+    pub fn honest_validators_per_node(&self) -> usize {
+        self.honest_validators() / self.num_honest_nodes
+    }
+
+    pub fn attestation_tick(&self) -> usize {
+        self.ticks_per_slot / 3
+    }
+
+    pub fn is_block_proposal_tick(&self, tick: usize) -> bool {
+        tick % self.ticks_per_slot == 0 && tick != 0
+    }
+
+    pub fn is_attestation_tick(&self, tick: usize) -> bool {
+        tick % self.ticks_per_slot == self.attestation_tick()
+    }
+
+    pub fn min_attacker_proposers(&self, available: usize) -> Option<u32> {
+        Some(std::cmp::min(self.min_attacker_proposers_per_slot, available) as u32)
+    }
+
+    pub fn max_attacker_proposers(&self, available: usize) -> Option<u32> {
+        Some(std::cmp::min(self.max_attacker_proposers_per_slot, available) as u32)
+    }
+
+    pub fn tick_duration(&self, spec: &ChainSpec) -> Duration {
+        Duration::from_secs(spec.seconds_per_slot) / self.ticks_per_slot as u32
+    }
 }
 
 #[derive(Clone)]
@@ -89,9 +131,10 @@ impl Node {
 }
 
 fuzz_target!(|data: &[u8]| {
+    let config = Config::default();
     let rt = Runtime::new().unwrap();
     if let Err(arbitrary::Error::EmptyChoose | arbitrary::Error::IncorrectFormat) =
-        rt.block_on(run(data))
+        rt.block_on(run(data, config))
     {
         panic!("bad arbitrary usage");
     }
@@ -225,16 +268,20 @@ impl Hydra {
     }
 }
 
-async fn run(data: &[u8]) -> arbitrary::Result<()> {
+async fn run(data: &[u8], conf: Config) -> arbitrary::Result<()> {
+    assert!(conf.is_valid());
+
     let mut u = Unstructured::new(data);
     let spec = test_spec::<E>();
     let slots_per_epoch = E::slots_per_epoch() as usize;
 
+    let keypairs = generate_deterministic_keypairs(conf.total_validators);
+
     // Create honest nodes.
-    let validators_per_node = HONEST_VALIDATORS / NUM_HONEST_NODES;
-    let mut honest_nodes = (0..NUM_HONEST_NODES)
+    let validators_per_node = conf.honest_validators_per_node();
+    let mut honest_nodes = (0..conf.num_honest_nodes)
         .map(|i| {
-            let harness = get_harness();
+            let harness = get_harness(&keypairs);
             let validators = (i * validators_per_node..(i + 1) * validators_per_node).collect();
             Node {
                 harness,
@@ -246,26 +293,26 @@ async fn run(data: &[u8]) -> arbitrary::Result<()> {
 
     // Set up attacker values.
     let attacker = Node {
-        harness: get_harness(),
+        harness: get_harness(&keypairs),
         message_queue: VecDeque::new(),
-        validators: (TOTAL_VALIDATORS - ATTACKER_VALIDATORS..TOTAL_VALIDATORS).collect(),
+        validators: (conf.honest_validators()..conf.total_validators).collect(),
     };
     let mut hydra = Hydra::default();
 
     // Simulation parameters.
     let mut tick = 0;
     let mut current_time = *attacker.harness.chain.slot_clock.genesis_duration();
-    let tick_duration = Duration::from_secs(spec.seconds_per_slot) / TICKS_PER_SLOT as u32;
+    let tick_duration = conf.tick_duration(&spec);
 
     let mut all_blocks = vec![(attacker.harness.head_block_root(), Slot::new(0))];
 
     // Generate events while the input is non-empty.
     while !u.is_empty() {
-        // Slot start activities for honest nodes.
         let current_slot = attacker.harness.chain.slot_clock.now().unwrap();
         let current_epoch = current_slot.epoch(E::slots_per_epoch());
 
-        if tick % TICKS_PER_SLOT == 0 && tick != 0 {
+        // Slot start activities for honest nodes.
+        if conf.is_block_proposal_tick(tick) {
             let mut new_blocks = vec![];
 
             // Produce block(s).
@@ -296,7 +343,7 @@ async fn run(data: &[u8]) -> arbitrary::Result<()> {
         }
 
         // Unaggregated attestations from the honest nodes.
-        if tick % TICKS_PER_SLOT == ATTESTATION_TICK {
+        if conf.is_attestation_tick(tick) {
             let mut new_attestations = vec![];
             for node in &honest_nodes {
                 let head = node.harness.chain.canonical_head.cached_head();
@@ -321,7 +368,7 @@ async fn run(data: &[u8]) -> arbitrary::Result<()> {
         }
 
         // Slot start activities for the attacker.
-        if tick % TICKS_PER_SLOT == 0 && tick != 0 {
+        if conf.is_block_proposal_tick(tick) {
             hydra.update(&attacker.harness, current_epoch, &spec);
             let proposer_heads =
                 hydra.proposer_heads_at_slot(current_slot, &attacker.validators, &spec);
@@ -339,11 +386,8 @@ async fn run(data: &[u8]) -> arbitrary::Result<()> {
                 let mut selected_proposals = vec![];
 
                 u.arbitrary_loop(
-                    Some(MIN_ATTACKER_PROPOSERS_PER_SLOT),
-                    Some(std::cmp::min(
-                        MAX_ATTACKER_PROPOSERS_PER_SLOT,
-                        proposer_heads.len() as u32,
-                    )),
+                    conf.min_attacker_proposers(proposers.len()),
+                    conf.max_attacker_proposers(proposers.len()),
                     |ux| {
                         let (_, head_choices) = proposers.next().unwrap();
                         let (block_root, state_ref) = ux.choose(&head_choices)?;
