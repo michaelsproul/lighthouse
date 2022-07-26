@@ -1,9 +1,7 @@
-use beacon_chain::test_utils::{BeaconChainHarness, EphemeralHarnessType};
+use crate::TestHarness;
 use state_processing::state_advance::complete_state_advance;
 use std::collections::{BTreeMap, HashMap};
 use types::*;
-
-type TestHarness<E> = BeaconChainHarness<EphemeralHarnessType<E>>;
 
 /// For every head removed, I spawn another.
 #[derive(Default)]

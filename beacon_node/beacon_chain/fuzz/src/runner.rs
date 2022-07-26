@@ -1,0 +1,240 @@
+use crate::{Config, Hydra, Message, Node, TestHarness};
+use arbitrary::Unstructured;
+use beacon_chain::beacon_proposer_cache::compute_proposer_duties_from_head;
+use beacon_chain::slot_clock::SlotClock;
+use beacon_chain::test_utils::test_spec;
+use std::collections::VecDeque;
+use std::ops::ControlFlow;
+use std::time::Duration;
+use types::{test_utils::generate_deterministic_keypairs, *};
+
+// FIXME(sproul): add slashing protection
+pub struct Runner<'a, E: EthSpec> {
+    conf: Config,
+    honest_nodes: Vec<Node<E>>,
+    attacker: Node<E>,
+    hydra: Hydra<E>,
+    u: Unstructured<'a>,
+    time: CurrentTime,
+    all_blocks: Vec<(Hash256, Slot)>,
+    spec: ChainSpec,
+}
+
+pub struct CurrentTime {
+    tick: usize,
+    current_time: Duration,
+    tick_duration: Duration,
+}
+
+impl CurrentTime {
+    fn increment(&mut self) {
+        self.tick += 1;
+        self.current_time += self.tick_duration;
+    }
+}
+
+impl<'a, E: EthSpec> Runner<'a, E> {
+    pub fn new(
+        data: &'a [u8],
+        conf: Config,
+        get_harness: impl for<'b> Fn(&'b [Keypair]) -> TestHarness<E>,
+    ) -> Self {
+        assert!(conf.is_valid());
+
+        let u = Unstructured::new(data);
+        let spec = test_spec::<E>();
+
+        let keypairs = generate_deterministic_keypairs(conf.total_validators);
+
+        // Create honest nodes.
+        let validators_per_node = conf.honest_validators_per_node();
+        let honest_nodes = (0..conf.num_honest_nodes)
+            .map(|i| {
+                let harness = get_harness(&keypairs);
+                let validators = (i * validators_per_node..(i + 1) * validators_per_node).collect();
+                Node {
+                    harness,
+                    message_queue: VecDeque::new(),
+                    validators,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // Set up attacker values.
+        let attacker = Node {
+            harness: get_harness(&keypairs),
+            message_queue: VecDeque::new(),
+            validators: (conf.honest_validators()..conf.total_validators).collect(),
+        };
+        let hydra = Hydra::default();
+
+        // Simulation parameters.
+        let time = CurrentTime {
+            tick: 0,
+            current_time: *attacker.harness.chain.slot_clock.genesis_duration(),
+            tick_duration: conf.tick_duration(&spec),
+        };
+
+        let all_blocks = vec![(attacker.harness.head_block_root(), Slot::new(0))];
+
+        Runner {
+            conf,
+            honest_nodes,
+            attacker,
+            hydra,
+            u,
+            time,
+            all_blocks,
+            spec,
+        }
+    }
+
+    fn tick(&self) -> usize {
+        self.time.tick
+    }
+
+    async fn deliver_all_honest(&self, message: &Message<E>) {
+        for node in &self.honest_nodes {
+            node.deliver_message(message.clone()).await;
+        }
+    }
+
+    async fn deliver_all(&self, message: Message<E>) {
+        self.deliver_all_honest(&message).await;
+        self.attacker.deliver_message(message).await;
+    }
+
+    pub async fn run(&mut self) -> arbitrary::Result<()> {
+        let slots_per_epoch = E::slots_per_epoch() as usize;
+
+        // Generate events while the input is non-empty.
+        while !self.u.is_empty() {
+            let current_slot = self.attacker.harness.chain.slot_clock.now().unwrap();
+            let current_epoch = current_slot.epoch(E::slots_per_epoch());
+
+            // Slot start activities for honest nodes.
+            if self.conf.is_block_proposal_tick(self.tick()) {
+                let mut new_blocks = vec![];
+
+                // Produce block(s).
+                for node in &mut self.honest_nodes {
+                    let (proposers, _, _, _) =
+                        compute_proposer_duties_from_head(current_epoch, &node.harness.chain)
+                            .unwrap();
+                    let current_slot_proposer =
+                        proposers[current_slot.as_usize() % slots_per_epoch];
+
+                    if !node.validators.contains(&current_slot_proposer) {
+                        continue;
+                    }
+
+                    let head_state = node.harness.get_current_state();
+                    let (block, _) = node.harness.make_block(head_state, current_slot).await;
+                    new_blocks.push(block);
+                }
+
+                // New honest blocks get delivered instantly.
+                for block in new_blocks {
+                    let block_root = block.canonical_root();
+                    let slot = block.slot();
+                    self.deliver_all(Message::Block(block)).await;
+                    self.all_blocks.push((block_root, slot));
+                }
+            }
+
+            // Unaggregated attestations from the honest nodes.
+            if self.conf.is_attestation_tick(self.tick()) {
+                let mut new_attestations = vec![];
+                for node in &self.honest_nodes {
+                    let head = node.harness.chain.canonical_head.cached_head();
+                    let attestations = node.harness.make_unaggregated_attestations(
+                        &node.validators,
+                        &head.snapshot.beacon_state,
+                        head.head_state_root(),
+                        head.head_block_root().into(),
+                        current_slot,
+                    );
+                    new_attestations.extend(
+                        attestations
+                            .into_iter()
+                            .flat_map(|atts| atts.into_iter().map(|(att, _)| att)),
+                    );
+                }
+                for attestation in new_attestations {
+                    self.deliver_all(Message::Attestation(attestation)).await;
+                }
+            }
+
+            // Slot start activities for the attacker.
+            if self.conf.is_block_proposal_tick(self.tick()) {
+                self.hydra
+                    .update(&self.attacker.harness, current_epoch, &self.spec);
+                let proposer_heads = self.hydra.proposer_heads_at_slot(
+                    current_slot,
+                    &self.attacker.validators,
+                    &self.spec,
+                );
+                if self.conf.debug_logs {
+                    println!(
+                        "number of hydra heads at slot {}: {}, attacker proposers: {}",
+                        current_slot,
+                        self.hydra.num_heads(),
+                        proposer_heads.len(),
+                    );
+                }
+
+                if !proposer_heads.is_empty() {
+                    let mut proposers = proposer_heads.iter();
+                    let mut selected_proposals = vec![];
+
+                    self.u.arbitrary_loop(
+                        self.conf.min_attacker_proposers(proposers.len()),
+                        self.conf.max_attacker_proposers(proposers.len()),
+                        |ux| {
+                            let (_, head_choices) = proposers.next().unwrap();
+                            let (block_root, state_ref) = ux.choose(&head_choices)?;
+                            let state: BeaconState<E> = (*state_ref).clone();
+
+                            selected_proposals.push((block_root, state));
+                            Ok(ControlFlow::Continue(()))
+                        },
+                    )?;
+
+                    for (_parent_block_root, state) in selected_proposals {
+                        let (block, _) =
+                            self.attacker.harness.make_block(state, current_slot).await;
+
+                        // FIXME(sproul): delay delivery
+                        let block_root = block.canonical_root();
+                        let slot = block.slot();
+                        self.deliver_all(Message::Block(block)).await;
+                        self.all_blocks.push((block_root, slot));
+                    }
+                }
+            }
+
+            // Increment clock on each node and deliver messages.
+            self.time.increment();
+
+            for node in &mut self.honest_nodes {
+                node.harness
+                    .chain
+                    .slot_clock
+                    .set_current_time(self.time.current_time);
+
+                node.deliver_queued_at(self.time.tick).await;
+            }
+            self.attacker
+                .harness
+                .chain
+                .slot_clock
+                .set_current_time(self.time.current_time);
+        }
+        println!(
+            "finished a run that generated {} blocks up to slot {}",
+            self.all_blocks.len(),
+            self.all_blocks.iter().map(|(_, slot)| slot).max().unwrap()
+        );
+        Ok(())
+    }
+}
