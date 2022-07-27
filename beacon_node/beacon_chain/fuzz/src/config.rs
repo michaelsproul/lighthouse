@@ -1,3 +1,4 @@
+use crate::LogConfig;
 use std::time::Duration;
 use types::ChainSpec;
 
@@ -24,32 +25,70 @@ pub struct Config {
     /// This is meant to simulate network gossip amongst honest nodes, an attacker can't keep a
     /// message secret if the honest nodes gossip it amongst themselves.
     pub max_delay_difference: usize,
+    /// Maximum length of re-org that will be tolerated.
+    pub max_reorg_length: usize,
     pub debug_logs: bool,
 }
 
 impl Default for Config {
     fn default() -> Config {
+        Config::with_10pc_attacker()
+    }
+}
+
+impl Config {
+    pub fn with_10pc_attacker() -> Self {
         let ticks_per_slot = 3;
         let slots_per_epoch = 8;
         Config {
             num_honest_nodes: 6,
-            total_validators: 90,
-            attacker_validators: 30,
+            total_validators: 60,
+            attacker_validators: 6,
             ticks_per_slot,
             min_attacker_proposers_per_slot: 0,
             max_attacker_proposers_per_slot: 4,
             max_first_node_delay: 2 * slots_per_epoch * ticks_per_slot,
             max_delay_difference: ticks_per_slot,
-            debug_logs: false,
+            max_reorg_length: 2,
+            debug_logs: true,
         }
     }
-}
 
-impl Config {
+    pub fn with_15pc_attacker() -> Self {
+        Config {
+            num_honest_nodes: 3,
+            attacker_validators: 9,
+            ..Config::with_10pc_attacker()
+        }
+    }
+
+    pub fn with_33pc_attacker() -> Self {
+        Config {
+            num_honest_nodes: 5,
+            attacker_validators: 20,
+            ..Config::with_10pc_attacker()
+        }
+    }
+
+    pub fn with_50pc_attacker() -> Self {
+        Config {
+            num_honest_nodes: 5,
+            attacker_validators: 30,
+            ..Config::with_10pc_attacker()
+        }
+    }
+
     pub fn is_valid(&self) -> bool {
         self.ticks_per_slot % 3 == 0
             && self.honest_validators() % self.num_honest_nodes == 0
             && self.max_attacker_proposers_per_slot >= self.min_attacker_proposers_per_slot
+    }
+
+    pub fn log_config(&self) -> LogConfig {
+        LogConfig {
+            max_reorg_length: Some(self.max_reorg_length),
+            ..LogConfig::default()
+        }
     }
 
     pub fn honest_validators(&self) -> usize {

@@ -1,4 +1,5 @@
 use crate::{Message, TestHarness};
+use beacon_chain::BlockError;
 use std::collections::VecDeque;
 use types::EthSpec;
 
@@ -24,17 +25,26 @@ impl<E: EthSpec> Node<E> {
         !self.message_queue.is_empty()
     }
 
-    pub async fn deliver_message(&self, message: Message<E>) {
+    pub fn last_message_tick(&self) -> usize {
+        self.message_queue.back().map_or(0, |(tick, _)| *tick)
+    }
+
+    /// Attempt to deliver the message, returning it if is unable to be processed right now.
+    ///
+    /// Undelivered messages should be requeued to simulate the node queueing them outside the
+    /// `BeaconChain` module, or fetching them via network RPC.
+    pub async fn deliver_message(&self, message: Message<E>) -> Option<Message<E>> {
         match message {
             Message::Attestation(att) => match self.harness.process_unaggregated_attestation(att) {
-                Ok(()) => (),
-                Err(_) => (),
+                Ok(()) | Err(_) => None,
             },
             Message::Block(block) => {
-                self.harness
-                    .process_block_result(block)
-                    .await
-                    .expect("blocks should always apply");
+                match self.harness.process_block_result(block).await {
+                    Ok(_) => None,
+                    // Re-queue blocks that arrive out of order.
+                    Err(BlockError::ParentUnknown(block)) => Some(Message::Block((*block).clone())),
+                    Err(e) => panic!("unable to process block: {e:?}"),
+                }
             }
         }
     }
@@ -42,9 +52,17 @@ impl<E: EthSpec> Node<E> {
     pub async fn deliver_queued_at(&mut self, tick: usize) {
         loop {
             match self.message_queue.front() {
-                Some((message_tick, _)) if *message_tick == tick => {
+                Some((message_tick, _)) if *message_tick <= tick => {
                     let (_, message) = self.message_queue.pop_front().unwrap();
-                    self.deliver_message(message).await;
+                    if let Some(undelivered) = self.deliver_message(message).await {
+                        let requeue_tick = self.last_message_tick();
+
+                        if requeue_tick == tick {
+                            // FIXME(sproul): should break
+                            panic!();
+                        }
+                        self.queue_message(undelivered, requeue_tick);
+                    }
                 }
                 _ => break,
             }

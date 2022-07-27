@@ -1,4 +1,4 @@
-use crate::{Config, Hydra, Message, Node, TestHarness};
+use crate::{Config, Hydra, LogConfig, Message, Node, TestHarness};
 use arbitrary::Unstructured;
 use beacon_chain::beacon_proposer_cache::compute_proposer_duties_from_head;
 use beacon_chain::slot_clock::SlotClock;
@@ -37,7 +37,7 @@ impl<'a, E: EthSpec> Runner<'a, E> {
     pub fn new(
         data: &'a [u8],
         conf: Config,
-        get_harness: impl for<'b> Fn(&'b [Keypair]) -> TestHarness<E>,
+        get_harness: impl for<'b> Fn(String, LogConfig, &'b [Keypair]) -> TestHarness<E>,
     ) -> Self {
         assert!(conf.is_valid());
 
@@ -50,7 +50,9 @@ impl<'a, E: EthSpec> Runner<'a, E> {
         let validators_per_node = conf.honest_validators_per_node();
         let honest_nodes = (0..conf.num_honest_nodes)
             .map(|i| {
-                let harness = get_harness(&keypairs);
+                let id = format!("node_{i}");
+                let log_config = conf.log_config();
+                let harness = get_harness(id, log_config, &keypairs);
                 let validators = (i * validators_per_node..(i + 1) * validators_per_node).collect();
                 Node {
                     harness,
@@ -62,7 +64,7 @@ impl<'a, E: EthSpec> Runner<'a, E> {
 
         // Set up attacker values.
         let attacker = Node {
-            harness: get_harness(&keypairs),
+            harness: get_harness("attacker".into(), conf.log_config(), &keypairs),
             message_queue: VecDeque::new(),
             validators: (conf.honest_validators()..conf.total_validators).collect(),
         };

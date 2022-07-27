@@ -296,6 +296,12 @@ where
         self
     }
 
+    pub fn logger(mut self, log: Logger) -> Self {
+        // FIXME(sproul): should maybe override the runtime's logger too
+        self.log = log;
+        self
+    }
+
     /// This mutator will be run before the `store_mutator`.
     pub fn initial_mutator(mut self, mutator: BoxedMutator<E, Hot, Cold>) -> Self {
         assert!(
