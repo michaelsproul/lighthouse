@@ -13,6 +13,17 @@ pub struct Node<E: EthSpec> {
 }
 
 impl<E: EthSpec> Node<E> {
+    pub fn queue_message(&mut self, message: Message<E>, arrive_tick: usize) {
+        let insert_at = self
+            .message_queue
+            .partition_point(|&(tick, _)| tick <= arrive_tick);
+        self.message_queue.insert(insert_at, (arrive_tick, message));
+    }
+
+    pub fn has_messages_queued(&self) -> bool {
+        !self.message_queue.is_empty()
+    }
+
     pub async fn deliver_message(&self, message: Message<E>) {
         match message {
             Message::Attestation(att) => match self.harness.process_unaggregated_attestation(att) {

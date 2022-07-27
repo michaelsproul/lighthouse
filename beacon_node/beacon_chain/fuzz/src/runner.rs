@@ -93,6 +93,37 @@ impl<'a, E: EthSpec> Runner<'a, E> {
         self.time.tick
     }
 
+    fn record_block_proposal(&mut self, block: &SignedBeaconBlock<E>) {
+        let block_root = block.canonical_root();
+        let slot = block.slot();
+        self.all_blocks.push((block_root, slot));
+    }
+
+    async fn queue_all_with_random_delay(&mut self, message: Message<E>) -> arbitrary::Result<()> {
+        // Choose the delay for the message to reach the first honest node.
+        let first_node_delay = self.u.int_in_range(0..=self.conf.max_first_node_delay)?;
+
+        // Choose that node.
+        let first_node = self.u.choose_index(self.honest_nodes.len())?;
+
+        // Choose the delays for the other nodes randomly within the configured range.
+        for (i, node) in self.honest_nodes.iter_mut().enumerate() {
+            let delay = if i == first_node {
+                first_node_delay
+            } else {
+                self.u.int_in_range(
+                    first_node_delay..=first_node_delay + self.conf.max_delay_difference,
+                )?
+            };
+            node.queue_message(message.clone(), self.time.tick + delay);
+        }
+
+        // Deliver the message to the attacker's node instantly.
+        self.attacker.deliver_message(message).await;
+
+        Ok(())
+    }
+
     async fn deliver_all_honest(&self, message: &Message<E>) {
         for node in &self.honest_nodes {
             node.deliver_message(message.clone()).await;
@@ -102,6 +133,23 @@ impl<'a, E: EthSpec> Runner<'a, E> {
     async fn deliver_all(&self, message: Message<E>) {
         self.deliver_all_honest(&message).await;
         self.attacker.deliver_message(message).await;
+    }
+
+    /// Update time and deliver queued messages on all nodes.
+    async fn on_clock_advance(&mut self) {
+        for node in &mut self.honest_nodes {
+            node.harness
+                .chain
+                .slot_clock
+                .set_current_time(self.time.current_time);
+
+            node.deliver_queued_at(self.time.tick).await;
+        }
+        self.attacker
+            .harness
+            .chain
+            .slot_clock
+            .set_current_time(self.time.current_time);
     }
 
     pub async fn run(&mut self) -> arbitrary::Result<()> {
@@ -135,10 +183,8 @@ impl<'a, E: EthSpec> Runner<'a, E> {
 
                 // New honest blocks get delivered instantly.
                 for block in new_blocks {
-                    let block_root = block.canonical_root();
-                    let slot = block.slot();
+                    self.record_block_proposal(&block);
                     self.deliver_all(Message::Block(block)).await;
-                    self.all_blocks.push((block_root, slot));
                 }
             }
 
@@ -200,36 +246,37 @@ impl<'a, E: EthSpec> Runner<'a, E> {
                         },
                     )?;
 
-                    for (_parent_block_root, state) in selected_proposals {
+                    let mut new_blocks = vec![];
+
+                    for (_, state) in selected_proposals {
                         let (block, _) =
                             self.attacker.harness.make_block(state, current_slot).await;
+                        new_blocks.push(block);
+                    }
 
-                        // FIXME(sproul): delay delivery
-                        let block_root = block.canonical_root();
-                        let slot = block.slot();
-                        self.deliver_all(Message::Block(block)).await;
-                        self.all_blocks.push((block_root, slot));
+                    for block in new_blocks {
+                        self.record_block_proposal(&block);
+                        self.queue_all_with_random_delay(Message::Block(block))
+                            .await?;
                     }
                 }
             }
 
             // Increment clock on each node and deliver messages.
             self.time.increment();
-
-            for node in &mut self.honest_nodes {
-                node.harness
-                    .chain
-                    .slot_clock
-                    .set_current_time(self.time.current_time);
-
-                node.deliver_queued_at(self.time.tick).await;
-            }
-            self.attacker
-                .harness
-                .chain
-                .slot_clock
-                .set_current_time(self.time.current_time);
+            self.on_clock_advance().await;
         }
+
+        // Keep running until all message queues are empty.
+        while self
+            .honest_nodes
+            .iter()
+            .any(|node| node.has_messages_queued())
+        {
+            self.time.increment();
+            self.on_clock_advance().await;
+        }
+
         println!(
             "finished a run that generated {} blocks up to slot {}",
             self.all_blocks.len(),

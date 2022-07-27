@@ -8,18 +8,38 @@ pub struct Config {
     pub ticks_per_slot: usize,
     pub min_attacker_proposers_per_slot: usize,
     pub max_attacker_proposers_per_slot: usize,
+    /// Maximum delay in ticks before each attacker message must reach at least one honest node.
+    ///
+    /// For example if this is set to 5, then all attacker messages must be broadcast to at least
+    /// one honest node 5 ticks after they were created. They may be broadcast sooner.
+    ///
+    /// Together with `max_delay_difference`, this parameter sets the ranges on message delays:
+    ///
+    /// - `first_node_delay` in `0..=max_first_node_delay`
+    /// - `node_delay` in `first_node_delay..=first_node_delay + max_delay_difference`
+    pub max_first_node_delay: usize,
+    /// Maxmimum delay in ticks between an attacker message reaching its first honest node and its
+    /// last.
+    ///
+    /// This is meant to simulate network gossip amongst honest nodes, an attacker can't keep a
+    /// message secret if the honest nodes gossip it amongst themselves.
+    pub max_delay_difference: usize,
     pub debug_logs: bool,
 }
 
 impl Default for Config {
     fn default() -> Config {
+        let ticks_per_slot = 3;
+        let slots_per_epoch = 8;
         Config {
             num_honest_nodes: 6,
             total_validators: 90,
             attacker_validators: 30,
-            ticks_per_slot: 3,
+            ticks_per_slot,
             min_attacker_proposers_per_slot: 0,
             max_attacker_proposers_per_slot: 4,
+            max_first_node_delay: 2 * slots_per_epoch * ticks_per_slot,
+            max_delay_difference: ticks_per_slot,
             debug_logs: false,
         }
     }
