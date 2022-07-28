@@ -105,6 +105,10 @@ impl<E: EthSpec> Hydra<E> {
         self.states.len()
     }
 
+    pub fn block_is_viable(&self, block_root: &Hash256) -> bool {
+        self.states.contains_key(block_root)
+    }
+
     pub fn proposer_heads_at_slot(
         &self,
         slot: Slot,

@@ -52,9 +52,10 @@ impl<'a, E: EthSpec> Runner<'a, E> {
             .map(|i| {
                 let id = format!("node_{i}");
                 let log_config = conf.log_config();
-                let harness = get_harness(id, log_config, &keypairs);
+                let harness = get_harness(id.clone(), log_config, &keypairs);
                 let validators = (i * validators_per_node..(i + 1) * validators_per_node).collect();
                 Node {
+                    id,
                     harness,
                     message_queue: VecDeque::new(),
                     validators,
@@ -63,8 +64,10 @@ impl<'a, E: EthSpec> Runner<'a, E> {
             .collect::<Vec<_>>();
 
         // Set up attacker values.
+        let attacker_id = "attacker".to_string();
         let attacker = Node {
-            harness: get_harness("attacker".into(), conf.log_config(), &keypairs),
+            id: attacker_id.clone(),
+            harness: get_harness(attacker_id, conf.log_config(), &keypairs),
             message_queue: VecDeque::new(),
             validators: (conf.honest_validators()..conf.total_validators).collect(),
         };
@@ -93,6 +96,14 @@ impl<'a, E: EthSpec> Runner<'a, E> {
 
     fn tick(&self) -> usize {
         self.time.tick
+    }
+
+    fn current_slot(&self) -> Slot {
+        self.attacker.harness.chain.slot_clock.now().unwrap()
+    }
+
+    fn current_epoch(&self) -> Epoch {
+        self.current_slot().epoch(E::slots_per_epoch())
     }
 
     fn record_block_proposal(&mut self, block: &SignedBeaconBlock<E>) {
@@ -139,13 +150,21 @@ impl<'a, E: EthSpec> Runner<'a, E> {
 
     /// Update time and deliver queued messages on all nodes.
     async fn on_clock_advance(&mut self) {
+        // Update the Hydra as we use it to determine block viability.
+        let current_epoch = self.current_epoch();
+        self.hydra
+            .update(&self.attacker.harness, current_epoch, &self.spec);
+
         for node in &mut self.honest_nodes {
             node.harness
                 .chain
                 .slot_clock
                 .set_current_time(self.time.current_time);
 
-            node.deliver_queued_at(self.time.tick).await;
+            node.deliver_queued_at(self.time.tick, |block_root| {
+                self.hydra.block_is_viable(&block_root)
+            })
+            .await;
         }
         self.attacker
             .harness
@@ -159,8 +178,8 @@ impl<'a, E: EthSpec> Runner<'a, E> {
 
         // Generate events while the input is non-empty.
         while !self.u.is_empty() {
-            let current_slot = self.attacker.harness.chain.slot_clock.now().unwrap();
-            let current_epoch = current_slot.epoch(E::slots_per_epoch());
+            let current_slot = self.current_slot();
+            let current_epoch = self.current_epoch();
 
             // Slot start activities for honest nodes.
             if self.conf.is_block_proposal_tick(self.tick()) {

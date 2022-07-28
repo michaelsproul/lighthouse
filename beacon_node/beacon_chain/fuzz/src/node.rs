@@ -1,9 +1,10 @@
 use crate::{Message, TestHarness};
 use beacon_chain::BlockError;
 use std::collections::VecDeque;
-use types::EthSpec;
+use types::{EthSpec, Hash256};
 
 pub struct Node<E: EthSpec> {
+    pub id: String,
     pub harness: TestHarness<E>,
     /// Queue of ordered `(tick, message)` pairs.
     ///
@@ -25,8 +26,10 @@ impl<E: EthSpec> Node<E> {
         !self.message_queue.is_empty()
     }
 
-    pub fn last_message_tick(&self) -> usize {
-        self.message_queue.back().map_or(0, |(tick, _)| *tick)
+    pub fn last_message_tick(&self, current_tick: usize) -> usize {
+        self.message_queue
+            .back()
+            .map_or(current_tick, |(tick, _)| *tick)
     }
 
     /// Attempt to deliver the message, returning it if is unable to be processed right now.
@@ -49,19 +52,21 @@ impl<E: EthSpec> Node<E> {
         }
     }
 
-    pub async fn deliver_queued_at(&mut self, tick: usize) {
+    pub async fn deliver_queued_at(
+        &mut self,
+        tick: usize,
+        block_is_viable: impl Fn(Hash256) -> bool + Copy,
+    ) {
         loop {
             match self.message_queue.front() {
                 Some((message_tick, _)) if *message_tick <= tick => {
                     let (_, message) = self.message_queue.pop_front().unwrap();
-                    if let Some(undelivered) = self.deliver_message(message).await {
-                        let requeue_tick = self.last_message_tick();
 
-                        if requeue_tick == tick {
-                            // FIXME(sproul): should break
-                            panic!();
+                    if let Some(undelivered) = self.deliver_message(message).await {
+                        if undelivered.block_root().map_or(false, block_is_viable) {
+                            let requeue_tick = self.last_message_tick(tick);
+                            self.queue_message(undelivered, requeue_tick);
                         }
-                        self.queue_message(undelivered, requeue_tick);
                     }
                 }
                 _ => break,
