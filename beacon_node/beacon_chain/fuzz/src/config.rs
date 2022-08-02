@@ -27,12 +27,31 @@ pub struct Config {
     pub max_delay_difference: usize,
     /// Maximum length of re-org that will be tolerated.
     pub max_reorg_length: usize,
-    pub debug_logs: bool,
+    pub debug: DebugConfig,
+}
+
+pub struct DebugConfig {
+    /// Log the number of hydra heads.
+    pub num_hydra_heads: bool,
+    /// Log each block proposal as it occurs.
+    pub block_proposals: bool,
+    /// Log each proposal by the attacker.
+    pub attacker_proposals: bool,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config::with_10pc_attacker()
+        Config::with_15pc_attacker()
+    }
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        DebugConfig {
+            num_hydra_heads: true,
+            block_proposals: false,
+            attacker_proposals: false,
+        }
     }
 }
 
@@ -41,7 +60,7 @@ impl Config {
         let ticks_per_slot = 3;
         let slots_per_epoch = 8;
         Config {
-            num_honest_nodes: 6,
+            num_honest_nodes: 3,
             total_validators: 60,
             attacker_validators: 6,
             ticks_per_slot,
@@ -50,7 +69,7 @@ impl Config {
             max_first_node_delay: 2 * slots_per_epoch * ticks_per_slot,
             max_delay_difference: ticks_per_slot,
             max_reorg_length: 2,
-            debug_logs: true,
+            debug: DebugConfig::default(),
         }
     }
 
@@ -64,7 +83,7 @@ impl Config {
 
     pub fn with_33pc_attacker() -> Self {
         Config {
-            num_honest_nodes: 5,
+            num_honest_nodes: 4,
             attacker_validators: 20,
             ..Config::with_10pc_attacker()
         }
@@ -72,7 +91,7 @@ impl Config {
 
     pub fn with_50pc_attacker() -> Self {
         Config {
-            num_honest_nodes: 5,
+            num_honest_nodes: 3,
             attacker_validators: 30,
             ..Config::with_10pc_attacker()
         }

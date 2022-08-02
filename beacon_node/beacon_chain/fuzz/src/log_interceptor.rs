@@ -57,16 +57,15 @@ impl Drain for LogInterceptor {
         if let (Some(reorg_limit), Level::Warning) = (self.conf.max_reorg_length, record.level()) {
             let message = format!("{}", record.msg());
             if message == "Beacon chain re-org" {
-                let mut snooper = UsizeSnooper::new("reorg_distance");
+                let mut snooper = ReorgSnooper::default();
                 record.kv().serialize(record, &mut snooper).unwrap();
-                let distance = snooper
-                    .value
-                    .expect("should extract value for reorg_distance");
+
+                let (prev_head, new_head, distance) = snooper.unwrap();
 
                 if distance > reorg_limit {
                     panic!(
-                        "{} experienced a re-org of length {} (> {})",
-                        self.id, distance, reorg_limit
+                        "{} experienced a re-org of length {} (> {}) from {} to {}",
+                        self.id, distance, reorg_limit, prev_head, new_head
                     );
                 }
             }
@@ -77,25 +76,36 @@ impl Drain for LogInterceptor {
 }
 
 /// Serializer to snoop on a logged usize value.
-pub struct UsizeSnooper {
-    key: &'static str,
-    value: Option<usize>,
+#[derive(Default)]
+pub struct ReorgSnooper {
+    previous_head: Option<String>,
+    new_head: Option<String>,
+    reorg_distance: Option<usize>,
 }
 
-impl UsizeSnooper {
-    pub fn new(key: &'static str) -> Self {
-        Self { key, value: None }
+impl ReorgSnooper {
+    fn unwrap(self) -> (String, String, usize) {
+        (
+            self.previous_head.unwrap(),
+            self.new_head.unwrap(),
+            self.reorg_distance.unwrap(),
+        )
     }
 }
 
-impl Serializer for UsizeSnooper {
-    fn emit_arguments(&mut self, _: Key, _: &Arguments) -> slog::Result {
+impl Serializer for ReorgSnooper {
+    fn emit_arguments(&mut self, key: Key, args: &Arguments) -> slog::Result {
+        if key == "previous_head" {
+            self.previous_head = Some(args.to_string());
+        } else if key == "new_head" {
+            self.new_head = Some(args.to_string());
+        }
         Ok(())
     }
 
     fn emit_usize(&mut self, key: Key, value: usize) -> slog::Result {
-        if key == self.key {
-            self.value = Some(value);
+        if key == "reorg_distance" {
+            self.reorg_distance = Some(value);
         }
         Ok(())
     }

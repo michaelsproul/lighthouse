@@ -109,6 +109,14 @@ impl<'a, E: EthSpec> Runner<'a, E> {
     fn record_block_proposal(&mut self, block: &SignedBeaconBlock<E>) {
         let block_root = block.canonical_root();
         let slot = block.slot();
+        if self.conf.debug.block_proposals {
+            println!(
+                "block {:?} @ slot {}, parent: {:?}",
+                block_root,
+                slot,
+                block.parent_root()
+            );
+        }
         self.all_blocks.push((block_root, slot));
     }
 
@@ -241,7 +249,7 @@ impl<'a, E: EthSpec> Runner<'a, E> {
                     &self.attacker.validators,
                     &self.spec,
                 );
-                if self.conf.debug_logs {
+                if self.conf.debug.num_hydra_heads {
                     println!(
                         "number of hydra heads at slot {}: {}, attacker proposers: {}",
                         current_slot,
@@ -272,6 +280,14 @@ impl<'a, E: EthSpec> Runner<'a, E> {
                     for (_, state) in selected_proposals {
                         let (block, _) =
                             self.attacker.harness.make_block(state, current_slot).await;
+                        if self.conf.debug.attacker_proposals {
+                            println!(
+                                "attacker proposed block {:?} at slot {} atop {:?}",
+                                block.canonical_root(),
+                                current_slot,
+                                block.parent_root(),
+                            );
+                        }
                         new_blocks.push(block);
                     }
 

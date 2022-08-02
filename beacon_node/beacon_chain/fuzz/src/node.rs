@@ -1,7 +1,9 @@
 use crate::{Message, TestHarness};
-use beacon_chain::BlockError;
+use beacon_chain::{AttestationError, BlockError};
 use std::collections::VecDeque;
 use types::{EthSpec, Hash256};
+
+const LOG_BLOCK_DELIVERY: bool = false;
 
 pub struct Node<E: EthSpec> {
     pub id: String,
@@ -38,14 +40,26 @@ impl<E: EthSpec> Node<E> {
     /// `BeaconChain` module, or fetching them via network RPC.
     pub async fn deliver_message(&self, message: Message<E>) -> Option<Message<E>> {
         match message {
-            Message::Attestation(att) => match self.harness.process_unaggregated_attestation(att) {
-                Ok(()) | Err(_) => None,
+            Message::Attestation(att) => match self
+                .harness
+                .process_unaggregated_attestation(att.clone())
+            {
+                Ok(()) => None,
+                // Re-queue attestations for which the head block is not yet known.
+                Err(AttestationError::UnknownHeadBlock { .. }) => Some(Message::Attestation(att)),
+                Err(e) => panic!("unable to deliver attestation: {e:?}"),
             },
             Message::Block(block) => {
                 match self.harness.process_block_result(block).await {
                     Ok(_) => None,
                     // Re-queue blocks that arrive out of order.
                     Err(BlockError::ParentUnknown(block)) => Some(Message::Block((*block).clone())),
+                    // If a block arrives after the node has already finalized a conflicting block
+                    // then it is useless and doesn't need to be reprocessed.
+                    Err(
+                        BlockError::WouldRevertFinalizedSlot { .. }
+                        | BlockError::NotFinalizedDescendant { .. },
+                    ) => None,
                     Err(e) => panic!("unable to process block: {e:?}"),
                 }
             }
@@ -62,11 +76,19 @@ impl<E: EthSpec> Node<E> {
                 Some((message_tick, _)) if *message_tick <= tick => {
                     let (_, message) = self.message_queue.pop_front().unwrap();
 
+                    let is_block = message.is_block();
+                    let block_root = message.block_root();
+
                     if let Some(undelivered) = self.deliver_message(message).await {
-                        if undelivered.block_root().map_or(false, block_is_viable) {
+                        if block_is_viable(block_root) {
                             let requeue_tick = self.last_message_tick(tick);
                             self.queue_message(undelivered, requeue_tick);
                         }
+                    } else if is_block && LOG_BLOCK_DELIVERY {
+                        println!(
+                            "{}: processed block {:?} at tick {}",
+                            self.id, block_root, tick
+                        );
                     }
                 }
                 _ => break,

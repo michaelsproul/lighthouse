@@ -29,9 +29,13 @@ fuzz_target!(|data: &[u8]| {
 
     let mut runner = Runner::new(data, config, get_harness);
 
-    if let Err(arbitrary::Error::EmptyChoose | arbitrary::Error::IncorrectFormat) =
-        rt.block_on(async move { runner.run().await })
-    {
-        panic!("bad arbitrary usage");
+    match rt.block_on(async move { runner.run().await }) {
+        Ok(()) => (),
+        Err(arbitrary::Error::NotEnoughData) => {
+            println!("aborted run due to lack of entropy");
+        }
+        Err(_) => {
+            panic!("bad arbitrary usage");
+        }
     }
 });
