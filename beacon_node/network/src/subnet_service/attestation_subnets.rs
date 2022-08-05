@@ -162,7 +162,7 @@ impl<T: BeaconChainTypes> AttestationService<T> {
 
             // Registers the validator with the attestation service.
             // This will subscribe to long-lived random subnets if required.
-            trace!(self.log,
+            debug!(self.log,
                 "Validator subscription";
                 "subscription" => ?subscription,
             );
