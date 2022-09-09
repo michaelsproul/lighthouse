@@ -213,7 +213,7 @@ impl<E: EthSpec> mev_build_rs::BlindedBlockProvider for MockBuilder<E> {
         let cached_data = signed_cached_data.message;
         let fee_recipient = from_ssz_rs(&cached_data.fee_recipient)?;
 
-        let (payload_attributes, forkchoice_update_params) =
+        let (payload_attributes, forkchoice_update_params, _block_number) =
             get_params::<E>(&self.beacon_client, bid_request, fee_recipient, &self.spec).await?;
 
         let val_index = self
@@ -301,7 +301,7 @@ pub async fn get_params<E: EthSpec>(
     bid_request: &BidRequest,
     fee_recipient: Address,
     spec: &ChainSpec,
-) -> Result<(PayloadAttributes, ForkchoiceUpdateParameters), BlindedBlockProviderError> {
+) -> Result<(PayloadAttributes, ForkchoiceUpdateParameters, u64), BlindedBlockProviderError> {
     let slot = Slot::new(bid_request.slot);
 
     let head = beacon_client
@@ -362,6 +362,11 @@ pub async fn get_params<E: EthSpec>(
         .map_err(convert_err)?
         .ok_or_else(|| BlindedBlockProviderError::Custom("missing head state".to_string()))?
         .data;
+    let block_number = head_state
+        .latest_execution_payload_header()
+        .unwrap()
+        .block_number
+        + 1;
     let prev_randao = head_state
         .get_randao_mix(head_state.current_epoch())
         .map_err(convert_err)?;
@@ -378,7 +383,7 @@ pub async fn get_params<E: EthSpec>(
         justified_hash: Some(justified_execution_hash),
         finalized_hash: Some(finalized_execution_hash),
     };
-    Ok((payload_attributes, forkchoice_update_params))
+    Ok((payload_attributes, forkchoice_update_params, block_number))
 }
 
 pub fn from_ssz_rs<T: SimpleSerialize, U: Decode>(
