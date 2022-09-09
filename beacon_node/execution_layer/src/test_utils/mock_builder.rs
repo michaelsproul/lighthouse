@@ -384,6 +384,6 @@ pub fn to_ssz_rs<T: Encode, U: SimpleSerialize>(
     ssz_rs::deserialize::<U>(&ssz_data.as_ssz_bytes()).map_err(convert_err)
 }
 
-fn convert_err<E: Debug>(e: E) -> BlindedBlockProviderError {
+pub fn convert_err<E: Debug>(e: E) -> BlindedBlockProviderError {
     BlindedBlockProviderError::Custom(format!("{e:?}"))
 }
