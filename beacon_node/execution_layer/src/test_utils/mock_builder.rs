@@ -169,6 +169,10 @@ impl<E: EthSpec> MockBuilder<E> {
         }
         Ok(())
     }
+
+    pub fn pubkey(&self) -> BlsPublicKey {
+        self.builder_sk.public_key()
+    }
 }
 
 #[async_trait]
