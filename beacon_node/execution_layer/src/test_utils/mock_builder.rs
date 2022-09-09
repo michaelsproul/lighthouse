@@ -211,51 +211,10 @@ impl<E: EthSpec> mev_build_rs::BlindedBlockProvider for MockBuilder<E> {
             .ok_or_else(|| convert_err("missing registration"))?
             .clone();
         let cached_data = signed_cached_data.message;
+        let fee_recipient = from_ssz_rs(&cached_data.fee_recipient)?;
 
-        let head = self
-            .beacon_client
-            .get_beacon_blocks::<E>(BlockId::Head)
-            .await
-            .map_err(convert_err)?
-            .ok_or_else(|| convert_err("missing head block"))?;
-
-        let block = head.data.message_merge().map_err(convert_err)?;
-        let head_block_root = block.tree_hash_root();
-        let head_execution_hash = block.body.execution_payload.execution_payload.block_hash;
-        if head_execution_hash != from_ssz_rs(&bid_request.parent_hash)? {
-            return Err(BlindedBlockProviderError::Custom(format!(
-                "head mismatch: {} {}",
-                head_execution_hash, bid_request.parent_hash
-            )));
-        }
-
-        let finalized_execution_hash = self
-            .beacon_client
-            .get_beacon_blocks::<E>(BlockId::Finalized)
-            .await
-            .map_err(convert_err)?
-            .ok_or_else(|| convert_err("missing finalized block"))?
-            .data
-            .message_merge()
-            .map_err(convert_err)?
-            .body
-            .execution_payload
-            .execution_payload
-            .block_hash;
-
-        let justified_execution_hash = self
-            .beacon_client
-            .get_beacon_blocks::<E>(BlockId::Justified)
-            .await
-            .map_err(convert_err)?
-            .ok_or_else(|| convert_err("missing finalized block"))?
-            .data
-            .message_merge()
-            .map_err(convert_err)?
-            .body
-            .execution_payload
-            .execution_payload
-            .block_hash;
+        let (payload_attributes, forkchoice_update_params) =
+            get_params::<E>(&self.beacon_client, bid_request, fee_recipient, &self.spec).await?;
 
         let val_index = self
             .beacon_client
@@ -268,52 +227,22 @@ impl<E: EthSpec> mev_build_rs::BlindedBlockProvider for MockBuilder<E> {
             .ok_or_else(|| convert_err("missing validator from state"))?
             .data
             .index;
-        let fee_recipient = from_ssz_rs(&cached_data.fee_recipient)?;
-        let slots_since_genesis = slot.as_u64() - self.spec.genesis_slot.as_u64();
-
-        let genesis_time = self
-            .beacon_client
-            .get_beacon_genesis()
-            .await
-            .map_err(convert_err)?
-            .data
-            .genesis_time;
-        let timestamp = (slots_since_genesis * self.spec.seconds_per_slot) + genesis_time;
-
-        let head_state: BeaconState<E> = self
-            .beacon_client
-            .get_debug_beacon_states(StateId::Head)
-            .await
-            .map_err(convert_err)?
-            .ok_or_else(|| BlindedBlockProviderError::Custom("missing head state".to_string()))?
-            .data;
-        let prev_randao = head_state
-            .get_randao_mix(head_state.current_epoch())
-            .map_err(convert_err)?;
-
-        let payload_attributes = PayloadAttributes {
-            timestamp,
-            prev_randao: *prev_randao,
-            suggested_fee_recipient: fee_recipient,
-        };
 
         self.el
-            .insert_proposer(slot, head_block_root, val_index, payload_attributes)
+            .insert_proposer(
+                slot,
+                forkchoice_update_params.head_root,
+                val_index,
+                payload_attributes,
+            )
             .await;
-
-        let forkchoice_update_params = ForkchoiceUpdateParameters {
-            head_root: Hash256::zero(),
-            head_hash: None,
-            justified_hash: Some(justified_execution_hash),
-            finalized_hash: Some(finalized_execution_hash),
-        };
 
         let payload = self
             .el
             .get_full_payload_caching::<BlindedPayload<E>>(
-                head_execution_hash,
-                timestamp,
-                *prev_randao,
+                forkchoice_update_params.head_hash.unwrap(),
+                payload_attributes.timestamp,
+                payload_attributes.prev_randao,
                 fee_recipient,
                 forkchoice_update_params,
             )
@@ -365,6 +294,91 @@ impl<E: EthSpec> mev_build_rs::BlindedBlockProvider for MockBuilder<E> {
         let json_payload = serde_json::to_string(&payload).map_err(convert_err)?;
         serde_json::from_str(json_payload.as_str()).map_err(convert_err)
     }
+}
+
+pub async fn get_params<E: EthSpec>(
+    beacon_client: &BeaconNodeHttpClient,
+    bid_request: &BidRequest,
+    fee_recipient: Address,
+    spec: &ChainSpec,
+) -> Result<(PayloadAttributes, ForkchoiceUpdateParameters), BlindedBlockProviderError> {
+    let slot = Slot::new(bid_request.slot);
+
+    let head = beacon_client
+        .get_beacon_blocks::<E>(BlockId::Head)
+        .await
+        .map_err(convert_err)?
+        .ok_or_else(|| convert_err("missing head block"))?;
+
+    let block = head.data.message_merge().map_err(convert_err)?;
+    let head_block_root = block.tree_hash_root();
+    let head_execution_hash = block.body.execution_payload.execution_payload.block_hash;
+    if head_execution_hash != from_ssz_rs(&bid_request.parent_hash)? {
+        return Err(BlindedBlockProviderError::Custom(format!(
+            "head mismatch: {} {}",
+            head_execution_hash, bid_request.parent_hash
+        )));
+    }
+
+    let finalized_execution_hash = beacon_client
+        .get_beacon_blocks::<E>(BlockId::Finalized)
+        .await
+        .map_err(convert_err)?
+        .ok_or_else(|| convert_err("missing finalized block"))?
+        .data
+        .message_merge()
+        .map_err(convert_err)?
+        .body
+        .execution_payload
+        .execution_payload
+        .block_hash;
+
+    let justified_execution_hash = beacon_client
+        .get_beacon_blocks::<E>(BlockId::Justified)
+        .await
+        .map_err(convert_err)?
+        .ok_or_else(|| convert_err("missing finalized block"))?
+        .data
+        .message_merge()
+        .map_err(convert_err)?
+        .body
+        .execution_payload
+        .execution_payload
+        .block_hash;
+
+    let slots_since_genesis = slot.as_u64() - spec.genesis_slot.as_u64();
+
+    let genesis_time = beacon_client
+        .get_beacon_genesis()
+        .await
+        .map_err(convert_err)?
+        .data
+        .genesis_time;
+    let timestamp = (slots_since_genesis * spec.seconds_per_slot) + genesis_time;
+
+    let head_state: BeaconState<E> = beacon_client
+        .get_debug_beacon_states(StateId::Head)
+        .await
+        .map_err(convert_err)?
+        .ok_or_else(|| BlindedBlockProviderError::Custom("missing head state".to_string()))?
+        .data;
+    let prev_randao = head_state
+        .get_randao_mix(head_state.current_epoch())
+        .map_err(convert_err)?;
+
+    let payload_attributes = PayloadAttributes {
+        timestamp,
+        prev_randao: *prev_randao,
+        suggested_fee_recipient: fee_recipient,
+    };
+
+    let forkchoice_update_params = ForkchoiceUpdateParameters {
+        head_root: head_block_root,
+        head_hash: Some(head_execution_hash),
+        justified_hash: Some(justified_execution_hash),
+        finalized_hash: Some(finalized_execution_hash),
+    };
+    Ok((payload_attributes, forkchoice_update_params))
 }
 
 pub fn from_ssz_rs<T: SimpleSerialize, U: Decode>(
