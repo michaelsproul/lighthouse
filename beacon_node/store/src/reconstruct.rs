@@ -162,4 +162,80 @@ where
 
         Ok(())
     }
+
+    /// Delete all restore points and update the anchor
+    pub fn unindex(&self) -> Result<(), Error> {
+        info!(self.log, "Deleting historic states");
+
+        // Hold locks on the split and the anchor while this is running. We shold be running
+        // in a `lighthouse db` sub-command so there shouldn't be any concurrent threads competing
+        // for these locks.
+        let mut split = self.split.read();
+        let mut anchor = self.anchor.write();
+        let slots_per_restore_point = self.config.slots_per_restore_point;
+
+        // 1. Update the anchor. In case of an early exit or crash we will forget the historic
+        // states on disk (wasted space).
+        let new_state_upper_limit =
+            Self::next_restore_point_slot(split.slot, slots_per_restore_point);
+        match anchor {
+            // State reconstruction or backfill was incomplete, bump the state upper limit.
+            Some(anchor) => {
+                anchor.state_upper_limit = new_state_upper_limit;
+            }
+            // State reconstruction was complete, create a new anchor indicating that it isn't
+            // any more.
+            None => {
+                *anchor = Some(AnchorInfo {
+                    anchor_slot: split.slot,
+                    oldest_block_slot: Slot::new(0),
+                    oldest_block_parent: Hash256::zero(),
+                    state_upper_limit: new_state_upper_limit,
+                    state_lower_limit: Slot::new(0),
+                });
+            }
+        }
+        self.hot_db
+            .do_atomically(vec![self.store_anchor_info_in_batch(*anchor)])?;
+        info!(self.log, "Re-wrote anchor");
+
+        // 2. Delete all finalized states except the gensis state.
+        let batch_size = 64;
+
+        loop {
+            let mut batch = vec![];
+
+            for res in self.cold_db.iter_column_keys(DBColumn::BeaconRestorePoint) {
+                let key = res?;
+
+                // Don't delete genesis state.
+                if !key.is_zero() {
+                    let db_key =
+                        get_key_for_col(DBColumn::BeaconRestorePoint.into(), key.as_bytes());
+                    batch.push(KeyValueStoreOp::DeleteKey(db_key));
+                }
+
+                if batch.len() >= batch_size {
+                    break;
+                }
+            }
+
+            if batch.is_empty() {
+                info!(
+                    self.log, "Finished deleting restore points");
+                );
+                break;
+            } else {
+                info!(
+                    self.log,
+                    "Deleting restore points";
+                    "count" => batch.len(),
+                );
+                self.cold_db.do_atomically(batch)?;
+            }
+        }
+
+        // 3. Delete other columns.
+        Ok(())
+    }
 }

@@ -1141,11 +1141,8 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
 
         // Set the `state_upper_limit` to the slot of the *next* restore point.
         // See `get_state_upper_limit` for rationale.
-        let next_restore_point_slot = if anchor_slot % slots_per_restore_point == 0 {
-            anchor_slot
-        } else {
-            (anchor_slot / slots_per_restore_point + 1) * slots_per_restore_point
-        };
+        let next_restore_point_slot =
+            Self::next_restore_point_slot(anchor_slot, slots_per_restore_point);
         let anchor_info = AnchorInfo {
             anchor_slot,
             oldest_block_slot: anchor_slot,
@@ -1154,6 +1151,15 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             state_lower_limit: self.spec.genesis_slot,
         };
         self.compare_and_set_anchor_info(None, Some(anchor_info))
+    }
+
+    /// Get the slot of next restore point immediately after `slot`.
+    pub fn next_restore_point_slot(slot: Slot, slots_per_restore_point: u64) -> Slot {
+        if slot % slots_per_restore_point == 0 {
+            slot
+        } else {
+            (slot / slots_per_restore_point + 1) * slots_per_restore_point
+        }
     }
 
     /// Get a clone of the store's anchor info.
@@ -1312,7 +1318,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     }
 
     /// Convert a `restore_point_index` into a database key.
-    fn restore_point_key(restore_point_index: u64) -> Hash256 {
+    pub(crate) fn restore_point_key(restore_point_index: u64) -> Hash256 {
         Hash256::from_low_u64_be(restore_point_index)
     }
 
