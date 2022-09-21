@@ -28,18 +28,29 @@ pub struct Sender<T>(Arc<MutexCondvar<T>>, Option<Arc<()>>);
 
 impl<T> Sender<T> {
     /// Send a message, consuming `self` and delivering the message to *all* receivers.
-    pub fn send(self, item: T) {
-        *self.0.mutex.lock() = Future::Ready(item);
-        // Condvar notification will be handled by the `Drop` implementation.
+    pub fn send(mut self, item: T) {
+        let mut lock = self.0.mutex.lock();
+        *lock = Future::Ready(item);
+
+        // Drop the `Arc` immediately to decrement its reference count. This ensures that any
+        // waiting threads fail to upgrade their `Weak` references and do not try to wait forever.
+        drop(self.1.take());
+
+        // Send the condvar notification while the lock is held, to prevent a race condition.
+        self.0.condvar.notify_all();
+        drop(lock);
     }
 }
 
 impl<T> Drop for Sender<T> {
-    /// Drop the `Arc` and notify all receivers so they can't upgrade their `Weak`s and know that
-    /// the sender has been dropped.
     fn drop(&mut self) {
-        self.1 = None;
-        self.0.condvar.notify_all();
+        // We never ran `send`, obtain the lock and send the notification.
+        if self.1.is_some() {
+            let lock = self.0.mutex.lock();
+            drop(self.1.take());
+            self.0.condvar.notify_all();
+            drop(lock);
+        }
     }
 }
 
