@@ -11,6 +11,7 @@ pub enum ForkName {
     Base,
     Altair,
     Merge,
+    Capella,
 }
 
 impl ForkName {

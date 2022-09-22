@@ -28,6 +28,7 @@ pub mod beacon_block_body;
 pub mod beacon_block_header;
 pub mod beacon_committee;
 pub mod beacon_state;
+pub mod bls_to_execution_change;
 pub mod builder_bid;
 pub mod chain_spec;
 pub mod checkpoint;
@@ -58,6 +59,7 @@ pub mod shuffling_id;
 pub mod signed_aggregate_and_proof;
 pub mod signed_beacon_block;
 pub mod signed_beacon_block_header;
+pub mod signed_bls_to_execution_change;
 pub mod signed_contribution_and_proof;
 pub mod signed_voluntary_exit;
 pub mod signing_data;
@@ -66,6 +68,7 @@ pub mod sync_duty;
 pub mod validator;
 pub mod validator_subscription;
 pub mod voluntary_exit;
+pub mod withdrawal;
 #[macro_use]
 pub mod slot_epoch_macros;
 pub mod config_and_preset;
@@ -108,6 +111,7 @@ pub use crate::beacon_block_body::{
 pub use crate::beacon_block_header::BeaconBlockHeader;
 pub use crate::beacon_committee::{BeaconCommittee, OwnedBeaconCommittee};
 pub use crate::beacon_state::{BeaconTreeHashCache, Error as BeaconStateError, *};
+pub use crate::bls_to_execution_change::BlsToExecutionChange;
 pub use crate::chain_spec::{ChainSpec, Config, Domain};
 pub use crate::checkpoint::Checkpoint;
 pub use crate::config_and_preset::{
@@ -147,6 +151,7 @@ pub use crate::signed_beacon_block::{
     SignedBeaconBlockMerge, SignedBlindedBeaconBlock,
 };
 pub use crate::signed_beacon_block_header::SignedBeaconBlockHeader;
+pub use crate::signed_bls_to_execution_change::SignedBlsToExecutionChange;
 pub use crate::signed_contribution_and_proof::SignedContributionAndProof;
 pub use crate::signed_voluntary_exit::SignedVoluntaryExit;
 pub use crate::signing_data::{SignedRoot, SigningData};
@@ -165,6 +170,7 @@ pub use crate::validator::Validator;
 pub use crate::validator_registration_data::*;
 pub use crate::validator_subscription::ValidatorSubscription;
 pub use crate::voluntary_exit::VoluntaryExit;
+pub use crate::withdrawal::Withdrawal;
 
 pub type CommitteeIndex = u64;
 pub type Hash256 = H256;

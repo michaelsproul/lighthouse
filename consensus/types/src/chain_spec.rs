@@ -22,6 +22,7 @@ pub enum Domain {
     ContributionAndProof,
     SyncCommitteeSelectionProof,
     ApplicationMask(ApplicationDomain),
+    BlsToExecutionChange,
 }
 
 /// Lighthouse's internal configuration struct.
@@ -151,6 +152,13 @@ pub struct ChainSpec {
     pub safe_slots_to_import_optimistically: u64,
 
     /*
+     * Capella hard fork params
+     */
+    pub capella_fork_version: [u8; 4],
+    /// The Capella fork epoch is optional, with `None` representing "Merge never happens".
+    pub capella_fork_epoch: Option<Epoch>,
+
+    /*
      * Networking
      */
     pub boot_nodes: Vec<String>,
@@ -166,6 +174,11 @@ pub struct ChainSpec {
      * Application params
      */
     pub(crate) domain_application_mask: u32,
+
+    /*
+     * Capella params
+     */
+    pub(crate) domain_bls_to_execution_change: u32,
 }
 
 impl ChainSpec {
@@ -245,6 +258,7 @@ impl ChainSpec {
             ForkName::Base => self.genesis_fork_version,
             ForkName::Altair => self.altair_fork_version,
             ForkName::Merge => self.bellatrix_fork_version,
+            ForkName::Capella => self.capella_fork_version,
         }
     }
 
@@ -254,6 +268,7 @@ impl ChainSpec {
             ForkName::Base => Some(Epoch::new(0)),
             ForkName::Altair => self.altair_fork_epoch,
             ForkName::Merge => self.bellatrix_fork_epoch,
+            ForkName::Capella => self.capella_fork_epoch,
         }
     }
 
@@ -334,6 +349,7 @@ impl ChainSpec {
             Domain::ContributionAndProof => self.domain_contribution_and_proof,
             Domain::SyncCommitteeSelectionProof => self.domain_sync_committee_selection_proof,
             Domain::ApplicationMask(application_domain) => application_domain.get_domain_constant(),
+            Domain::BlsToExecutionChange => self.domain_bls_to_execution_change,
         }
     }
 
@@ -569,6 +585,12 @@ impl ChainSpec {
             safe_slots_to_import_optimistically: 128u64,
 
             /*
+             * Capella hard fork params
+             */
+            capella_fork_version: [0x03, 00, 00, 00],
+            capella_fork_epoch: Some(Epoch::new(18446744073709551615)),
+
+            /*
              * Network specific
              */
             boot_nodes: vec![],
@@ -584,6 +606,11 @@ impl ChainSpec {
              * Application specific
              */
             domain_application_mask: APPLICATION_DOMAIN_BUILDER,
+
+            /*
+             * Capella params
+             */
+            domain_bls_to_execution_change: 10,
         }
     }
 
@@ -623,6 +650,9 @@ impl ChainSpec {
                 // `Uint256::MAX` which is `2*256- 1`.
                 .checked_add(Uint256::one())
                 .expect("addition does not overflow"),
+            // Capella
+            capella_fork_version: [0x03, 0x00, 0x00, 0x01],
+            capella_fork_epoch: None,
             // Other
             network_id: 2, // lighthouse testnet network id
             deposit_chain_id: 5,
@@ -779,6 +809,12 @@ impl ChainSpec {
             safe_slots_to_import_optimistically: 128u64,
 
             /*
+             * Capella hard fork params
+             */
+            capella_fork_version: [0x03, 0x00, 0x00, 0x64],
+            capella_fork_epoch: None,
+
+            /*
              * Network specific
              */
             boot_nodes: vec![],
@@ -794,6 +830,11 @@ impl ChainSpec {
              * Application specific
              */
             domain_application_mask: APPLICATION_DOMAIN_BUILDER,
+
+            /*
+             * Capella params
+             */
+            domain_bls_to_execution_change: 10,
         }
     }
 }
@@ -853,6 +894,14 @@ pub struct Config {
     #[serde(deserialize_with = "deserialize_fork_epoch")]
     pub bellatrix_fork_epoch: Option<MaybeQuoted<Epoch>>,
 
+    #[serde(default = "default_capella_fork_version")]
+    #[serde(with = "eth2_serde_utils::bytes_4_hex")]
+    capella_fork_version: [u8; 4],
+    #[serde(default)]
+    #[serde(serialize_with = "serialize_fork_epoch")]
+    #[serde(deserialize_with = "deserialize_fork_epoch")]
+    pub capella_fork_epoch: Option<MaybeQuoted<Epoch>>,
+
     #[serde(with = "eth2_serde_utils::quoted_u64")]
     seconds_per_slot: u64,
     #[serde(with = "eth2_serde_utils::quoted_u64")]
@@ -888,6 +937,11 @@ pub struct Config {
 fn default_bellatrix_fork_version() -> [u8; 4] {
     // This value shouldn't be used.
     [0xff, 0xff, 0xff, 0xff]
+}
+
+fn default_capella_fork_version() -> [u8; 4] {
+    // TODO: determine if the bellatrix example should be copied like this
+    [0x03, 0x00, 0x00, 0x00]
 }
 
 /// Placeholder value: 2^256-2^10 (115792089237316195423570985008687907853269984665640564039457584007913129638912).
@@ -986,6 +1040,10 @@ impl Config {
             bellatrix_fork_epoch: spec
                 .bellatrix_fork_epoch
                 .map(|epoch| MaybeQuoted { value: epoch }),
+            capella_fork_version: spec.capella_fork_version,
+            capella_fork_epoch: spec
+                .capella_fork_epoch
+                .map(|epoch| MaybeQuoted { value: epoch }),
 
             seconds_per_slot: spec.seconds_per_slot,
             seconds_per_eth1_block: spec.seconds_per_eth1_block,
@@ -1031,6 +1089,8 @@ impl Config {
             altair_fork_epoch,
             bellatrix_fork_epoch,
             bellatrix_fork_version,
+            capella_fork_epoch,
+            capella_fork_version,
             seconds_per_slot,
             seconds_per_eth1_block,
             min_validator_withdrawability_delay,
@@ -1059,8 +1119,10 @@ impl Config {
             genesis_delay,
             altair_fork_version,
             altair_fork_epoch: altair_fork_epoch.map(|q| q.value),
-            bellatrix_fork_epoch: bellatrix_fork_epoch.map(|q| q.value),
             bellatrix_fork_version,
+            bellatrix_fork_epoch: bellatrix_fork_epoch.map(|q| q.value),
+            capella_fork_version,
+            capella_fork_epoch: capella_fork_epoch.map(|q| q.value),
             seconds_per_slot,
             seconds_per_eth1_block,
             min_validator_withdrawability_delay,
@@ -1152,6 +1214,8 @@ mod tests {
             apply_bit_mask(builder_domain_pre_mask, &spec),
             &spec,
         );
+
+        test_domain(Domain::BlsToExecutionChange, spec.domain_bls_to_execution_change, &spec);
     }
 
     fn apply_bit_mask(domain_bytes: [u8; 4], spec: &ChainSpec) -> u32 {

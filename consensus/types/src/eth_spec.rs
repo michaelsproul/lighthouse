@@ -96,6 +96,14 @@ pub trait EthSpec: 'static + Default + Sync + Send + Clone + Debug + PartialEq +
     type MinGasLimit: Unsigned + Clone + Sync + Send + Debug + PartialEq;
     type MaxExtraDataBytes: Unsigned + Clone + Sync + Send + Debug + PartialEq;
     /*
+     * New in Capella
+     */
+    type MaxPartialWithdrawalsPerEpoch: Unsigned + Clone + Sync + Send + Debug + PartialEq;
+    type WithdrawalQueueLimit: Unsigned + Clone + Sync + Send + Debug + PartialEq;
+    type MaxBlsToExecutionChanges: Unsigned + Clone + Sync + Send + Debug + PartialEq;
+    type MaxWithdrawalsPerPayload: Unsigned + Clone + Sync + Send + Debug + PartialEq;
+
+    /*
      * Derived values (set these CAREFULLY)
      */
     /// The length of the `{previous,current}_epoch_attestations` lists.
@@ -222,6 +230,26 @@ pub trait EthSpec: 'static + Default + Sync + Send + Clone + Debug + PartialEq +
     fn bytes_per_logs_bloom() -> usize {
         Self::BytesPerLogsBloom::to_usize()
     }
+
+    /// Returns the `MAX_PARTIAL_WITHDRAWALS_PER_EPOCH` constant for this specification.
+    fn max_partial_withdrawals_per_epoch() -> usize {
+        Self::MaxPartialWithdrawalsPerEpoch::to_usize()
+    }
+
+    /// Returns the `WITHDRAWAL_QUEUE_LIMIT` constant for this specification.
+    fn withdrawal_queue_limit() -> usize {
+        Self::WithdrawalQueueLimit::to_usize()
+    }
+
+    /// Returns the `MAX_BLS_TO_EXECUTION_CHANGES` constant for this specification.
+    fn max_bls_to_execution_changes() -> usize {
+        Self::MaxBlsToExecutionChanges::to_usize()
+    }
+
+    /// Returns the `MAX_WITHDRAWALS_PER_PAYLOAD` constant for this specification.
+    fn max_withdrawals_per_payload() -> usize {
+        Self::MaxWithdrawalsPerPayload::to_usize()
+    }
 }
 
 /// Macro to inherit some type values from another EthSpec.
@@ -265,6 +293,10 @@ impl EthSpec for MainnetEthSpec {
     type SyncSubcommitteeSize = U128; // 512 committee size / 4 sync committee subnet count
     type MaxPendingAttestations = U4096; // 128 max attestations * 32 slots per epoch
     type SlotsPerEth1VotingPeriod = U2048; // 64 epochs * 32 slots per epoch
+    type MaxPartialWithdrawalsPerEpoch = U256;
+    type WithdrawalQueueLimit = U1099511627776;
+    type MaxBlsToExecutionChanges = U16;
+    type MaxWithdrawalsPerPayload = U16;
 
     fn default_spec() -> ChainSpec {
         ChainSpec::mainnet()
@@ -290,6 +322,10 @@ impl EthSpec for MinimalEthSpec {
     type SyncSubcommitteeSize = U8; // 32 committee size / 4 sync committee subnet count
     type MaxPendingAttestations = U1024; // 128 max attestations * 8 slots per epoch
     type SlotsPerEth1VotingPeriod = U32; // 4 epochs * 8 slots per epoch
+    type MaxPartialWithdrawalsPerEpoch = U256;
+    type WithdrawalQueueLimit = U1099511627776;
+    type MaxBlsToExecutionChanges = U16;
+    type MaxWithdrawalsPerPayload = U16;
 
     params_from_eth_spec!(MainnetEthSpec {
         JustificationBitsLength,
@@ -354,6 +390,10 @@ impl EthSpec for GnosisEthSpec {
     type SyncSubcommitteeSize = U128; // 512 committee size / 4 sync committee subnet count
     type MaxPendingAttestations = U2048; // 128 max attestations * 16 slots per epoch
     type SlotsPerEth1VotingPeriod = U1024; // 64 epochs * 16 slots per epoch
+    type MaxPartialWithdrawalsPerEpoch = U256;
+    type WithdrawalQueueLimit = U1099511627776;
+    type MaxBlsToExecutionChanges = U16;
+    type MaxWithdrawalsPerPayload = U16;
 
     fn default_spec() -> ChainSpec {
         ChainSpec::gnosis()
