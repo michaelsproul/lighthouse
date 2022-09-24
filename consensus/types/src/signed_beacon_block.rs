@@ -38,7 +38,7 @@ impl From<SignedBeaconBlockHash> for Hash256 {
 
 /// A `BeaconBlock` and a signature from its proposer.
 #[superstruct(
-    variants(Base, Altair, Merge),
+    variants(Base, Altair, Merge, Capella),
     variant_attributes(
         derive(
             Debug,
@@ -65,19 +65,21 @@ impl From<SignedBeaconBlockHash> for Hash256 {
 #[cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))]
 #[tree_hash(enum_behaviour = "transparent")]
 #[ssz(enum_behaviour = "transparent")]
-pub struct SignedBeaconBlock<E: EthSpec, Payload: ExecPayload<E> = FullPayload<E>> {
+pub struct SignedBeaconBlock<E: EthSpec, Payload: AbstractExecPayload<E> = FullPayload<E>> {
     #[superstruct(only(Base), partial_getter(rename = "message_base"))]
     pub message: BeaconBlockBase<E, Payload>,
     #[superstruct(only(Altair), partial_getter(rename = "message_altair"))]
     pub message: BeaconBlockAltair<E, Payload>,
     #[superstruct(only(Merge), partial_getter(rename = "message_merge"))]
     pub message: BeaconBlockMerge<E, Payload>,
+    #[superstruct(only(Capella), partial_getter(rename = "message_capella"))]
+    pub message: BeaconBlockCapella<E, Payload>,
     pub signature: Signature,
 }
 
 pub type SignedBlindedBeaconBlock<E> = SignedBeaconBlock<E, BlindedPayload<E>>;
 
-impl<E: EthSpec, Payload: ExecPayload<E>> SignedBeaconBlock<E, Payload> {
+impl<E: EthSpec, Payload: AbstractExecPayload<E>> SignedBeaconBlock<E, Payload> {
     /// Returns the name of the fork pertaining to `self`.
     ///
     /// Will return an `Err` if `self` has been instantiated to a variant conflicting with the fork
@@ -128,6 +130,9 @@ impl<E: EthSpec, Payload: ExecPayload<E>> SignedBeaconBlock<E, Payload> {
             }
             BeaconBlock::Merge(message) => {
                 SignedBeaconBlock::Merge(SignedBeaconBlockMerge { message, signature })
+            }
+            BeaconBlock::Capella(message) => {
+                SignedBeaconBlock::Capella(SignedBeaconBlockCapella { message, signature })
             }
         }
     }
@@ -278,7 +283,7 @@ impl<E: EthSpec> SignedBeaconBlockMerge<E, BlindedPayload<E>> {
                             deposits,
                             voluntary_exits,
                             sync_aggregate,
-                            execution_payload: BlindedPayload { .. },
+                            execution_payload: BlindedPayloadMerge { .. },
                         },
                 },
             signature,
@@ -299,7 +304,7 @@ impl<E: EthSpec> SignedBeaconBlockMerge<E, BlindedPayload<E>> {
                     deposits,
                     voluntary_exits,
                     sync_aggregate,
-                    execution_payload: FullPayload { execution_payload },
+                    execution_payload: FullPayloadMerge { execution_payload },
                 },
             },
             signature,
@@ -317,6 +322,9 @@ impl<E: EthSpec> SignedBeaconBlock<E, BlindedPayload<E>> {
             SignedBeaconBlock::Altair(block) => SignedBeaconBlock::Altair(block.into()),
             SignedBeaconBlock::Merge(block) => {
                 SignedBeaconBlock::Merge(block.into_full_block(execution_payload?))
+            }
+            SignedBeaconBlock::Capella(block) => {
+                SignedBeaconBlock::Capella(block.into_full_block(execution_payload?))
             }
         };
         Some(full_block)

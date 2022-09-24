@@ -3,11 +3,13 @@ use derivative::Derivative;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use ssz::{Decode, DecodeError, Encode};
+use ssz_derive::{Decode, Encode};
 use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::hash::Hash;
 use test_random_derive::TestRandom;
 use tree_hash::{PackedEncoding, TreeHash};
+use tree_hash_derive::TreeHash;
 
 #[derive(Debug)]
 pub enum BlockType {
@@ -15,21 +17,16 @@ pub enum BlockType {
     Full,
 }
 
+
+//  + TryFrom<ExecutionPayloadHeader<T>>
 pub trait ExecPayload<T: EthSpec>:
     Debug
     + Clone
-    + Encode
-    + Debug
-    + Decode
-    + TestRandom
     + TreeHash
-    + Default
     + PartialEq
     + Serialize
     + DeserializeOwned
     + Hash
-    + TryFrom<ExecutionPayloadHeader<T>>
-    + From<ExecutionPayload<T>>
     + Send
     + 'static
 {
@@ -50,13 +47,87 @@ pub trait ExecPayload<T: EthSpec>:
     fn gas_limit(&self) -> u64;
 }
 
-impl<T: EthSpec> ExecPayload<T> for FullPayload<T> {
+pub trait AbstractExecPayload<T: EthSpec>: ExecPayload<T> + Sized {
+    type Merge: ExecPayload<T> + Into<Self> + Default + Encode + Decode + TestRandom + From<ExecutionPayloadMerge<T>> + TryFrom<ExecutionPayloadHeaderMerge<T>>;
+    type Capella: ExecPayload<T> + Into<Self> + Default + Encode + Decode + TestRandom + From<ExecutionPayloadCapella<T>> + TryFrom<ExecutionPayloadHeaderCapella<T>>;
+}
+
+#[superstruct(
+    variants(Merge, Capella),
+    variant_attributes(
+        derive(
+            Debug,
+            Clone,
+            Serialize,
+            Deserialize,
+            Encode,
+            Decode,
+            TestRandom,
+            TreeHash,
+            Derivative,
+        ),
+        derivative(PartialEq, Hash(bound = "T: EthSpec")),
+        serde(bound = "T: EthSpec", deny_unknown_fields),
+        cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))
+    ),
+    cast_error(ty = "Error", expr = "BeaconStateError::IncorrectStateVariant"),
+    partial_getter_error(ty = "Error", expr = "BeaconStateError::IncorrectStateVariant")
+)]
+#[derive(Debug, Clone, Serialize, Deserialize, TreeHash, Derivative)]
+#[derivative(PartialEq, Hash(bound = "T: EthSpec"))]
+#[serde(bound = "T: EthSpec")]
+#[tree_hash(enum_behaviour = "transparent")]
+pub struct FullPayload<T: EthSpec> {
+    #[superstruct(only(Merge), partial_getter(rename = "execution_payload_merge"))]
+    pub execution_payload: ExecutionPayloadMerge<T>,
+    #[superstruct(only(Capella), partial_getter(rename = "execution_payload_capella"))]
+    pub execution_payload: ExecutionPayloadCapella<T>,
+}
+
+impl<T: EthSpec> ExecPayload<T> for FullPayloadMerge<T> {
     fn block_type() -> BlockType {
         BlockType::Full
     }
 
     fn to_execution_payload_header(&self) -> ExecutionPayloadHeader<T> {
-        ExecutionPayloadHeader::from(&self.execution_payload)
+        ExecutionPayloadHeaderMerge::from(self.execution_payload)
+    }
+
+    fn parent_hash(&self) -> ExecutionBlockHash {
+        self.execution_payload.parent_hash
+    }
+
+    fn prev_randao(&self) -> Hash256 {
+        self.execution_payload.prev_randao
+    }
+
+    fn block_number(&self) -> u64 {
+        self.execution_payload.block_number
+    }
+
+    fn timestamp(&self) -> u64 {
+        self.execution_payload.timestamp
+    }
+
+    fn block_hash(&self) -> ExecutionBlockHash {
+        self.execution_payload.block_hash
+    }
+
+    fn fee_recipient(&self) -> Address {
+        self.execution_payload.fee_recipient
+    }
+
+    fn gas_limit(&self) -> u64 {
+        self.execution_payload.gas_limit
+    }
+}
+impl<T: EthSpec> ExecPayload<T> for FullPayloadCapella<T> {
+    fn block_type() -> BlockType {
+        BlockType::Full
+    }
+
+    fn to_execution_payload_header(&self) -> ExecutionPayloadHeader<T> {
+        ExecutionPayloadHeaderMerge::from(self.execution_payload)
     }
 
     fn parent_hash(&self) -> ExecutionBlockHash {
@@ -88,13 +159,268 @@ impl<T: EthSpec> ExecPayload<T> for FullPayload<T> {
     }
 }
 
+impl<T: EthSpec> ExecPayload<T> for FullPayload<T> {
+    fn block_type() -> BlockType {
+        BlockType::Full
+    }
+
+    fn to_execution_payload_header(&self) -> ExecutionPayloadHeader<T> {
+        match self {
+            Self::Merge(payload) => ExecutionPayloadHeaderMerge::from(payload.execution_payload),
+            Self::Capella(payload) => ExecutionPayloadHeaderCapella::from(payload.execution_payload),
+        }
+    }
+
+    fn parent_hash(&self) -> ExecutionBlockHash {
+        match self {
+            Self::Merge(payload) => payload.execution_payload.parent_hash,
+            Self::Capella(payload) => payload.execution_payload.parent_hash,
+        }
+    }
+
+    fn prev_randao(&self) -> Hash256 {
+        match self {
+            Self::Merge(payload) => payload.execution_payload.prev_randao,
+            Self::Capella(payload) => payload.execution_payload.prev_randao,
+        }
+    }
+
+    fn block_number(&self) -> u64 {
+        match self {
+            Self::Merge(payload) => payload.execution_payload.block_number,
+            Self::Capella(payload) => payload.execution_payload.block_number,
+        }
+    }
+
+    fn timestamp(&self) -> u64 {
+        match self {
+            Self::Merge(payload) => payload.execution_payload.timestamp,
+            Self::Capella(payload) => payload.execution_payload.timestamp,
+        }
+    }
+
+    fn block_hash(&self) -> ExecutionBlockHash {
+        match self {
+            Self::Merge(payload) => payload.execution_payload.block_hash,
+            Self::Capella(payload) => payload.execution_payload.block_hash,
+        }
+    }
+
+    fn fee_recipient(&self) -> Address {
+        match Self {
+            Self::Merge(payload) => payload.execution_payload.fee_recipient,
+            Self::Capella(payload) => payload.execution_payload.fee_recipient,
+        }
+    }
+
+    fn gas_limit(&self) -> u64 {
+        match Self {
+            Self::Merge(payload) => payload.execution_payload.gas_limit,
+            Self::Capella(payload) => payload.execution_payload.gas_limit,
+        }
+    }
+}
+
+
+impl<T: EthSpec> AbstractExecPayload<T> for FullPayload<T> {
+    type Merge = FullPayloadMerge<T>;
+    type Capella = FullPayloadCapella<T>;
+}
+
+
+/*
+// original implementation
+impl<T: EthSpec> From<ExecutionPayload<T>> for FullPayload<T> {
+    fn from(execution_payload: ExecutionPayload<T>) -> Self {
+        Self { execution_payload }
+    }
+}
+
+impl<T: EthSpec> TryFrom<ExecutionPayloadHeader<T>> for FullPayload<T> {
+    type Error = ();
+
+    fn try_from(_: ExecutionPayloadHeader<T>) -> Result<Self, Self::Error> {
+        Err(())
+    }
+}
+ */
+
+impl<T: EthSpec> From<ExecutionPayload<T>> for FullPayload<T> {
+    fn from(execution_payload: ExecutionPayload<T>) -> Self {
+        match execution_payload {
+            ExecutionPayload::Merge(execution_payload) => Self::Merge(FullPayloadMerge{ execution_payload }),
+            ExecutionPayloadHeader::Capella(execution_payload) => Self::Capella(FullPayloadCapella{ execution_payload }),
+        }
+    }
+}
+
+impl<T: EthSpec> From<ExecutionPayloadMerge<T>> for FullPayloadMerge<T> {
+    fn from(execution_payload: ExecutionPayloadMerge<T>) -> Self {
+        Self {
+            execution_payload,
+        }
+    }
+}
+impl<T: EthSpec> From<ExecutionPayloadCapella<T>> for FullPayloadCapella<T> {
+    fn from(execution_payload: ExecutionPayloadCapella<T>) -> Self {
+        Self {
+            execution_payload,
+        }
+    }
+}
+
+impl<T: EthSpec> TryFrom<ExecutionPayloadHeaderMerge<T>> for FullPayloadMerge<T> {
+    type Error = ();
+    fn try_from(_: ExecutionPayloadHeaderMerge<T>) -> Result<Self, Self::Error> {
+        Err(())
+    }
+}
+impl<T: EthSpec> TryFrom<ExecutionPayloadHeaderCapella<T>> for FullPayloadCapella<T> {
+    type Error = ();
+    fn try_from(_: ExecutionPayloadHeaderCapella<T>) -> Result<Self, Self::Error> {
+        Err(())
+    }
+}
+
+#[superstruct(
+    variants(Merge, Capella),
+    variant_attributes(
+        derive(
+            Debug,
+            Clone,
+            Serialize,
+            Deserialize,
+            Encode,
+            Decode,
+            TestRandom,
+            TreeHash,
+            Derivative,
+        ),
+        derivative(PartialEq, Hash(bound = "T: EthSpec")),
+        serde(bound = "T: EthSpec", deny_unknown_fields),
+        cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))
+    ),
+    cast_error(ty = "Error", expr = "BeaconStateError::IncorrectStateVariant"),
+    partial_getter_error(ty = "Error", expr = "BeaconStateError::IncorrectStateVariant")
+)]
+#[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
+#[derivative(PartialEq, Hash(bound = "T: EthSpec"))]
+#[serde(bound = "T: EthSpec")]
+pub struct BlindedPayload<T: EthSpec> {
+    #[superstruct(only(Merge), partial_getter(rename = "execution_payload_merge"))]
+    pub execution_payload_header: ExecutionPayloadHeaderMerge<T>,
+    #[superstruct(only(Capella), partial_getter(rename = "execution_payload_capella"))]
+    pub execution_payload_header: ExecutionPayloadHeaderCapella<T>,
+}
+
+
 impl<T: EthSpec> ExecPayload<T> for BlindedPayload<T> {
     fn block_type() -> BlockType {
         BlockType::Blinded
     }
 
     fn to_execution_payload_header(&self) -> ExecutionPayloadHeader<T> {
-        self.execution_payload_header.clone()
+        match self {
+            Self::Merge(payload) => payload.execution_payload_header.clone(),
+            Self::Capella(payload) => payload.execution_payload_header.clone(),
+        }
+    }
+
+    fn parent_hash(&self) -> ExecutionBlockHash {
+        match self {
+            Self::Merge(payload) => payload.execution_payload_header.parent_hash,
+            Self::Capella(payload) => payload.execution_payload_header.parent_hash,
+        }
+    }
+
+    fn prev_randao(&self) -> Hash256 {
+        match self {
+            Self::Merge(payload) => payload.execution_payload_header.prev_randao,
+            Self::Capella(payload) => payload.execution_payload_header.prev_randao,
+        }
+    }
+
+    fn block_number(&self) -> u64 {
+        match self {
+            Self::Merge(payload) => payload.execution_payload_header.block_number,
+            Self::Capella(payload) => payload.execution_payload_header.block_number,
+        }
+    }
+
+    fn timestamp(&self) -> u64 {
+        match self {
+            Self::Merge(payload) => payload.execution_payload_header.timestamp,
+            Self::Capella(payload) => payload.execution_payload_header.timestamp,
+        }
+    }
+
+    fn block_hash(&self) -> ExecutionBlockHash {
+        match self {
+            Self::Merge(payload) => payload.execution_payload_header.block_hash,
+            Self::Capella(payload) => payload.execution_payload_header.block_hash,
+        }
+    }
+
+    fn fee_recipient(&self) -> Address {
+        match self {
+            Self::Merge(payload) => payload.execution_payload_header.fee_recipient,
+            Self::Capella(payload) => payload.execution_payload_header.fee_recipient,
+        }
+    }
+
+    fn gas_limit(&self) -> u64 {
+        match self {
+            Self::Merge(payload) => payload.execution_payload_header.gas_limit,
+            Self::Capella(payload) => payload.execution_payload_header.gas_limit,
+        }
+    }
+}
+
+
+impl<T: EthSpec> ExecPayload<T> for BlindedPayloadMerge<T> {
+    fn block_type() -> BlockType {
+        BlockType::Full
+    }
+
+    fn to_execution_payload_header(&self) -> ExecutionPayloadHeader<T> {
+        ExecutionPayloadHeaderMerge::from(self.execution_payload_header)
+    }
+
+    fn parent_hash(&self) -> ExecutionBlockHash {
+        self.execution_payload_header.parent_hash
+    }
+
+    fn prev_randao(&self) -> Hash256 {
+        self.execution_payload_header.prev_randao
+    }
+
+    fn block_number(&self) -> u64 {
+        self.execution_payload_header.block_number
+    }
+
+    fn timestamp(&self) -> u64 {
+        self.execution_payload_header.timestamp
+    }
+
+    fn block_hash(&self) -> ExecutionBlockHash {
+        self.execution_payload_header.block_hash
+    }
+
+    fn fee_recipient(&self) -> Address {
+        self.execution_payload_header.fee_recipient
+    }
+
+    fn gas_limit(&self) -> u64 {
+        self.execution_payload_header.gas_limit
+    }
+}
+impl<T: EthSpec> ExecPayload<T> for BlindedPayloadCapella<T> {
+    fn block_type() -> BlockType {
+        BlockType::Full
+    }
+
+    fn to_execution_payload_header(&self) -> ExecutionPayloadHeader<T> {
+        ExecutionPayloadHeaderMerge::from(self.execution_payload_header)
     }
 
     fn parent_hash(&self) -> ExecutionBlockHash {
@@ -126,12 +452,27 @@ impl<T: EthSpec> ExecPayload<T> for BlindedPayload<T> {
     }
 }
 
-#[derive(Debug, Clone, TestRandom, Serialize, Deserialize, Derivative)]
-#[derivative(PartialEq, Hash(bound = "T: EthSpec"))]
-#[serde(bound = "T: EthSpec")]
-pub struct BlindedPayload<T: EthSpec> {
-    pub execution_payload_header: ExecutionPayloadHeader<T>,
+impl<T: EthSpec> AbstractExecPayload<T> for BlindedPayload<T> {
+    type Merge = BlindedPayloadMerge<T>;
+    type Capella = BlindedPayloadCapella<T>;
 }
+
+
+impl<T: EthSpec> Default for FullPayloadMerge<T> {
+    fn default() -> Self {
+        Self {
+            payload: ExecutionPayloadMerge::default(),
+        }
+    }
+}
+impl<T: EthSpec> Default for FullPayloadCapella<T> {
+    fn default() -> Self {
+        Self {
+            payload: ExecutionPayloadCapella::default(),
+        }
+    }
+}
+
 
 // NOTE: the `Default` implementation for `BlindedPayload` needs to be different from the `Default`
 // implementation for `ExecutionPayloadHeader` because payloads are checked for equality against the
@@ -140,6 +481,7 @@ pub struct BlindedPayload<T: EthSpec> {
 // The default `BlindedPayload` is therefore the payload header that results from blinding the
 // default `ExecutionPayload`, which differs from the default `ExecutionPayloadHeader` in that
 // its `transactions_root` is the hash of the empty list rather than 0x0.
+/*
 impl<T: EthSpec> Default for BlindedPayload<T> {
     fn default() -> Self {
         Self {
@@ -147,9 +489,43 @@ impl<T: EthSpec> Default for BlindedPayload<T> {
         }
     }
 }
+*/
+
+impl<T: EthSpec> Default for BlindedPayloadMerge<T> {
+    fn default() -> Self {
+        Self {
+            execution_payload_header: ExecutionPayloadHeaderMerge::from(&ExecutionPayloadMerge::default())
+        }
+    }
+}
+
+impl<T: EthSpec> Default for BlindedPayloadCapella<T> {
+    fn default() -> Self {
+        Self {
+            execution_payload_header: ExecutionPayloadHeaderCapella::from(&ExecutionPayloadCapella::default())
+        }
+    }
+}
 
 impl<T: EthSpec> From<ExecutionPayloadHeader<T>> for BlindedPayload<T> {
     fn from(execution_payload_header: ExecutionPayloadHeader<T>) -> Self {
+        match execution_payload_header {
+            ExecutionPayloadHeader::Merge(exeuction_payload_header) => Self::Merge(BlindedPayloadMerge{ execution_payload_header }),
+            ExecutionPayloadHeader::Capella(execution_payload_header) => Self::Capella(BlindedPayloadCapella{ execution_payload_header }),
+        }
+    }
+}
+
+
+impl<T: EthSpec> From<ExecutionPayloadHeaderMerge<T>> for BlindedPayloadMerge<T> {
+    fn from(execution_payload_header: ExecutionPayloadHeaderMerge<T>) -> Self {
+        Self {
+            execution_payload_header,
+        }
+    }
+}
+impl<T: EthSpec> From<ExecutionPayloadHeaderCapella<T>> for BlindedPayloadCapella<T> {
+    fn from(execution_payload_header: ExecutionPayloadHeaderCapella<T>) -> Self {
         Self {
             execution_payload_header,
         }
@@ -158,10 +534,32 @@ impl<T: EthSpec> From<ExecutionPayloadHeader<T>> for BlindedPayload<T> {
 
 impl<T: EthSpec> From<BlindedPayload<T>> for ExecutionPayloadHeader<T> {
     fn from(blinded: BlindedPayload<T>) -> Self {
-        blinded.execution_payload_header
+        match blinded {
+            BlindedPayload::Merge(blinded_payload) => ExecutionPayloadHeader::Merge(blinded_payload.execution_payload_header),
+            BlindedPayload::Capella(blinded_payload) => ExecutionPayloadHeader::Blinded(blinded_payload.execution_payload_header),
+        }
+        //blinded.execution_payload_header
     }
 }
 
+impl<T: EthSpec> From<ExecutionPayloadMerge<T>> for BlindedPayloadMerge<T> {
+    fn from(execution_payload: ExecutionPayloadMerge<T>) -> Self {
+        Self {
+            execution_payload_header: ExecutionPayloadHeaderMerge::from(execution_payload),
+        }
+    }
+}
+impl<T: EthSpec> From<ExecutionPayloadCapella<T>> for BlindedPayloadCapella<T> {
+    fn from(execution_payload: ExecutionPayloadCapella<T>) -> Self {
+        Self {
+            execution_payload_header: ExecutionPayloadHeaderCapella::from(execution_payload),
+        }
+    }
+}
+
+
+/*
+// TODO: implement this if it's needed
 impl<T: EthSpec> From<ExecutionPayload<T>> for BlindedPayload<T> {
     fn from(execution_payload: ExecutionPayload<T>) -> Self {
         Self {
@@ -169,6 +567,7 @@ impl<T: EthSpec> From<ExecutionPayload<T>> for BlindedPayload<T> {
         }
     }
 }
+ */
 
 impl<T: EthSpec> TreeHash for BlindedPayload<T> {
     fn tree_hash_type() -> tree_hash::TreeHashType {
@@ -218,27 +617,34 @@ impl<T: EthSpec> Encode for BlindedPayload<T> {
     }
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize, TestRandom, Derivative)]
-#[derivative(PartialEq, Hash(bound = "T: EthSpec"))]
-#[serde(bound = "T: EthSpec")]
-pub struct FullPayload<T: EthSpec> {
-    pub execution_payload: ExecutionPayload<T>,
-}
 
-impl<T: EthSpec> From<ExecutionPayload<T>> for FullPayload<T> {
-    fn from(execution_payload: ExecutionPayload<T>) -> Self {
-        Self { execution_payload }
+
+
+impl<T: EthSpec> From<FullPayloadMerge<T>> for FullPayload<T> {
+    fn from(payload: FullPayloadMerge<T>) -> Self {
+        Self::Merge(payload)
     }
 }
 
-impl<T: EthSpec> TryFrom<ExecutionPayloadHeader<T>> for FullPayload<T> {
-    type Error = ();
-
-    fn try_from(_: ExecutionPayloadHeader<T>) -> Result<Self, Self::Error> {
-        Err(())
+impl<T: EthSpec> From<FullPayloadCapella<T>> for FullPayload<T> {
+    fn from(payload: FullPayloadCapella<T>) -> Self {
+        Self::Capella(payload)
     }
 }
 
+impl<T: EthSpec> From<BlindedPayloadMerge<T>> for BlindedPayload<T> {
+    fn from(payload: BlindedPayloadMerge<T>) -> Self {
+        Self::Merge(payload)
+    }
+}
+impl<T: EthSpec> From<BlindedPayloadCapella<T>> for BlindedPayload<T> {
+    fn from(payload: BlindedPayloadCapella<T>) -> Self {
+        Self::Capella(payload)
+    }
+}
+
+
+/*
 impl<T: EthSpec> TreeHash for FullPayload<T> {
     fn tree_hash_type() -> tree_hash::TreeHashType {
         <ExecutionPayload<T>>::tree_hash_type()
@@ -256,7 +662,13 @@ impl<T: EthSpec> TreeHash for FullPayload<T> {
         self.execution_payload.tree_hash_root()
     }
 }
+*/
 
+
+
+
+
+/*
 impl<T: EthSpec> Decode for FullPayload<T> {
     fn is_ssz_fixed_len() -> bool {
         <ExecutionPayload<T> as Decode>::is_ssz_fixed_len()
@@ -282,3 +694,4 @@ impl<T: EthSpec> Encode for FullPayload<T> {
         self.execution_payload.ssz_bytes_len()
     }
 }
+*/
