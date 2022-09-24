@@ -1,8 +1,10 @@
 use crate::{test_utils::TestRandom, *};
+use BeaconStateError;
 use derivative::Derivative;
 use serde_derive::{Deserialize, Serialize};
 use ssz::Encode;
 use ssz_derive::{Decode, Encode};
+use superstruct::superstruct;
 use test_random_derive::TestRandom;
 use tree_hash_derive::TreeHash;
 
@@ -12,12 +14,34 @@ pub type Transactions<T> = VariableList<
     <T as EthSpec>::MaxTransactionsPerPayload,
 >;
 
-#[cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))]
-#[derive(
-    Default, Debug, Clone, Serialize, Deserialize, Encode, Decode, TreeHash, TestRandom, Derivative,
+
+#[superstruct(
+    variants(Merge, Capella),
+    variant_attributes(
+        derive(
+            Default,
+            Debug,
+            Clone,
+            Serialize,
+            Deserialize,
+            Encode,
+            Decode,
+            TreeHash,
+            TestRandom,
+            Derivative,
+        ),
+        derivative(PartialEq, Hash(bound = "T: EthSpec")),
+        serde(bound = "T: EthSpec", deny_unknown_fields),
+        cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))
+    ),
+    cast_error(ty = "Error", expr = "BeaconStateError::IncorrectStateVariant"),
+    partial_getter_error(ty = "Error", expr = "BeaconStateError::IncorrectStateVariant")
 )]
+#[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 #[derivative(PartialEq, Hash(bound = "T: EthSpec"))]
+#[serde(untagged)]
 #[serde(bound = "T: EthSpec")]
+#[cfg_attr(feature = "arbitrary-fuzz", derive(arbitrary::Arbitrary))]
 pub struct ExecutionPayload<T: EthSpec> {
     pub parent_hash: ExecutionBlockHash,
     pub fee_recipient: Address,
@@ -41,6 +65,8 @@ pub struct ExecutionPayload<T: EthSpec> {
     pub block_hash: ExecutionBlockHash,
     #[serde(with = "ssz_types::serde_utils::list_of_hex_var_list")]
     pub transactions: Transactions<T>,
+    #[superstruct(only(Capella))]
+    pub withdrawals: VariableList<Withdrawal, T::MaxWithdrawalsPerPayload>,
 }
 
 impl<T: EthSpec> ExecutionPayload<T> {
