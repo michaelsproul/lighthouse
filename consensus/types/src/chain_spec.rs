@@ -277,7 +277,9 @@ impl ChainSpec {
         match state {
             BeaconState::Base(_) => self.inactivity_penalty_quotient,
             BeaconState::Altair(_) => self.inactivity_penalty_quotient_altair,
-            BeaconState::Merge(_) => self.inactivity_penalty_quotient_bellatrix,
+            BeaconState::Merge(_) | BeaconState::Capella(_) => {
+                self.inactivity_penalty_quotient_bellatrix
+            }
         }
     }
 
@@ -289,7 +291,9 @@ impl ChainSpec {
         match state {
             BeaconState::Base(_) => self.proportional_slashing_multiplier,
             BeaconState::Altair(_) => self.proportional_slashing_multiplier_altair,
-            BeaconState::Merge(_) => self.proportional_slashing_multiplier_bellatrix,
+            BeaconState::Merge(_) | BeaconState::Capella(_) => {
+                self.proportional_slashing_multiplier_bellatrix
+            }
         }
     }
 
@@ -301,7 +305,9 @@ impl ChainSpec {
         match state {
             BeaconState::Base(_) => self.min_slashing_penalty_quotient,
             BeaconState::Altair(_) => self.min_slashing_penalty_quotient_altair,
-            BeaconState::Merge(_) => self.min_slashing_penalty_quotient_bellatrix,
+            BeaconState::Merge(_) | BeaconState::Capella(_) => {
+                self.min_slashing_penalty_quotient_bellatrix
+            }
         }
     }
 
@@ -1215,7 +1221,11 @@ mod tests {
             &spec,
         );
 
-        test_domain(Domain::BlsToExecutionChange, spec.domain_bls_to_execution_change, &spec);
+        test_domain(
+            Domain::BlsToExecutionChange,
+            spec.domain_bls_to_execution_change,
+            &spec,
+        );
     }
 
     fn apply_bit_mask(domain_bytes: [u8; 4], spec: &ChainSpec) -> u32 {

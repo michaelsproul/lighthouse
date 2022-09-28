@@ -39,6 +39,12 @@ impl ForkName {
                 spec.bellatrix_fork_epoch = Some(Epoch::new(0));
                 spec
             }
+            ForkName::Capella => {
+                spec.altair_fork_epoch = Some(Epoch::new(0));
+                spec.bellatrix_fork_epoch = Some(Epoch::new(0));
+                spec.capella_fork_epoch = Some(Epoch::new(0));
+                spec
+            }
         }
     }
 
@@ -50,6 +56,7 @@ impl ForkName {
             ForkName::Base => None,
             ForkName::Altair => Some(ForkName::Base),
             ForkName::Merge => Some(ForkName::Altair),
+            ForkName::Capella => Some(ForkName::Merge),
         }
     }
 
@@ -60,7 +67,8 @@ impl ForkName {
         match self {
             ForkName::Base => Some(ForkName::Altair),
             ForkName::Altair => Some(ForkName::Merge),
-            ForkName::Merge => None,
+            ForkName::Merge => Some(ForkName::Capella),
+            ForkName::Capella => None,
         }
     }
 }
@@ -102,6 +110,10 @@ macro_rules! map_fork_name_with {
                 let (value, extra_data) = $body;
                 ($t::Merge(value), extra_data)
             }
+            ForkName::Capella => {
+                let (value, extra_data) = $body;
+                ($t::Capella(value), extra_data)
+            }
         }
     };
 }
@@ -114,6 +126,7 @@ impl FromStr for ForkName {
             "phase0" | "base" => ForkName::Base,
             "altair" => ForkName::Altair,
             "bellatrix" | "merge" => ForkName::Merge,
+            "capella" => ForkName::Capella,
             _ => return Err(format!("unknown fork name: {}", fork_name)),
         })
     }
@@ -125,6 +138,7 @@ impl Display for ForkName {
             ForkName::Base => "phase0".fmt(f),
             ForkName::Altair => "altair".fmt(f),
             ForkName::Merge => "bellatrix".fmt(f),
+            ForkName::Capella => "capella".fmt(f),
         }
     }
 }

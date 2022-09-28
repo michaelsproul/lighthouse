@@ -125,8 +125,12 @@ pub use crate::enr_fork_id::EnrForkId;
 pub use crate::eth1_data::Eth1Data;
 pub use crate::eth_spec::EthSpecId;
 pub use crate::execution_block_hash::ExecutionBlockHash;
-pub use crate::execution_payload::{ExecutionPayload, ExecutionPayloadCapella, ExecutionPayloadMerge, Transaction, Transactions};
-pub use crate::execution_payload_header::{ExecutionPayloadHeader, ExecutionPayloadHeaderCapella, ExecutionPayloadHeaderMerge};
+pub use crate::execution_payload::{
+    ExecutionPayload, ExecutionPayloadCapella, ExecutionPayloadMerge, Transaction, Transactions,
+};
+pub use crate::execution_payload_header::{
+    ExecutionPayloadHeader, ExecutionPayloadHeaderCapella, ExecutionPayloadHeaderMerge,
+};
 pub use crate::fork::Fork;
 pub use crate::fork_context::ForkContext;
 pub use crate::fork_data::ForkData;
@@ -137,7 +141,11 @@ pub use crate::historical_batch::HistoricalBatch;
 pub use crate::indexed_attestation::IndexedAttestation;
 pub use crate::participation_flags::ParticipationFlags;
 pub use crate::participation_list::ParticipationList;
-pub use crate::payload::{AbstractExecPayload, BlindedPayload, BlindedPayloadCapella, BlindedPayloadMerge, BlockType, ExecPayload, FullPayload, FullPayloadCapella, FullPayloadMerge};
+pub use crate::payload::{
+    AbstractExecPayload, BlindedPayload, BlindedPayloadCapella, BlindedPayloadMerge,
+    BlindedPayloadRef, BlockType, ExecPayload, FullPayload, FullPayloadCapella, FullPayloadMerge,
+    FullPayloadRef,
+};
 pub use crate::pending_attestation::PendingAttestation;
 pub use crate::preset::{AltairPreset, BasePreset, BellatrixPreset};
 pub use crate::proposer_preparation_data::ProposerPreparationData;
@@ -147,8 +155,8 @@ pub use crate::selection_proof::SelectionProof;
 pub use crate::shuffling_id::AttestationShufflingId;
 pub use crate::signed_aggregate_and_proof::SignedAggregateAndProof;
 pub use crate::signed_beacon_block::{
-    SignedBeaconBlock, SignedBeaconBlockAltair, SignedBeaconBlockBase, SignedBeaconBlockHash,
-    SignedBeaconBlockCapella, SignedBeaconBlockMerge, SignedBlindedBeaconBlock,
+    SignedBeaconBlock, SignedBeaconBlockAltair, SignedBeaconBlockBase, SignedBeaconBlockCapella,
+    SignedBeaconBlockHash, SignedBeaconBlockMerge, SignedBlindedBeaconBlock,
 };
 pub use crate::signed_beacon_block_header::SignedBeaconBlockHeader;
 pub use crate::signed_bls_to_execution_change::SignedBlsToExecutionChange;
