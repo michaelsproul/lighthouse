@@ -1,5 +1,4 @@
 use crate::{test_utils::TestRandom, *};
-use BeaconStateError;
 use derivative::Derivative;
 use serde_derive::{Deserialize, Serialize};
 use ssz::Encode;
@@ -7,13 +6,13 @@ use ssz_derive::{Decode, Encode};
 use superstruct::superstruct;
 use test_random_derive::TestRandom;
 use tree_hash_derive::TreeHash;
+use BeaconStateError;
 
 pub type Transaction<N> = VariableList<u8, N>;
 pub type Transactions<T> = VariableList<
     Transaction<<T as EthSpec>::MaxBytesPerTransaction>,
     <T as EthSpec>::MaxTransactionsPerPayload,
 >;
-
 
 #[superstruct(
     variants(Merge, Capella),
@@ -70,15 +69,12 @@ pub struct ExecutionPayload<T: EthSpec> {
 }
 
 impl<T: EthSpec> ExecutionPayload<T> {
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
     #[allow(clippy::integer_arithmetic)]
     /// Returns the maximum size of an execution payload.
     pub fn max_execution_payload_size() -> usize {
         // Fixed part
-        Self::empty().as_ssz_bytes().len()
+        // TODO: check this - it's usually the largest size of any fork
+        ExecutionPayloadCapella::<T>::default().as_ssz_bytes().len()
             // Max size of variable length `extra_data` field
             + (T::max_extra_data_bytes() * <u8 as Encode>::ssz_fixed_len())
             // Max size of variable length `transactions` field

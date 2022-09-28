@@ -87,7 +87,7 @@ pub enum VerifyBlockRoot {
 /// re-calculating the root when it is already known. Note `block_root` should be equal to the
 /// tree hash root of the block, NOT the signing root of the block. This function takes
 /// care of mixing in the domain.
-pub fn per_block_processing<T: EthSpec, Payload: ExecPayload<T>>(
+pub fn per_block_processing<T: EthSpec, Payload: AbstractExecPayload<T>>(
     state: &mut BeaconState<T>,
     signed_block: &SignedBeaconBlock<T, Payload>,
     block_root: Option<Hash256>,
@@ -153,8 +153,18 @@ pub fn per_block_processing<T: EthSpec, Payload: ExecPayload<T>>(
     // `process_randao` as the former depends on the `randao_mix` computed with the reveal of the
     // previous block.
     if is_execution_enabled(state, block.body()) {
-        let payload = block.body().execution_payload()?;
-        process_execution_payload(state, payload, spec)?;
+        //let payload = block.body().execution_payload()?;
+        match &block {
+            BeaconBlockRef::Base(_) | BeaconBlockRef::Altair(_) => unreachable!(),
+            BeaconBlockRef::Merge(_) => {
+                let payload = block.body().execution_payload_merge()?;
+                process_execution_payload(state, payload, spec)?;
+            }
+            BeaconBlockRef::Capella(_) => {
+                let payload = block.body().execution_payload_capella()?;
+                process_execution_payload(state, payload, spec)?;
+            }
+        }
     }
 
     process_randao(state, block, verify_randao, spec)?;
@@ -232,7 +242,7 @@ pub fn process_block_header<T: EthSpec>(
 /// Verifies the signature of a block.
 ///
 /// Spec v0.12.1
-pub fn verify_block_signature<T: EthSpec, Payload: ExecPayload<T>>(
+pub fn verify_block_signature<T: EthSpec, Payload: AbstractExecPayload<T>>(
     state: &BeaconState<T>,
     block: &SignedBeaconBlock<T, Payload>,
     block_root: Option<Hash256>,
@@ -255,7 +265,7 @@ pub fn verify_block_signature<T: EthSpec, Payload: ExecPayload<T>>(
 
 /// Verifies the `randao_reveal` against the block's proposer pubkey and updates
 /// `state.latest_randao_mixes`.
-pub fn process_randao<T: EthSpec, Payload: ExecPayload<T>>(
+pub fn process_randao<T: EthSpec, Payload: AbstractExecPayload<T>>(
     state: &mut BeaconState<T>,
     block: BeaconBlockRef<'_, T, Payload>,
     verify_signatures: VerifySignatures,
@@ -326,9 +336,9 @@ pub fn partially_verify_execution_payload<T: EthSpec, Payload: ExecPayload<T>>(
 ) -> Result<(), BlockProcessingError> {
     if is_merge_transition_complete(state) {
         block_verify!(
-            payload.parent_hash() == state.latest_execution_payload_header()?.block_hash,
+            payload.parent_hash() == *state.latest_execution_payload_header()?.block_hash(),
             BlockProcessingError::ExecutionHashChainIncontiguous {
-                expected: state.latest_execution_payload_header()?.block_hash,
+                expected: *state.latest_execution_payload_header()?.block_hash(),
                 found: payload.parent_hash(),
             }
         );
@@ -367,7 +377,19 @@ pub fn process_execution_payload<T: EthSpec, Payload: ExecPayload<T>>(
 ) -> Result<(), BlockProcessingError> {
     partially_verify_execution_payload(state, payload, spec)?;
 
-    *state.latest_execution_payload_header_mut()? = payload.to_execution_payload_header();
+    // TODO: check this
+    match state {
+        BeaconState::Base(_) => return Err(BlockProcessingError::IncorrectStateType),
+        BeaconState::Altair(_) => return Err(BlockProcessingError::IncorrectStateType),
+        BeaconState::Merge(_) => {
+            *state.latest_execution_payload_header_merge_mut()? =
+                payload.to_execution_payload_header().try_into()?
+        }
+        BeaconState::Capella(_) => {
+            *state.latest_execution_payload_header_capella_mut()? =
+                payload.to_execution_payload_header().try_into()?
+        }
+    }
 
     Ok(())
 }
@@ -378,22 +400,45 @@ pub fn process_execution_payload<T: EthSpec, Payload: ExecPayload<T>>(
 /// repeaetedly write code to treat these errors as false.
 /// https://github.com/ethereum/consensus-specs/blob/dev/specs/merge/beacon-chain.md#is_merge_transition_complete
 pub fn is_merge_transition_complete<T: EthSpec>(state: &BeaconState<T>) -> bool {
-    state
-        .latest_execution_payload_header()
-        .map(|header| *header != <ExecutionPayloadHeader<T>>::default())
-        .unwrap_or(false)
+    match state {
+        // TODO: can merge and capella fork take place on the same block?
+        &BeaconState::Base(_) | &BeaconState::Altair(_) => false,
+        // doing it with specific accessors allows us to not clone the execution payload
+        &BeaconState::Merge(_) => state
+            .latest_execution_payload_header_merge()
+            .map(|header| *header != ExecutionPayloadHeaderMerge::default())
+            .unwrap_or(false),
+        &BeaconState::Capella(_) => state
+            .latest_execution_payload_header_capella()
+            .map(|header| *header != ExecutionPayloadHeaderCapella::default())
+            .unwrap_or(false),
+    }
 }
 /// https://github.com/ethereum/consensus-specs/blob/dev/specs/merge/beacon-chain.md#is_merge_transition_block
-pub fn is_merge_transition_block<T: EthSpec, Payload: ExecPayload<T>>(
+pub fn is_merge_transition_block<T: EthSpec, Payload: AbstractExecPayload<T>>(
     state: &BeaconState<T>,
     body: BeaconBlockBodyRef<T, Payload>,
 ) -> bool {
-    body.execution_payload()
-        .map(|payload| !is_merge_transition_complete(state) && *payload != Payload::default())
-        .unwrap_or(false)
+    match state {
+        // TODO: can merge and capella fork take place on the same block?
+        &BeaconState::Base(_) | &BeaconState::Altair(_) => false,
+        // doing it with specific accessors allows us to not clone the execution payload
+        &BeaconState::Merge(_) => body
+            .execution_payload_merge()
+            .map(|payload| {
+                !is_merge_transition_complete(state) && *payload != Payload::Merge::default()
+            })
+            .unwrap_or(false),
+        &BeaconState::Capella(_) => body
+            .execution_payload_capella()
+            .map(|payload| {
+                !is_merge_transition_complete(state) && *payload != Payload::Capella::default()
+            })
+            .unwrap_or(false),
+    }
 }
 /// https://github.com/ethereum/consensus-specs/blob/dev/specs/merge/beacon-chain.md#is_execution_enabled
-pub fn is_execution_enabled<T: EthSpec, Payload: ExecPayload<T>>(
+pub fn is_execution_enabled<T: EthSpec, Payload: AbstractExecPayload<T>>(
     state: &BeaconState<T>,
     body: BeaconBlockBodyRef<T, Payload>,
 ) -> bool {

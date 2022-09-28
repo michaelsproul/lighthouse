@@ -1,3 +1,4 @@
+use crate::payload::AbstractExecPayload;
 use crate::test_utils::TestRandom;
 use crate::*;
 use derivative::Derivative;
@@ -8,7 +9,6 @@ use std::marker::PhantomData;
 use superstruct::superstruct;
 use test_random_derive::TestRandom;
 use tree_hash_derive::TreeHash;
-use crate::payload::AbstractExecPayload;
 
 /// The body of a `BeaconChain` block, containing operations.
 ///
@@ -67,24 +67,48 @@ pub struct BeaconBlockBody<T: EthSpec, Payload: AbstractExecPayload<T> = FullPay
 }
 
 impl<T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockBody<T, Payload> {
-    pub fn execution_payload(&self) -> Result<&Payload, Error> {
+    pub fn execution_payload(&self) -> Result<Payload, Error> {
         match self {
             Self::Base(_) | Self::Altair(_) => Err(Error::IncorrectStateVariant),
-            Self::Merge(body) => Ok(&body.execution_payload.clone().into()),
-            Self::Capella(body) => Ok(&body.execution_payload.clone().into()),
+            Self::Merge(body) => Ok(body.execution_payload.clone().into()),
+            Self::Capella(body) => Ok(body.execution_payload.clone().into()),
         }
     }
 }
 
+/*
 impl<'a, T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockBodyRef<'a, T, Payload> {
-    pub fn execution_payload(&self) -> Result<&Payload, Error> {
+    pub fn execution_payload(&self) -> Result<Payload, Error> {
         match self {
             Self::Base(_) | Self::Altair(_) => Err(Error::IncorrectStateVariant),
-            Self::Merge(body) => Ok(&body.execution_payload.clone().into()),
-            Self::Capella(body) => Ok(&body.execution_payload.clone().into()),
+            Self::Merge(body) => Ok(body.execution_payload.clone().into()),
+            Self::Capella(body) => Ok(body.execution_payload.clone().into()),
         }
     }
 }
+*/
+
+/*
+// specific instances that don't ever get used :/
+impl<'a, T: EthSpec> BeaconBlockBodyRef<'a, T, FullPayload<T>> {
+    pub fn execution_payload(&self) -> Result<FullPayloadRef<'a, T>, Error> {
+        match self {
+            Self::Base(_) | Self::Altair(_) => Err(Error::IncorrectStateVariant),
+            Self::Merge(body) => Ok(FullPayloadRef::Merge(&body.execution_payload)),
+            Self::Capella(body) => Ok(FullPayloadRef::Capella(&body.execution_payload)),
+        }
+    }
+}
+impl<'a, T: EthSpec> BeaconBlockBodyRef<'a, T, BlindedPayload<T>> {
+    pub fn execution_payload(&self) -> Result<BlindedPayloadRef<'a, T>, Error> {
+        match self {
+            Self::Base(_) | Self::Altair(_) => Err(Error::IncorrectStateVariant),
+            Self::Merge(body) => Ok(BlindedPayloadRef::Merge(&body.execution_payload)),
+            Self::Capella(body) => Ok(BlindedPayloadRef::Capella(&body.execution_payload)),
+        }
+    }
+}
+*/
 
 impl<'a, T: EthSpec> BeaconBlockBodyRef<'a, T> {
     /// Get the fork_name of this object
@@ -277,10 +301,10 @@ impl<E: EthSpec> From<BeaconBlockBodyMerge<E, FullPayload<E>>>
 }
 
 impl<E: EthSpec> From<BeaconBlockBodyCapella<E, FullPayload<E>>>
-for (
-    BeaconBlockBodyCapella<E, BlindedPayload<E>>,
-    Option<ExecutionPayloadCapella<E>>,
-)
+    for (
+        BeaconBlockBodyCapella<E, BlindedPayload<E>>,
+        Option<ExecutionPayloadCapella<E>>,
+    )
 {
     fn from(body: BeaconBlockBodyCapella<E, FullPayload<E>>) -> Self {
         let BeaconBlockBodyCapella {
@@ -395,12 +419,14 @@ impl<E: EthSpec> BeaconBlockBodyCapella<E, FullPayload<E>> {
     }
 }
 
+/*
 impl<E: EthSpec> From<BeaconBlockBody<E, FullPayload<E>>>
     for (
         BeaconBlockBody<E, BlindedPayload<E>>,
         Option<ExecutionPayload<E>>,
     )
 {
+    // here Self is the general enum but payload is specific variant
     fn from(body: BeaconBlockBody<E, FullPayload<E>>) -> Self {
         map_beacon_block_body!(body, |inner, cons| {
             let (block, payload) = inner.into();
@@ -408,6 +434,7 @@ impl<E: EthSpec> From<BeaconBlockBody<E, FullPayload<E>>>
         })
     }
 }
+ */
 
 #[cfg(test)]
 mod tests {

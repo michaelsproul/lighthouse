@@ -71,7 +71,10 @@ pub struct BeaconBlock<T: EthSpec, Payload: AbstractExecPayload<T> = FullPayload
 pub type BlindedBeaconBlock<E> = BeaconBlock<E, BlindedPayload<E>>;
 
 impl<T: EthSpec, Payload: AbstractExecPayload<T>> SignedRoot for BeaconBlock<T, Payload> {}
-impl<'a, T: EthSpec, Payload: AbstractExecPayload<T>> SignedRoot for BeaconBlockRef<'a, T, Payload> {}
+impl<'a, T: EthSpec, Payload: AbstractExecPayload<T>> SignedRoot
+    for BeaconBlockRef<'a, T, Payload>
+{
+}
 
 impl<T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlock<T, Payload> {
     /// Returns an empty block to be used during genesis.
@@ -243,12 +246,28 @@ impl<'a, T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockRef<'a, T, Payl
         }
     }
 
-    /// Extracts a reference to an execution payload from a block, returning an error if the block
+    /*
+    /// Extracts a clone to an execution payload from a block, returning an error if the block
     /// is pre-merge.
     pub fn execution_payload(&self) -> Result<&Payload, Error> {
         self.body().execution_payload()
     }
+    */
 }
+
+/*
+// specific instances that dont ever get used :/
+impl<'a, T: EthSpec> BeaconBlockRef<'a, T, FullPayload<T>> {
+    pub fn execution_payload(&self) -> Result<FullPayloadRef<T>, Error> {
+        self.body().execution_payload()
+    }
+}
+impl<'a, T: EthSpec> BeaconBlockRef<'a, T, BlindedPayload<T>> {
+    pub fn execution_payload(&self) -> Result<BlindedPayloadRef<T>, Error> {
+        self.body().execution_payload()
+    }
+}
+ */
 
 impl<'a, T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockRefMut<'a, T, Payload> {
     /// Convert a mutable reference to a beacon block to a mutable ref to its body.
@@ -540,12 +559,11 @@ impl<E: EthSpec> From<BeaconBlockAltair<E, BlindedPayload<E>>>
     }
 }
 
-
 // We can convert blocks with payloads to blocks without payloads, and an optional payload.
 macro_rules! impl_from {
-    ($ty_name:ident, <$($from_params:ty),*>, <$($to_params:ty),*>, $body_expr:expr) => {
+    ($ty_name:ident, $opt_name:ident, <$($from_params:ty),*>, <$($to_params:ty),*>, $body_expr:expr) => {
         impl<E: EthSpec> From<$ty_name<$($from_params),*>>
-            for ($ty_name<$($to_params),*>, Option<ExecutionPayload<E>>)
+            for ($ty_name<$($to_params),*>, Option<$opt_name<E>>)
         {
             #[allow(clippy::redundant_closure_call)]
             fn from(block: $ty_name<$($from_params),*>) -> Self {
@@ -571,11 +589,10 @@ macro_rules! impl_from {
     }
 }
 
-impl_from!(BeaconBlockBase, <E, FullPayload<E>>, <E, BlindedPayload<E>>, |body: BeaconBlockBodyBase<_, _>| body.into());
-impl_from!(BeaconBlockAltair, <E, FullPayload<E>>, <E, BlindedPayload<E>>, |body: BeaconBlockBodyAltair<_, _>| body.into());
-impl_from!(BeaconBlockMerge, <E, FullPayload<E>>, <E, BlindedPayload<E>>, |body: BeaconBlockBodyMerge<_, _>| body.into());
-impl_from!(BeaconBlockCapella, <E, FullPayload<E>>, <E, BlindedPayload<E>>, |body: BeaconBlockBodyCapella<_, _>| body.into());
-
+impl_from!(BeaconBlockBase, ExecutionPayload, <E, FullPayload<E>>, <E, BlindedPayload<E>>, |body: BeaconBlockBodyBase<_, _>| body.into());
+impl_from!(BeaconBlockAltair, ExecutionPayload, <E, FullPayload<E>>, <E, BlindedPayload<E>>, |body: BeaconBlockBodyAltair<_, _>| body.into());
+impl_from!(BeaconBlockMerge, ExecutionPayloadMerge, <E, FullPayload<E>>, <E, BlindedPayload<E>>, |body: BeaconBlockBodyMerge<_, _>| body.into());
+impl_from!(BeaconBlockCapella, ExecutionPayloadCapella, <E, FullPayload<E>>, <E, BlindedPayload<E>>, |body: BeaconBlockBodyCapella<_, _>| body.into());
 
 // We can clone blocks with payloads to blocks without payloads, without cloning the payload.
 macro_rules! impl_clone_as_blinded {
@@ -622,12 +639,14 @@ impl<'a, E: EthSpec> From<BeaconBlockRef<'a, E, FullPayload<E>>>
     }
 }
 
+/*
 impl<E: EthSpec> From<BeaconBlock<E, FullPayload<E>>>
     for (
         BeaconBlock<E, BlindedPayload<E>>,
         Option<ExecutionPayload<E>>,
     )
 {
+    // here Self is the general enum but payload is specific variant
     fn from(block: BeaconBlock<E, FullPayload<E>>) -> Self {
         map_beacon_block!(block, |inner, cons| {
             let (block, payload) = inner.into();
@@ -635,6 +654,7 @@ impl<E: EthSpec> From<BeaconBlock<E, FullPayload<E>>>
         })
     }
 }
+ */
 
 #[cfg(test)]
 mod tests {

@@ -263,7 +263,7 @@ impl<E: EthSpec> From<SignedBeaconBlockAltair<E, BlindedPayload<E>>>
 impl<E: EthSpec> SignedBeaconBlockMerge<E, BlindedPayload<E>> {
     pub fn into_full_block(
         self,
-        execution_payload: ExecutionPayload<E>,
+        execution_payload: ExecutionPayloadMerge<E>,
     ) -> SignedBeaconBlockMerge<E, FullPayload<E>> {
         let SignedBeaconBlockMerge {
             message:
@@ -312,20 +312,76 @@ impl<E: EthSpec> SignedBeaconBlockMerge<E, BlindedPayload<E>> {
     }
 }
 
+impl<E: EthSpec> SignedBeaconBlockCapella<E, BlindedPayload<E>> {
+    pub fn into_full_block(
+        self,
+        execution_payload: ExecutionPayloadCapella<E>,
+    ) -> SignedBeaconBlockCapella<E, FullPayload<E>> {
+        let SignedBeaconBlockCapella {
+            message:
+                BeaconBlockCapella {
+                    slot,
+                    proposer_index,
+                    parent_root,
+                    state_root,
+                    body:
+                        BeaconBlockBodyCapella {
+                            randao_reveal,
+                            eth1_data,
+                            graffiti,
+                            proposer_slashings,
+                            attester_slashings,
+                            attestations,
+                            deposits,
+                            voluntary_exits,
+                            sync_aggregate,
+                            execution_payload: BlindedPayloadCapella { .. },
+                        },
+                },
+            signature,
+        } = self;
+        SignedBeaconBlockCapella {
+            message: BeaconBlockCapella {
+                slot,
+                proposer_index,
+                parent_root,
+                state_root,
+                body: BeaconBlockBodyCapella {
+                    randao_reveal,
+                    eth1_data,
+                    graffiti,
+                    proposer_slashings,
+                    attester_slashings,
+                    attestations,
+                    deposits,
+                    voluntary_exits,
+                    sync_aggregate,
+                    execution_payload: FullPayloadCapella { execution_payload },
+                },
+            },
+            signature,
+        }
+    }
+}
+
 impl<E: EthSpec> SignedBeaconBlock<E, BlindedPayload<E>> {
     pub fn try_into_full_block(
         self,
         execution_payload: Option<ExecutionPayload<E>>,
     ) -> Option<SignedBeaconBlock<E, FullPayload<E>>> {
-        let full_block = match self {
-            SignedBeaconBlock::Base(block) => SignedBeaconBlock::Base(block.into()),
-            SignedBeaconBlock::Altair(block) => SignedBeaconBlock::Altair(block.into()),
-            SignedBeaconBlock::Merge(block) => {
-                SignedBeaconBlock::Merge(block.into_full_block(execution_payload?))
+        let full_block = match (self, execution_payload) {
+            (SignedBeaconBlock::Base(block), _) => SignedBeaconBlock::Base(block.into()),
+            (SignedBeaconBlock::Altair(block), _) => SignedBeaconBlock::Altair(block.into()),
+            (SignedBeaconBlock::Merge(block), Some(ExecutionPayload::Merge(payload))) => {
+                SignedBeaconBlock::Merge(block.into_full_block(payload))
             }
-            SignedBeaconBlock::Capella(block) => {
-                SignedBeaconBlock::Capella(block.into_full_block(execution_payload?))
+            (SignedBeaconBlock::Capella(block), Some(ExecutionPayload::Capella(payload))) => {
+                SignedBeaconBlock::Capella(block.into_full_block(payload))
             }
+            // be explicit about other failures rather than use generic wildcard
+            // so that compiler will warn us when this function is missing a fork
+            (SignedBeaconBlock::Merge(block), _) => return None,
+            (SignedBeaconBlock::Capella(block), _) => return None,
         };
         Some(full_block)
     }
@@ -334,6 +390,7 @@ impl<E: EthSpec> SignedBeaconBlock<E, BlindedPayload<E>> {
 // We can blind blocks with payloads by converting the payload into a header.
 //
 // We can optionally keep the header, or discard it.
+/*
 impl<E: EthSpec> From<SignedBeaconBlock<E>>
     for (SignedBlindedBeaconBlock<E>, Option<ExecutionPayload<E>>)
 {
@@ -346,13 +403,17 @@ impl<E: EthSpec> From<SignedBeaconBlock<E>>
         )
     }
 }
+ */
 
+/*
+// might be able to implement this another way
 impl<E: EthSpec> From<SignedBeaconBlock<E>> for SignedBlindedBeaconBlock<E> {
     fn from(signed_block: SignedBeaconBlock<E>) -> Self {
         let (blinded_block, _) = signed_block.into();
         blinded_block
     }
 }
+ */
 
 // We can blind borrowed blocks with payloads by converting the payload into a header (without
 // cloning the payload contents).
