@@ -858,18 +858,21 @@ where
             .on_verified_block(block, block_root, state)
             .map_err(Error::AfterBlockFailed)?;
 
-        let execution_status = if let Ok(execution_payload) = block.body().execution_payload() {
-            let block_hash = execution_payload.block_hash();
-
-            if block_hash == ExecutionBlockHash::zero() {
+        let execution_status = if let Some(exec_block_hash) = match block {
+            BeaconBlockRef::Base(_) => None,
+            BeaconBlockRef::Altair(_) => None,
+            BeaconBlockRef::Merge(block) => Some(block.body.execution_payload.block_hash()),
+            BeaconBlockRef::Capella(block) => Some(block.body.execution_payload.block_hash()),
+        } {
+            if exec_block_hash == ExecutionBlockHash::zero() {
                 // The block is post-merge-fork, but pre-terminal-PoW block. We don't need to verify
                 // the payload.
                 ExecutionStatus::irrelevant()
             } else {
                 match payload_verification_status {
-                    PayloadVerificationStatus::Verified => ExecutionStatus::Valid(block_hash),
+                    PayloadVerificationStatus::Verified => ExecutionStatus::Valid(exec_block_hash),
                     PayloadVerificationStatus::Optimistic => {
-                        ExecutionStatus::Optimistic(block_hash)
+                        ExecutionStatus::Optimistic(exec_block_hash)
                     }
                     // It would be a logic error to declare a block irrelevant if it has an
                     // execution payload with a non-zero block hash.
