@@ -1,4 +1,4 @@
-use crate::payload::AbstractExecPayload;
+use crate::payload::{AbstractExecPayload, ToRef};
 use crate::test_utils::TestRandom;
 use crate::*;
 use derivative::Derivative;
@@ -67,11 +67,11 @@ pub struct BeaconBlockBody<T: EthSpec, Payload: AbstractExecPayload<T> = FullPay
 }
 
 impl<T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockBody<T, Payload> {
-    pub fn execution_payload(&self) -> Result<Payload, Error> {
+    pub fn execution_payload<'a>(&'a self) -> Result<Payload::Ref<'a>, Error> {
         match self {
             Self::Base(_) | Self::Altair(_) => Err(Error::IncorrectStateVariant),
-            Self::Merge(body) => Ok(body.execution_payload.clone().into()),
-            Self::Capella(body) => Ok(body.execution_payload.clone().into()),
+            Self::Merge(body) => Ok(body.execution_payload.to_ref()),
+            Self::Capella(body) => Ok(body.execution_payload.to_ref()),
         }
     }
 }
