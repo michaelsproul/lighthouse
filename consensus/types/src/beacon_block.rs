@@ -246,28 +246,12 @@ impl<'a, T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockRef<'a, T, Payl
         }
     }
 
-    /*
-    /// Extracts a clone to an execution payload from a block, returning an error if the block
+    /// Extracts a reference to an execution payload from a block, returning an error if the block
     /// is pre-merge.
-    pub fn execution_payload(&self) -> Result<&Payload, Error> {
-        self.body().execution_payload()
-    }
-    */
-}
-
-/*
-// specific instances that dont ever get used :/
-impl<'a, T: EthSpec> BeaconBlockRef<'a, T, FullPayload<T>> {
-    pub fn execution_payload(&self) -> Result<FullPayloadRef<T>, Error> {
+    pub fn execution_payload(&self) -> Result<Payload::Ref<'a>, Error> {
         self.body().execution_payload()
     }
 }
-impl<'a, T: EthSpec> BeaconBlockRef<'a, T, BlindedPayload<T>> {
-    pub fn execution_payload(&self) -> Result<BlindedPayloadRef<T>, Error> {
-        self.body().execution_payload()
-    }
-}
- */
 
 impl<'a, T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockRefMut<'a, T, Payload> {
     /// Convert a mutable reference to a beacon block to a mutable ref to its body.
@@ -639,22 +623,19 @@ impl<'a, E: EthSpec> From<BeaconBlockRef<'a, E, FullPayload<E>>>
     }
 }
 
-/*
 impl<E: EthSpec> From<BeaconBlock<E, FullPayload<E>>>
     for (
         BeaconBlock<E, BlindedPayload<E>>,
         Option<ExecutionPayload<E>>,
     )
 {
-    // here Self is the general enum but payload is specific variant
     fn from(block: BeaconBlock<E, FullPayload<E>>) -> Self {
         map_beacon_block!(block, |inner, cons| {
             let (block, payload) = inner.into();
-            (cons(block), payload)
+            (cons(block), payload.map(Into::into))
         })
     }
 }
- */
 
 #[cfg(test)]
 mod tests {

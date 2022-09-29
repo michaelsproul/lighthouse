@@ -380,8 +380,8 @@ impl<E: EthSpec> SignedBeaconBlock<E, BlindedPayload<E>> {
             }
             // be explicit about other failures rather than use generic wildcard
             // so that compiler will warn us when this function is missing a fork
-            (SignedBeaconBlock::Merge(block), _) => return None,
-            (SignedBeaconBlock::Capella(block), _) => return None,
+            (SignedBeaconBlock::Merge(_), _) => return None,
+            (SignedBeaconBlock::Capella(_), _) => return None,
         };
         Some(full_block)
     }
@@ -390,7 +390,6 @@ impl<E: EthSpec> SignedBeaconBlock<E, BlindedPayload<E>> {
 // We can blind blocks with payloads by converting the payload into a header.
 //
 // We can optionally keep the header, or discard it.
-/*
 impl<E: EthSpec> From<SignedBeaconBlock<E>>
     for (SignedBlindedBeaconBlock<E>, Option<ExecutionPayload<E>>)
 {
@@ -403,17 +402,13 @@ impl<E: EthSpec> From<SignedBeaconBlock<E>>
         )
     }
 }
- */
 
-/*
-// might be able to implement this another way
 impl<E: EthSpec> From<SignedBeaconBlock<E>> for SignedBlindedBeaconBlock<E> {
     fn from(signed_block: SignedBeaconBlock<E>) -> Self {
         let (blinded_block, _) = signed_block.into();
         blinded_block
     }
 }
- */
 
 // We can blind borrowed blocks with payloads by converting the payload into a header (without
 // cloning the payload contents).

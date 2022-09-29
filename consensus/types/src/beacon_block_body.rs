@@ -68,6 +68,12 @@ pub struct BeaconBlockBody<T: EthSpec, Payload: AbstractExecPayload<T> = FullPay
 
 impl<T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockBody<T, Payload> {
     pub fn execution_payload<'a>(&'a self) -> Result<Payload::Ref<'a>, Error> {
+        self.to_ref().execution_payload()
+    }
+}
+
+impl<'a, T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockBodyRef<'a, T, Payload> {
+    pub fn execution_payload(&self) -> Result<Payload::Ref<'a>, Error> {
         match self {
             Self::Base(_) | Self::Altair(_) => Err(Error::IncorrectStateVariant),
             Self::Merge(body) => Ok(body.execution_payload.to_ref()),
@@ -75,40 +81,6 @@ impl<T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockBody<T, Payload> {
         }
     }
 }
-
-/*
-impl<'a, T: EthSpec, Payload: AbstractExecPayload<T>> BeaconBlockBodyRef<'a, T, Payload> {
-    pub fn execution_payload(&self) -> Result<Payload, Error> {
-        match self {
-            Self::Base(_) | Self::Altair(_) => Err(Error::IncorrectStateVariant),
-            Self::Merge(body) => Ok(body.execution_payload.clone().into()),
-            Self::Capella(body) => Ok(body.execution_payload.clone().into()),
-        }
-    }
-}
-*/
-
-/*
-// specific instances that don't ever get used :/
-impl<'a, T: EthSpec> BeaconBlockBodyRef<'a, T, FullPayload<T>> {
-    pub fn execution_payload(&self) -> Result<FullPayloadRef<'a, T>, Error> {
-        match self {
-            Self::Base(_) | Self::Altair(_) => Err(Error::IncorrectStateVariant),
-            Self::Merge(body) => Ok(FullPayloadRef::Merge(&body.execution_payload)),
-            Self::Capella(body) => Ok(FullPayloadRef::Capella(&body.execution_payload)),
-        }
-    }
-}
-impl<'a, T: EthSpec> BeaconBlockBodyRef<'a, T, BlindedPayload<T>> {
-    pub fn execution_payload(&self) -> Result<BlindedPayloadRef<'a, T>, Error> {
-        match self {
-            Self::Base(_) | Self::Altair(_) => Err(Error::IncorrectStateVariant),
-            Self::Merge(body) => Ok(BlindedPayloadRef::Merge(&body.execution_payload)),
-            Self::Capella(body) => Ok(BlindedPayloadRef::Capella(&body.execution_payload)),
-        }
-    }
-}
-*/
 
 impl<'a, T: EthSpec> BeaconBlockBodyRef<'a, T> {
     /// Get the fork_name of this object
@@ -419,22 +391,19 @@ impl<E: EthSpec> BeaconBlockBodyCapella<E, FullPayload<E>> {
     }
 }
 
-/*
 impl<E: EthSpec> From<BeaconBlockBody<E, FullPayload<E>>>
     for (
         BeaconBlockBody<E, BlindedPayload<E>>,
         Option<ExecutionPayload<E>>,
     )
 {
-    // here Self is the general enum but payload is specific variant
     fn from(body: BeaconBlockBody<E, FullPayload<E>>) -> Self {
         map_beacon_block_body!(body, |inner, cons| {
             let (block, payload) = inner.into();
-            (cons(block), payload)
+            (cons(block), payload.map(Into::into))
         })
     }
 }
- */
 
 #[cfg(test)]
 mod tests {
