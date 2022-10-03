@@ -130,12 +130,21 @@ pub enum DynamicImpl {
 #[cfg(all(feature = "detect-cpufeatures", target_arch = "x86_64"))]
 cpufeatures::new!(x86_sha_extensions, "sha", "sse2", "ssse3", "sse4.1");
 
+#[cfg(all(feature = "detect-cpufeatures", target_arch = "aarch64"))]
+cpufeatures::new!(aarch64_sha_extensions, "sha2");
+
 #[inline(always)]
 pub fn have_sha_extensions() -> bool {
     #[cfg(all(feature = "detect-cpufeatures", target_arch = "x86_64"))]
     return x86_sha_extensions::get();
 
-    #[cfg(not(all(feature = "detect-cpufeatures", target_arch = "x86_64")))]
+    #[cfg(all(feature = "detect-cpufeatures", target_arch = "aarch64"))]
+    return aarch64_sha_extensions::get();
+
+    #[cfg(not(all(
+        feature = "detect-cpufeatures",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
     return false;
 }
 
