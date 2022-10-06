@@ -1993,20 +1993,37 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     ) -> bool {
         let slots_per_epoch = T::EthSpec::slots_per_epoch();
         let shuffling_lookahead = 1 + self.spec.min_seed_lookahead.as_u64();
+        let current_epoch = state.current_epoch();
+        let previous_epoch = state.previous_epoch();
 
         // Shuffling can't have changed if we're in the first few epochs
-        if state.current_epoch() < shuffling_lookahead {
+        if current_epoch < shuffling_lookahead {
             return true;
+        }
+
+        // Ignore attestations which are from neither the previous nor current epoch.
+        if target_epoch != current_epoch && target_epoch != previous_epoch {
+            return false;
         }
 
         // Otherwise the shuffling is determined by the block at the end of the target epoch
         // minus the shuffling lookahead (usually 2). We call this the "pivot".
-        let pivot_slot =
-            if target_epoch == state.previous_epoch() || target_epoch == state.current_epoch() {
-                (target_epoch - shuffling_lookahead).end_slot(slots_per_epoch)
-            } else {
-                return false;
-            };
+        let pivot_epoch = target_epoch - shuffling_lookahead;
+
+        // If justification is timely then any attestation matching source will necessarily
+        // have the same shuffling as our state. We check this condition quickly here, and rely
+        // on the op pool to check the source match.
+        if target_epoch == previous_epoch
+            && pivot_epoch < state.previous_justified_checkpoint().epoch
+            || target_epoch == current_epoch
+                && pivot_epoch < state.current_justified_checkpoint().epoch
+        {
+            return true;
+        }
+
+        // Otherwise, if justification is not timely we need to do a more expensive lookup
+        // of the attestation's ancestor at the pivot slot.
+        let pivot_slot = pivot_epoch.end_slot(slots_per_epoch);
 
         let state_pivot_block_root = match state.get_block_root(pivot_slot) {
             Ok(root) => *root,
@@ -2024,18 +2041,25 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // Use fork choice's view of the block DAG to quickly evaluate whether the attestation's
         // pivot block is the same as the current state's pivot block. If it is, then the
         // attestation's shuffling is the same as the current state's.
+        //
         // To account for skipped slots, find the first block at *or before* the pivot slot.
+        //
+        // To account for pruning of the fork choice DAG, if the finalized block is reached before
+        // the pivot slot then stop and consider this attestation's shuffling stable.
+        let state_finalized_block_root = state.finalized_checkpoint().root;
         let fork_choice_lock = self.canonical_head.fork_choice_read_lock();
         let pivot_block_root = fork_choice_lock
             .proto_array()
             .core_proto_array()
             .iter_block_roots(block_root)
-            .find(|(_, slot)| *slot <= pivot_slot)
+            .find(|(block_root, slot)| {
+                *slot <= pivot_slot || *block_root == state_finalized_block_root
+            })
             .map(|(block_root, _)| block_root);
         drop(fork_choice_lock);
 
         match pivot_block_root {
-            Some(root) => root == state_pivot_block_root,
+            Some(root) => root == state_pivot_block_root || root == state_finalized_block_root,
             None => {
                 debug!(
                     &self.log,
