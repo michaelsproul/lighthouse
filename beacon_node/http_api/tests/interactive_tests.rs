@@ -97,23 +97,31 @@ impl ForkChoiceUpdates {
 // configured.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 pub async fn proposer_boost_re_org_zero_weight() {
-    proposer_boost_re_org_test(Slot::new(30), None, Some(10), true).await
+    proposer_boost_re_org_test(Slot::new(30), Some(10), None, None, true).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 pub async fn proposer_boost_re_org_epoch_boundary() {
-    proposer_boost_re_org_test(Slot::new(31), None, Some(10), false).await
+    proposer_boost_re_org_test(Slot::new(31), Some(10), None, None, false).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 pub async fn proposer_boost_re_org_bad_ffg() {
-    proposer_boost_re_org_test(Slot::new(64 + 22), None, Some(10), false).await
+    proposer_boost_re_org_test(Slot::new(64 + 22), Some(10), None, None, false).await
 }
 
+/// Run a proposer boost re-org test.
+///
+/// - `head_slot`: the slot of the canonical head to be reorged
+/// - `reorg_threshold`: committee percentage value for reorging
+/// - `num_empty_votes`: percentage of comm of attestations for the parent block
+/// - `num_head_votes`: number of attestations for the head block
+/// - `should_re_org`: whether the proposer should build on the parent rather than the head
 pub async fn proposer_boost_re_org_test(
     head_slot: Slot,
-    _num_head_votes: Option<u64>,
     re_org_threshold: Option<u64>,
+    percent_empty_votes: usize,
+    percent_head_votes: usize,
     should_re_org: bool,
 ) {
     assert!(head_slot > 0);
@@ -122,9 +130,9 @@ pub async fn proposer_boost_re_org_test(
     let mut spec = ForkName::Merge.make_genesis_spec(E::default_spec());
     spec.terminal_total_difficulty = 1.into();
 
-    // Validator count needs to be at least 32 or proposer boost gets set to 0 when computing
-    // `validator_count // 32`.
-    let validator_count = 32;
+    // Ensure there are enough validators to have `attesters_per_slot`.
+    let attesters_per_slot = 10;
+    let validator_count = E::slots_per_epoch() as usize * attesters_per_slot;
     let all_validators = (0..validator_count).collect::<Vec<usize>>();
     let num_initial = head_slot.as_u64() - 1;
 
@@ -214,14 +222,20 @@ pub async fn proposer_boost_re_org_test(
 
     // Attest to block A during slot B.
     harness.advance_slot();
-    let block_a_empty_votes = harness.make_attestations(
+    let (block_a_empty_votes, block_a_attesters) = harness.make_attestations_with_limit(
         &all_validators,
         &state_a,
         state_a.canonical_root(),
         block_a_root.into(),
         slot_b,
+        num_empty_votes,
     );
     harness.process_attestations(block_a_empty_votes);
+
+    let mut remaining_attesters = all_validators
+        .iter()
+        .filter(|index| !block_a_attesters.contains(index))
+        .collect::<Vec<_>>();
 
     // Produce block B and process it halfway through the slot.
     let (block_b, mut state_b) = harness.make_block(state_a.clone(), slot_b).await;
@@ -239,17 +253,16 @@ pub async fn proposer_boost_re_org_test(
     harness.process_block_result(block_b.clone()).await.unwrap();
 
     // Add attestations to block B.
-    /* FIXME(sproul): implement attestations
-    if let Some(num_head_votes) = num_head_votes {
-        harness.attest_block(
-            &state_b,
-            state_b.canonical_root(),
-            block_b_root,
-            &block_b,
-            &[]
-        )
-    }
-    */
+    let block_a_empty_votes = harness.make_attestations_with_limit(
+        &remaining_attesters,
+        &state_b,
+        state_b.canonical_root(),
+        block_b_root.into(),
+        slot_b,
+        num_head_votes,
+    );
+    harness.process_attestations(block_a_empty_votes);
+
     // Simulate the scheduled call to prepare proposers at 8 seconds into the slot.
     let payload_lookahead = harness.chain.config.prepare_payload_lookahead;
     let scheduled_prepare_time = slot_clock.start_of(slot_c).unwrap() - payload_lookahead;
