@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use task_executor::ShutdownReason;
 use types::{EthSpec, EthSpecId};
-use validator_client::ProductionValidatorClient;
+// use validator_client::ProductionValidatorClient;
 
 fn bls_library_name() -> &'static str {
     if cfg!(feature = "portable") {
@@ -295,8 +295,8 @@ fn main() {
         )
         .subcommand(beacon_node::cli_app())
         .subcommand(boot_node::cli_app())
-        .subcommand(validator_client::cli_app())
-        .subcommand(account_manager::cli_app())
+        // .subcommand(validator_client::cli_app())
+        // .subcommand(account_manager::cli_app())
         .subcommand(database_manager::cli_app())
         .get_matches();
 
@@ -510,6 +510,7 @@ fn run<E: EthSpec>(
         (Some(_), Some(_)) => panic!("CLI prevents both --network and --testnet-dir"),
     };
 
+    /*
     if let Some(sub_matches) = matches.subcommand_matches("account_manager") {
         eprintln!("Running account manager for {} network", network_name);
         // Pass the entire `environment` to the account manager so it can run blocking operations.
@@ -518,6 +519,7 @@ fn run<E: EthSpec>(
         // Exit as soon as account manager returns control.
         return Ok(());
     }
+    */
 
     if let Some(sub_matches) = matches.subcommand_matches(database_manager::CMD) {
         info!(log, "Running database manager for {} network", network_name);
@@ -563,6 +565,7 @@ fn run<E: EthSpec>(
                 "beacon_node",
             );
         }
+        /*
         ("validator_client", Some(matches)) => {
             let context = environment.core_context();
             let log = context.log().clone();
@@ -595,6 +598,7 @@ fn run<E: EthSpec>(
                 ));
             }
         }
+        */
         _ => {
             crit!(log, "No subcommand supplied. See --help .");
             return Err("No subcommand supplied.".into());

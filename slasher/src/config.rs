@@ -61,6 +61,8 @@ pub enum DatabaseBackend {
     Mdbx,
     #[cfg(feature = "lmdb")]
     Lmdb,
+    #[cfg(feature = "butter_db")]
+    Butter,
     Disabled,
 }
 

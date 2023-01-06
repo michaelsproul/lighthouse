@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "account_manager",
+    # "account_manager",
 
     "beacon_node",
     "beacon_node/beacon_chain",
@@ -79,14 +79,14 @@ members = [
     "testing/ef_tests",
     "testing/eth1_test_rig",
     "testing/execution_engine_integration",
-    "testing/node_test_rig",
-    "testing/simulator",
+    # "testing/node_test_rig",
+    # "testing/simulator",
     "testing/test-test_logger",
     "testing/state_transition_vectors",
-    "testing/web3signer_tests",
+    # "testing/web3signer_tests",
 
-    "validator_client",
-    "validator_client/slashing_protection",
+    # "validator_client",
+    # "validator_client/slashing_protection",
 ]
 
 [patch]

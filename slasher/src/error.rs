@@ -8,6 +8,8 @@ pub enum Error {
     DatabaseMdbxError(mdbx::Error),
     #[cfg(feature = "lmdb")]
     DatabaseLmdbError(lmdb::Error),
+    #[cfg(feature = "butter_db")]
+    DatabaseButterError(butter_db::Error),
     SlasherDatabaseBackendDisabled,
     MismatchedDatabaseVariant,
     DatabaseIOError(io::Error),
@@ -85,6 +87,13 @@ impl From<lmdb::Error> for Error {
             lmdb::Error::Other(os_error) => Error::from(io::Error::from_raw_os_error(os_error)),
             _ => Error::DatabaseLmdbError(e),
         }
+    }
+}
+
+#[cfg(feature = "butter_db")]
+impl From<butter_db::Error> for Error {
+    fn from(e: butter_db::Error) -> Self {
+        Error::DatabaseButterError(e)
     }
 }
 

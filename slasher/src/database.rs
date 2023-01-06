@@ -1,3 +1,4 @@
+mod butter_db_impl;
 pub mod interface;
 mod lmdb_impl;
 mod mdbx_impl;
@@ -458,9 +459,9 @@ impl<E: EthSpec> SlasherDB<E> {
 
         let attestation_key = IndexedAttestationId::new(indexed_att_id);
         let data = indexed_attestation.as_ssz_bytes();
-
-        cursor.put(attestation_key.as_ref(), &data)?;
         drop(cursor);
+
+        txn.put(db, attestation_key.as_ref(), &data)?;
 
         // Update the (epoch, hash) to ID mapping.
         self.put_indexed_attestation_id(txn, &id_key, attestation_key)?;

@@ -3,6 +3,8 @@ use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
+#[cfg(feature = "butter_db")]
+use crate::database::butter_db_impl;
 #[cfg(feature = "lmdb")]
 use crate::database::lmdb_impl;
 #[cfg(feature = "mdbx")]
@@ -14,6 +16,8 @@ pub enum Environment {
     Mdbx(mdbx_impl::Environment),
     #[cfg(feature = "lmdb")]
     Lmdb(lmdb_impl::Environment),
+    #[cfg(feature = "butter_db")]
+    Butter(butter_db_impl::Environment),
     Disabled,
 }
 
@@ -23,6 +27,8 @@ pub enum RwTransaction<'env> {
     Mdbx(mdbx_impl::RwTransaction<'env>),
     #[cfg(feature = "lmdb")]
     Lmdb(lmdb_impl::RwTransaction<'env>),
+    #[cfg(feature = "butter_db")]
+    Butter(butter_db_impl::RwTransaction<'env>),
     Disabled(PhantomData<&'env ()>),
 }
 
@@ -32,6 +38,8 @@ pub enum Database<'env> {
     Mdbx(mdbx_impl::Database<'env>),
     #[cfg(feature = "lmdb")]
     Lmdb(lmdb_impl::Database<'env>),
+    #[cfg(feature = "butter_db")]
+    Butter(butter_db_impl::Database<'env>),
     Disabled(PhantomData<&'env ()>),
 }
 
@@ -54,6 +62,8 @@ pub enum Cursor<'env> {
     Mdbx(mdbx_impl::Cursor<'env>),
     #[cfg(feature = "lmdb")]
     Lmdb(lmdb_impl::Cursor<'env>),
+    #[cfg(feature = "butter_db")]
+    Butter(butter_db_impl::Cursor<'env>),
     Disabled(PhantomData<&'env ()>),
 }
 
@@ -67,6 +77,10 @@ impl Environment {
             DatabaseBackend::Mdbx => mdbx_impl::Environment::new(config).map(Environment::Mdbx),
             #[cfg(feature = "lmdb")]
             DatabaseBackend::Lmdb => lmdb_impl::Environment::new(config).map(Environment::Lmdb),
+            #[cfg(feature = "butter_db")]
+            DatabaseBackend::Butter => {
+                butter_db_impl::Environment::new(config).map(Environment::Butter)
+            }
             DatabaseBackend::Disabled => Err(Error::SlasherDatabaseBackendDisabled),
         }
     }
@@ -77,6 +91,8 @@ impl Environment {
             Self::Mdbx(env) => env.create_databases(),
             #[cfg(feature = "lmdb")]
             Self::Lmdb(env) => env.create_databases(),
+            #[cfg(feature = "butter_db")]
+            Self::Butter(env) => env.create_databases(),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -87,6 +103,8 @@ impl Environment {
             Self::Mdbx(env) => env.begin_rw_txn().map(RwTransaction::Mdbx),
             #[cfg(feature = "lmdb")]
             Self::Lmdb(env) => env.begin_rw_txn().map(RwTransaction::Lmdb),
+            #[cfg(feature = "butter_db")]
+            Self::Butter(env) => env.begin_rw_txn().map(RwTransaction::Butter),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -98,6 +116,9 @@ impl Environment {
             Self::Mdbx(env) => env.filenames(config),
             #[cfg(feature = "lmdb")]
             Self::Lmdb(env) => env.filenames(config),
+            #[cfg(feature = "butter_db")]
+            // FIXME(sproul): implement this
+            Self::Butter(env) => vec![],
             _ => vec![],
         }
     }
@@ -114,6 +135,8 @@ impl<'env> RwTransaction<'env> {
             (Self::Mdbx(txn), Database::Mdbx(db)) => txn.get(db, key),
             #[cfg(feature = "lmdb")]
             (Self::Lmdb(txn), Database::Lmdb(db)) => txn.get(db, key),
+            #[cfg(feature = "butter_db")]
+            (Self::Butter(txn), Database::Butter(db)) => txn.get(db, key),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -129,6 +152,8 @@ impl<'env> RwTransaction<'env> {
             (Self::Mdbx(txn), Database::Mdbx(db)) => txn.put(db, key, value),
             #[cfg(feature = "lmdb")]
             (Self::Lmdb(txn), Database::Lmdb(db)) => txn.put(db, key, value),
+            #[cfg(feature = "butter_db")]
+            (Self::Butter(txn), Database::Butter(db)) => txn.put(db, key, value),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -139,6 +164,8 @@ impl<'env> RwTransaction<'env> {
             (Self::Mdbx(txn), Database::Mdbx(db)) => txn.del(db, key),
             #[cfg(feature = "lmdb")]
             (Self::Lmdb(txn), Database::Lmdb(db)) => txn.del(db, key),
+            #[cfg(feature = "butter_db")]
+            (Self::Butter(txn), Database::Butter(db)) => txn.del(db, key),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -149,6 +176,8 @@ impl<'env> RwTransaction<'env> {
             (Self::Mdbx(txn), Database::Mdbx(db)) => txn.cursor(db).map(Cursor::Mdbx),
             #[cfg(feature = "lmdb")]
             (Self::Lmdb(txn), Database::Lmdb(db)) => txn.cursor(db).map(Cursor::Lmdb),
+            #[cfg(feature = "butter_db")]
+            (Self::Butter(txn), Database::Butter(db)) => txn.cursor(db).map(Cursor::Butter),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -159,6 +188,8 @@ impl<'env> RwTransaction<'env> {
             Self::Mdbx(txn) => txn.commit(),
             #[cfg(feature = "lmdb")]
             Self::Lmdb(txn) => txn.commit(),
+            #[cfg(feature = "butter_db")]
+            Self::Butter(txn) => txn.commit(),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -172,6 +203,8 @@ impl<'env> Cursor<'env> {
             Cursor::Mdbx(cursor) => cursor.first_key(),
             #[cfg(feature = "lmdb")]
             Cursor::Lmdb(cursor) => cursor.first_key(),
+            #[cfg(feature = "butter_db")]
+            Cursor::Butter(cursor) => cursor.first_key().map_err(Into::into),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -183,6 +216,8 @@ impl<'env> Cursor<'env> {
             Cursor::Mdbx(cursor) => cursor.last_key(),
             #[cfg(feature = "lmdb")]
             Cursor::Lmdb(cursor) => cursor.last_key(),
+            #[cfg(feature = "butter_db")]
+            Cursor::Butter(cursor) => cursor.last_key().map_err(Into::into),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -193,6 +228,8 @@ impl<'env> Cursor<'env> {
             Cursor::Mdbx(cursor) => cursor.next_key(),
             #[cfg(feature = "lmdb")]
             Cursor::Lmdb(cursor) => cursor.next_key(),
+            #[cfg(feature = "butter_db")]
+            Cursor::Butter(cursor) => cursor.next_key().map_err(Into::into),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -204,6 +241,8 @@ impl<'env> Cursor<'env> {
             Cursor::Mdbx(cursor) => cursor.get_current(),
             #[cfg(feature = "lmdb")]
             Cursor::Lmdb(cursor) => cursor.get_current(),
+            #[cfg(feature = "butter_db")]
+            Cursor::Butter(cursor) => cursor.get_current().map_err(Into::into),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
@@ -214,17 +253,23 @@ impl<'env> Cursor<'env> {
             Cursor::Mdbx(cursor) => cursor.delete_current(),
             #[cfg(feature = "lmdb")]
             Cursor::Lmdb(cursor) => cursor.delete_current(),
+            #[cfg(feature = "butter_db")]
+            Cursor::Butter(cursor) => cursor.delete_current().map_err(Into::into),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
 
+    /* FIXME(sproul): consider keeping
     pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<(), Error> {
         match self {
             #[cfg(feature = "mdbx")]
             Self::Mdbx(cursor) => cursor.put(key, value),
             #[cfg(feature = "lmdb")]
             Self::Lmdb(cursor) => cursor.put(key, value),
+            #[cfg(feature = "butter_db")]
+            Self::Butter(cursor) => cursor.put(key, value),
             _ => Err(Error::MismatchedDatabaseVariant),
         }
     }
+    */
 }
