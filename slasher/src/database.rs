@@ -252,7 +252,9 @@ impl<E: EthSpec> SlasherDB<E> {
         std::fs::create_dir_all(&config.database_path)?;
 
         let env = Box::leak(Box::new(Environment::new(&config)?));
+        info!(log, "Creating databases");
         let databases = env.create_databases()?;
+        info!(log, "Databases created");
 
         #[cfg(windows)]
         {
@@ -274,6 +276,7 @@ impl<E: EthSpec> SlasherDB<E> {
 
         db = db.migrate()?;
 
+        info!(log, "Loading config");
         let mut txn = db.begin_rw_txn()?;
         if let Some(on_disk_config) = db.load_config(&mut txn)? {
             let current_disk_config = db.config.disk_config();
@@ -285,6 +288,7 @@ impl<E: EthSpec> SlasherDB<E> {
             }
         }
         txn.commit()?;
+        info!(log, "Config loaded");
 
         Ok(db)
     }

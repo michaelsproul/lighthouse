@@ -188,8 +188,20 @@ impl<E: EthSpec> Slasher<E> {
 
         // Group attestations into chunked batches and process them.
         let grouped_attestations = batch.group_by_validator_chunk_index(&self.config);
+        let num_batches = grouped_attestations.subqueues.len();
         for (subqueue_id, subqueue) in grouped_attestations.subqueues.into_iter().enumerate() {
+            info!(
+                self.log,
+                "Processing batch {} of {}", subqueue_id, num_batches
+            );
+            let t = std::time::Instant::now();
             self.process_batch(txn, subqueue_id, subqueue, current_epoch)?;
+            info!(
+                self.log,
+                "Finished batch {} in {}ms",
+                subqueue_id,
+                t.elapsed().as_millis()
+            );
         }
 
         metrics::set_gauge(
@@ -209,6 +221,7 @@ impl<E: EthSpec> Slasher<E> {
         current_epoch: Epoch,
     ) -> Result<(), Error> {
         // First, check for double votes.
+        let t = std::time::Instant::now();
         for attestation in &batch {
             let indexed_attestation_id = IndexedAttestationId::new(attestation.get_id());
             match self.check_double_votes(
@@ -238,8 +251,14 @@ impl<E: EthSpec> Slasher<E> {
                 }
             }
         }
+        info!(
+            self.log,
+            "Checking double votes took {}ms",
+            t.elapsed().as_millis()
+        );
 
         // Then check for surrounds using the min-max arrays.
+        let t = std::time::Instant::now();
         match array::update(
             &self.db,
             txn,
@@ -267,6 +286,7 @@ impl<E: EthSpec> Slasher<E> {
                 return Err(e);
             }
         }
+        info!(self.log, "Array update took {}ms", t.elapsed().as_millis());
 
         Ok(())
     }
