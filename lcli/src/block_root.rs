@@ -38,7 +38,7 @@ use types::{EthSpec, FullPayload, SignedBeaconBlock};
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn run<T: EthSpec>(env: Environment<T>, matches: &ArgMatches) -> Result<(), String> {
-    let spec = &T::default_spec();
+    let spec = &env.eth2_config.spec;
     let executor = env.core_context().executor;
 
     /*

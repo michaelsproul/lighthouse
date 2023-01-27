@@ -7,6 +7,7 @@ mod create_payload_header;
 mod deploy_deposit_contract;
 mod eth1_genesis;
 mod generate_bootnode_enr;
+mod http_bench;
 mod indexed_attestations;
 mod insecure_validators;
 mod interop_genesis;
@@ -759,6 +760,67 @@ fn main() {
                         .help("Number of repeat runs, useful for benchmarking."),
                 )
         )
+        .subcommand(
+            SubCommand::with_name("http-bench")
+                .about("Benchmark the HTTP API of a live beacon node with real world queries")
+                .arg(
+                    Arg::with_name("beacon-url")
+                        .long("beacon-url")
+                        .value_name("URL")
+                        .takes_value(true)
+                        .default_value("http://localhost:5052")
+                        .help("URL to a beacon-API provider."),
+                )
+                .arg(
+                    Arg::with_name("timeout")
+                        .long("timeout")
+                        .value_name("SECONDS")
+                        .takes_value(true)
+                        .default_value("300")
+                        .help("Timeout in seconds for each request."),
+                )
+                .arg(
+                    Arg::with_name("output")
+                        .long("output")
+                        .value_name("PATH")
+                        .takes_value(true)
+                        .help("Path to write CSV results to.")
+                )
+                .arg(
+                    Arg::with_name("hard")
+                        .long("hard")
+                        .takes_value(false)
+                        .help("Run heavy-weight tests.")
+                )
+                .arg(
+                    Arg::with_name("subjective")
+                        .long("subjective")
+                        .takes_value(false)
+                        .help("Run subjective tests.")
+                )
+                .arg(
+                    Arg::with_name("num-repeats")
+                        .long("num-repeats")
+                        .takes_value(false)
+                        .default_value("1")
+                        .help("Number of times to repeat each call.")
+                )
+                .arg(
+                    Arg::with_name("num-repeats")
+                        .long("num-repeats")
+                        .value_name("N")
+                        .takes_value(true)
+                        .default_value("1")
+                        .help("Number of times to repeat each call.")
+                )
+                .arg(
+                    Arg::with_name("filter")
+                        .long("filter")
+                        .value_name("regex")
+                        .takes_value(true)
+                        .help("Regular expression to filter test cases against.")
+                )
+        )
         .get_matches();
 
     let result = matches
@@ -849,6 +911,8 @@ fn run<T: EthSpec>(
             .map_err(|e| format!("Failed to run indexed-attestations command: {}", e)),
         ("block-root", Some(matches)) => block_root::run::<T>(env, matches)
             .map_err(|e| format!("Failed to run block-root command: {}", e)),
+        ("http-bench", Some(matches)) => http_bench::run::<T>(env, matches)
+            .map_err(|e| format!("Failed to run http-bench command: {}", e)),
         (other, _) => Err(format!("Unknown subcommand {}. See --help.", other)),
     }
 }
