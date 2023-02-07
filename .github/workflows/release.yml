@@ -52,10 +52,10 @@ jobs:
                         platform: macos-latest
                         profile: maxperf
                     -   arch: x86_64-windows
-                        platform: windows-2019
+                        platform: windows-2022
                         profile: maxperf
                     -   arch: x86_64-windows-portable
-                        platform: windows-2019
+                        platform: windows-2022
                         profile: maxperf
 
         runs-on:    ${{ matrix.platform }}
