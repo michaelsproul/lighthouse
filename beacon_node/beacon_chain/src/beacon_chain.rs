@@ -56,6 +56,7 @@ use crate::validator_monitor::{
     HISTORIC_EPOCHS as VALIDATOR_MONITOR_HISTORIC_EPOCHS,
 };
 use crate::validator_pubkey_cache::ValidatorPubkeyCache;
+use crate::withdrawals_cache::{WithdrawalsCache, WithdrawalsCacheKey};
 use crate::{metrics, BeaconChainError, BeaconForkChoiceStore, BeaconSnapshot, CachedHead};
 use eth2::types::{EventKind, SseBlock, SyncDuty};
 use execution_layer::{
@@ -401,6 +402,8 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     pub eth1_finalization_cache: TimeoutRwLock<Eth1FinalizationCache>,
     /// Caches the beacon block proposer shuffling for a given epoch and shuffling key root.
     pub beacon_proposer_cache: Mutex<BeaconProposerCache>,
+    /// Caches the expected withdrawals for payload attributes.
+    pub withdrawals_cache: Mutex<WithdrawalsCache<T::EthSpec>>,
     /// Caches a map of `validator_index -> validator_pubkey`.
     pub(crate) validator_pubkey_cache: TimeoutRwLock<ValidatorPubkeyCache<T>>,
     /// A cache used when producing attestations.
@@ -3880,6 +3883,26 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     }
 
     pub fn get_expected_withdrawals(
+        &self,
+        forkchoice_update_params: &ForkchoiceUpdateParameters,
+        proposal_slot: Slot,
+    ) -> Result<Withdrawals<T::EthSpec>, Error> {
+        let key = WithdrawalsCacheKey {
+            parent_block_root: forkchoice_update_params.head_root,
+            proposal_epoch: proposal_slot.epoch(T::EthSpec::slots_per_epoch()),
+        };
+        let mut cache = self.withdrawals_cache.lock();
+        if let Some(withdrawals) = cache.get(&key) {
+            Ok(withdrawals)
+        } else {
+            let withdrawals =
+                self.compute_expected_withdrawals(forkchoice_update_params, proposal_slot)?;
+            cache.insert(key, &withdrawals);
+            Ok(withdrawals)
+        }
+    }
+
+    pub fn compute_expected_withdrawals(
         &self,
         forkchoice_update_params: &ForkchoiceUpdateParameters,
         proposal_slot: Slot,
