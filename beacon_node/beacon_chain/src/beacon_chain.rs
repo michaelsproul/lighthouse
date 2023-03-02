@@ -1139,9 +1139,9 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                     )
                 }
 
-                let start_slot = head_state.slot();
-                let task_start = Instant::now();
-                let max_task_runtime = Duration::from_secs(self.spec.seconds_per_slot);
+                // let start_slot = head_state.slot();
+                // let task_start = Instant::now();
+                // let max_task_runtime = Duration::from_secs(self.spec.seconds_per_slot);
 
                 let head_state_slot = head_state.slot();
                 let mut state = head_state;
@@ -1152,6 +1152,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 };
 
                 while state.slot() < slot {
+                    /* FIXME(sproul): reconsider
                     // Do not allow and forward state skip that takes longer than the maximum task duration.
                     //
                     // This is a protection against nodes doing too much work when they're not synced
@@ -1163,6 +1164,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                             max_task_runtime,
                         });
                     }
+                    */
 
                     // Note: supplying some `state_root` when it is known would be a cheap and easy
                     // optimization.

@@ -1,5 +1,5 @@
 use crate::ExecutionOptimistic;
-use beacon_chain::{BeaconChain, BeaconChainError, BeaconChainTypes};
+use beacon_chain::{BeaconChain, BeaconChainError, BeaconChainTypes, StateSkipConfig};
 use eth2::types::StateId as CoreStateId;
 use std::fmt;
 use std::str::FromStr;
@@ -136,7 +136,13 @@ impl StateId {
                     execution_status.is_optimistic_or_invalid(),
                 ));
             }
-            CoreStateId::Slot(slot) => (self.root(chain)?, Some(*slot)),
+            CoreStateId::Slot(slot) => {
+                // FIXME(sproul): hacks
+                let state = chain
+                    .state_at_slot(*slot, StateSkipConfig::WithStateRoots)
+                    .map_err(warp_utils::reject::beacon_chain_error)?;
+                return Ok((state, false));
+            }
             _ => (self.root(chain)?, None),
         };
 
