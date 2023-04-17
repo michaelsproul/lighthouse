@@ -56,7 +56,6 @@ where
             element.inserted = Instant::now();
             self.list.push_back(element);
         }
-        #[cfg(test)]
         self.check_invariant();
         is_new
     }
@@ -96,7 +95,6 @@ where
             self.map.remove(&element.key);
             removed_elements.push(element.key);
         }
-        #[cfg(test)]
         self.check_invariant();
 
         removed_elements
@@ -130,7 +128,6 @@ where
             element.inserted = Instant::now();
             self.list.push_back(element);
         }
-        #[cfg(test)]
         self.check_invariant();
         is_new
     }
@@ -150,7 +147,6 @@ where
             }
             self.map.remove(&element.key);
         }
-        #[cfg(test)]
         self.check_invariant()
     }
 
@@ -166,9 +162,8 @@ where
         self.list.shrink_to_fit();
     }
 
-    #[cfg(test)]
     #[track_caller]
-    fn check_invariant(&self) {
+    pub fn check_invariant(&self) {
         // The list should be sorted. First element should have the oldest insertion
         let mut prev_insertion_time = None;
         for e in &self.list {
