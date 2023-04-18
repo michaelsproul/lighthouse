@@ -45,6 +45,7 @@ enum Op {
     Insert(Index),
     Update,
     Wait(Duration),
+    Shrink,
 }
 
 fn arb_op() -> impl Strategy<Value = Op> {
@@ -57,7 +58,8 @@ fn arb_op() -> impl Strategy<Value = Op> {
         arb_index().prop_map(|idx| {
             let millis = idx.index(SHORT_TTL.as_millis() as usize);
             Op::Wait(Duration::from_millis(millis as u64))
-        })
+        }),
+        Just(Op::Shrink),
     ]
 }
 
@@ -86,6 +88,9 @@ fn apply_op(cache: &mut Cache, peer_ids: &[PeerId], op: Op) {
         Op::Wait(time) => {
             // This is a bit yuck for a proptest.
             std::thread::sleep(time);
+        }
+        Op::Shrink => {
+            cache.shrink_to_fit();
         }
     }
 }
