@@ -1,14 +1,12 @@
-use crate::updated_once::{MemoryValidator, UpdatedOnceValidator};
-use crate::{DBColumn, Error, HotColdDB, ItemStore, KeyValueStoreOp, StoreItem, StoreOp};
+use crate::{DBColumn, Error, HotColdDB, ItemStore, StoreItem, StoreOp};
 use bls::PUBLIC_KEY_UNCOMPRESSED_BYTES_LEN;
-use slog::debug;
 use smallvec::SmallVec;
 use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use types::{BeaconState, ChainSpec, EthSpec, Hash256, PublicKey, PublicKeyBytes, Slot, Validator};
+use types::{BeaconState, EthSpec, Hash256, PublicKey, PublicKeyBytes, Slot, Validator};
 
 /// Provides a mapping of `validator_index -> validator_publickey`.
 ///
@@ -25,10 +23,7 @@ use types::{BeaconState, ChainSpec, EthSpec, Hash256, PublicKey, PublicKeyBytes,
 pub struct ValidatorPubkeyCache<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     pubkeys: Vec<PublicKey>,
     indices: HashMap<PublicKeyBytes, usize>,
-    pub validators: Vec<MemoryValidator>,
-    /// Validator indices (positions in `self.validators`) that have been updated and are
-    /// awaiting being flushed to disk.
-    dirty_indices: HashSet<usize>,
+    validators: Vec<Arc<PublicKeyBytes>>,
     _phantom: PhantomData<(E, Hot, Cold)>,
 }
 
@@ -41,7 +36,6 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> Default
             pubkeys: vec![],
             indices: HashMap::new(),
             validators: vec![],
-            dirty_indices: HashSet::new(),
             _phantom: PhantomData,
         }
     }
@@ -56,19 +50,11 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> ValidatorPubkeyCache<E, 
             pubkeys: vec![],
             indices: HashMap::new(),
             validators: vec![],
-            dirty_indices: HashSet::new(),
             _phantom: PhantomData,
         };
 
-        cache.update_for_finalized_state(&state, state.slot(), store.get_chain_spec())?;
-        store
-            .hot_db
-            .do_atomically(cache.get_pending_validator_ops()?)?;
-        debug!(
-            store.log,
-            "Initialized finalized validator store";
-            "num_validators" => cache.validators.len(),
-        );
+        let store_ops = cache.import_new_pubkeys(state)?;
+        store.do_atomically(store_ops)?;
 
         Ok(cache)
     }
@@ -78,16 +64,16 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> ValidatorPubkeyCache<E, 
         let mut pubkeys = vec![];
         let mut indices = HashMap::new();
         let mut validators = vec![];
-        let dirty_indices = HashSet::new();
 
         for validator_index in 0.. {
             if let Some(db_validator) =
                 store.get_item(&DatabaseValidator::key_for_index(validator_index))?
             {
-                let (pubkey, validator) = DatabaseValidator::into_memory_validator(db_validator)?;
+                let (pubkey, pubkey_bytes) =
+                    DatabaseValidator::into_immutable_validator(&db_validator)?;
                 pubkeys.push(pubkey);
-                indices.insert(*validator.pubkey, validator_index);
-                validators.push(validator);
+                indices.insert(pubkey_bytes, validator_index);
+                validators.push(Arc::new(pubkey_bytes));
             } else {
                 break;
             }
@@ -97,7 +83,6 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> ValidatorPubkeyCache<E, 
             pubkeys,
             indices,
             validators,
-            dirty_indices,
             _phantom: PhantomData,
         })
     }
@@ -112,7 +97,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> ValidatorPubkeyCache<E, 
         state: &BeaconState<E>,
     ) -> Result<Vec<StoreOp<'static, E>>, Error> {
         if state.validators().len() > self.validators.len() {
-            self.import_new(
+            self.import(
                 state
                     .validators()
                     .iter_from(self.pubkeys.len())?
@@ -124,7 +109,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> ValidatorPubkeyCache<E, 
     }
 
     /// Adds zero or more validators to `self`.
-    fn import_new<I>(&mut self, validator_keys: I) -> Result<Vec<StoreOp<'static, E>>, Error>
+    fn import<I>(&mut self, validator_keys: I) -> Result<Vec<StoreOp<'static, E>>, Error>
     where
         I: Iterator<Item = Arc<PublicKeyBytes>> + ExactSizeIterator,
     {
@@ -140,105 +125,25 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> ValidatorPubkeyCache<E, 
                 return Err(Error::DuplicateValidatorPublicKey);
             }
 
-            let pubkey = pubkey_bytes
-                .decompress()
+            let pubkey = (&*pubkey_bytes)
+                .try_into()
                 .map_err(Error::InvalidValidatorPubkeyBytes)?;
 
             // Stage the new validator key for writing to disk.
             // It will be committed atomically when the block that introduced it is written to disk.
             // Notably it is NOT written while the write lock on the cache is held.
             // See: https://github.com/sigp/lighthouse/issues/2327
-            let db_validator = DatabaseValidator::new_unfinalized_validator(&pubkey);
             store_ops.push(StoreOp::KeyValueOp(
-                db_validator.as_kv_store_op(DatabaseValidator::key_for_index(i))?,
+                DatabaseValidator::from_immutable_validator(&pubkey, &pubkey_bytes)
+                    .as_kv_store_op(DatabaseValidator::key_for_index(i))?,
             ));
 
             self.pubkeys.push(pubkey);
             self.indices.insert(*pubkey_bytes, i);
-
-            let memory_validator = MemoryValidator {
-                pubkey: pubkey_bytes,
-                updated_once: db_validator.updated_once,
-            };
-            self.validators.push(memory_validator);
+            self.validators.push(pubkey_bytes);
         }
 
         Ok(store_ops)
-    }
-
-    pub fn update_for_finalized_state(
-        &mut self,
-        finalized_state: &BeaconState<E>,
-        latest_restore_point_slot: Slot,
-        spec: &ChainSpec,
-    ) -> Result<(usize, usize), Error> {
-        let slot = finalized_state.slot();
-
-        let mut num_validators_updated = 0;
-        let mut num_fields_updated = 0;
-
-        for (i, validator) in finalized_state.validators().iter().enumerate() {
-            if let Some(memory_validator) = self.validators.get_mut(i) {
-                // Dummy validator? Override it.
-                if memory_validator.updated_once.is_dummy() {
-                    memory_validator.updated_once =
-                        UpdatedOnceValidator::from_validator(validator, slot, spec)?;
-                    num_validators_updated += 1;
-                    self.dirty_indices.insert(i);
-                    continue;
-                }
-
-                // Otherwise update the existing validator.
-                let num_updated = memory_validator.updated_once.update_knowledge(
-                    validator,
-                    slot,
-                    latest_restore_point_slot,
-                )?;
-
-                if num_updated > 0 {
-                    num_validators_updated += 1;
-                    num_fields_updated += num_updated;
-                    self.dirty_indices.insert(i);
-                }
-            } else {
-                assert_eq!(i, self.validators.len());
-                assert_eq!(i, self.pubkeys.len());
-                let pubkey_bytes = validator.pubkey_clone();
-                let pubkey = pubkey_bytes
-                    .decompress()
-                    .map_err(Error::InvalidValidatorPubkeyBytes)?;
-                self.indices.insert(*pubkey_bytes, i);
-                self.pubkeys.push(pubkey);
-                self.validators.push(MemoryValidator {
-                    pubkey: pubkey_bytes,
-                    updated_once: UpdatedOnceValidator::from_validator(validator, slot, spec)?,
-                });
-                num_validators_updated += 1;
-                self.dirty_indices.insert(i);
-            }
-        }
-
-        Ok((num_validators_updated, num_fields_updated))
-    }
-
-    pub fn get_pending_validator_ops(&mut self) -> Result<Vec<KeyValueStoreOp>, Error> {
-        let mut ops = Vec::with_capacity(self.dirty_indices.len());
-        for &i in &self.dirty_indices {
-            let pubkey = self.get(i).ok_or(Error::MissingValidator(i))?;
-            let updated_once = self
-                .validators
-                .get(i)
-                .ok_or(Error::MissingValidator(i))?
-                .updated_once
-                .clone();
-            let db_validator = DatabaseValidator::new(pubkey, updated_once);
-            ops.push(db_validator.as_kv_store_op(DatabaseValidator::key_for_index(i))?);
-        }
-
-        // Clear dirty indices but retain allocated capacity.
-        self.dirty_indices.clear();
-
-        Ok(ops)
     }
 
     /// Get the public key for a validator with index `i`.
@@ -246,22 +151,9 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> ValidatorPubkeyCache<E, 
         self.pubkeys.get(i)
     }
 
-    /// Get the immutable pubkey of the validator with index `i`.
+    /// Get the immutable validator with index `i`.
     pub fn get_validator_pubkey(&self, i: usize) -> Option<Arc<PublicKeyBytes>> {
-        self.validators.get(i).map(|val| val.pubkey.clone())
-    }
-
-    pub fn get_validator_at_slot(
-        &self,
-        i: usize,
-        effective_balance: u64,
-        slot: Slot,
-    ) -> Result<Validator, Error> {
-        self.validators
-            .get(i)
-            .ok_or(Error::MissingValidator(i))?
-            .into_validator(effective_balance, slot)
-            .map_err(Into::into)
+        self.validators.get(i).cloned()
     }
 
     /// Get the `PublicKey` for a validator with `PublicKeyBytes`.
@@ -271,7 +163,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> ValidatorPubkeyCache<E, 
 
     /// Get the public key (in bytes form) for a validator with index `i`.
     pub fn get_pubkey_bytes(&self, i: usize) -> Option<&PublicKeyBytes> {
-        self.validators.get(i).map(|validator| &*validator.pubkey)
+        self.validators.get(i).map(|pubkey_bytes| &**pubkey_bytes)
     }
 
     /// Get the index of a validator with `pubkey`.
@@ -296,7 +188,6 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> ValidatorPubkeyCache<E, 
 #[derive(Encode, Decode)]
 struct DatabaseValidator {
     pubkey: SmallVec<[u8; PUBLIC_KEY_UNCOMPRESSED_BYTES_LEN]>,
-    updated_once: UpdatedOnceValidator,
 }
 
 impl StoreItem for DatabaseValidator {
@@ -318,39 +209,25 @@ impl DatabaseValidator {
         Hash256::from_low_u64_be(index as u64)
     }
 
-    fn new_unfinalized_validator(pubkey: &PublicKey) -> Self {
+    fn from_immutable_validator(pubkey: &PublicKey, validator: &PublicKeyBytes) -> Self {
         DatabaseValidator {
             pubkey: pubkey.serialize_uncompressed().into(),
-            updated_once: UpdatedOnceValidator::dummy(),
         }
     }
 
-    fn new(pubkey: &PublicKey, validator: UpdatedOnceValidator) -> Self {
-        DatabaseValidator {
-            pubkey: pubkey.serialize_uncompressed().into(),
-            updated_once: validator,
-        }
-    }
-
-    fn into_memory_validator(self) -> Result<(PublicKey, MemoryValidator), Error> {
+    #[allow(clippy::wrong_self_convention)]
+    fn into_immutable_validator(&self) -> Result<(PublicKey, PublicKeyBytes), Error> {
         let pubkey = PublicKey::deserialize_uncompressed(&self.pubkey)
             .map_err(Error::InvalidValidatorPubkeyBytes)?;
-        let pubkey_bytes = Arc::new(pubkey.compress());
-        let updated_once = self.updated_once;
-        Ok((
-            pubkey,
-            MemoryValidator {
-                pubkey: pubkey_bytes,
-                updated_once,
-            },
-        ))
+        let pubkey_bytes = pubkey.compress();
+        Ok((pubkey, pubkey_bytes))
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{HotColdDB, KeyValueStore, MemoryStore};
+    use crate::{HotColdDB, MemoryStore};
     use beacon_chain::test_utils::BeaconChainHarness;
     use logging::test_logger;
     use std::sync::Arc;

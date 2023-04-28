@@ -17,6 +17,7 @@ pub mod config;
 pub mod errors;
 mod forwards_iter;
 mod garbage_collection;
+pub mod hdiff;
 pub mod hot_cold_store;
 mod hot_state_iter;
 mod impls;
@@ -24,11 +25,9 @@ mod leveldb_store;
 mod memory_store;
 pub mod metadata;
 pub mod metrics;
-mod partial_beacon_state;
 pub mod reconstruct;
 mod state_cache;
 mod state_diff;
-pub mod updated_once;
 pub mod validator_pubkey_cache;
 
 pub mod iter;
@@ -38,7 +37,6 @@ pub use self::config::StoreConfig;
 pub use self::hot_cold_store::{HotColdDB, HotStateSummary, Split};
 pub use self::leveldb_store::LevelDB;
 pub use self::memory_store::MemoryStore;
-pub use self::partial_beacon_state::PartialBeaconState;
 pub use errors::Error;
 pub use impls::beacon_state::StorageContainer as BeaconStateStorageContainer;
 pub use metadata::AnchorInfo;
@@ -211,7 +209,10 @@ pub enum DBColumn {
     /// For full `BeaconState`s in the hot database (finalized or fork-boundary states).
     #[strum(serialize = "ste")]
     BeaconState,
-    /// For compact `BeaconStateDiff`s.
+    /// For beacon state snapshots in the freezer DB.
+    #[strum(serialize = "bsn")]
+    BeaconStateSnapshot,
+    /// For compact `BeaconStateDiff`s in the freezer DB.
     #[strum(serialize = "bsd")]
     BeaconStateDiff,
     /// For the mapping from state roots to their slots or summaries.
@@ -238,9 +239,6 @@ pub enum DBColumn {
     /// For the legacy table mapping restore point numbers to state roots.
     #[strum(serialize = "brp")]
     BeaconRestorePoint,
-    /// For the new table mapping restore point slots to compressed beacon states.
-    #[strum(serialize = "rps")]
-    BeaconRestorePointState,
     #[strum(serialize = "bbr")]
     BeaconBlockRoots,
     #[strum(serialize = "bsr")]
@@ -292,14 +290,14 @@ impl DBColumn {
             | Self::BeaconRestorePoint
             | Self::DhtEnrs
             | Self::OptimisticTransitionBlock
-            | Self::BeaconStateDiff
             | Self::BeaconHistoricalSummaries => 32,
             Self::BeaconBlockRoots
             | Self::BeaconStateRoots
             | Self::BeaconHistoricalRoots
             | Self::BeaconRandaoMixes
             | Self::BeaconBlockFrozen
-            | Self::BeaconRestorePointState => 8,
+            | Self::BeaconStateSnapshot
+            | Self::BeaconStateDiff => 8,
         }
     }
 }

@@ -33,3 +33,4 @@ zstd = "0.11.0"
 strum = { version = "0.24.0", features = ["derive"] }
 bls = { path = "../../crypto/bls" }
 smallvec = "1.0.0"
+qbsdiff = "1.4"

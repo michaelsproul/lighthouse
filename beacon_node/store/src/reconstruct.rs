@@ -2,7 +2,7 @@
 use crate::hot_cold_store::{HotColdDB, HotColdDBError};
 use crate::{Error, ItemStore, KeyValueStore};
 use itertools::{process_results, Itertools};
-use slog::{debug, info};
+use slog::info;
 use state_processing::{
     per_block_processing, per_slot_processing, BlockSignatureStrategy, ConsensusContext,
     VerifyBlockRoot,
@@ -114,30 +114,6 @@ where
                 let state_root = prev_state_root
                     .ok_or(())
                     .or_else(|_| state.update_tree_hash_cache())?;
-
-                if slot % slots_per_restore_point == 0 {
-                    let t = std::time::Instant::now();
-                    let mut validator_store = self.immutable_validators.write();
-                    let (num_validators_updated, num_fields_updated) = validator_store
-                        .update_for_finalized_state(
-                            &state,
-                            latest_restore_point_slot,
-                            &self.spec,
-                        )?;
-                    debug!(
-                        self.log,
-                        "Updated in-memory validator store";
-                        "slot" => slot,
-                        "validators_updated" => num_validators_updated,
-                        "fields_updated" => num_fields_updated,
-                        "time_taken_ms" => t.elapsed().as_millis()
-                    );
-
-                    // Do this immediately.
-                    // FIXME(sproul): could probably delay this a bit
-                    let validator_store_ops = validator_store.get_pending_validator_ops()?;
-                    self.hot_db.do_atomically(validator_store_ops)?;
-                }
 
                 // Stage state for storage in freezer DB.
                 self.store_cold_state(&state_root, &state, &mut io_batch)?;

@@ -1,10 +1,10 @@
 use crate::chunked_vector::ChunkError;
 use crate::config::StoreConfigError;
+use crate::hdiff;
 use crate::hot_cold_store::HotColdDBError;
-use crate::updated_once::UpdatedOnceError;
 use ssz::DecodeError;
 use state_processing::BlockReplayError;
-use types::{milhouse, BeaconStateError, Hash256, InconsistentFork, Slot};
+use types::{milhouse, BeaconStateError, Epoch, Hash256, InconsistentFork, Slot};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -43,6 +43,8 @@ pub enum Error {
     },
     MissingStateRoot(Slot),
     MissingState(Hash256),
+    MissingSnapshot(Epoch),
+    MissingDiff(Epoch),
     NoBaseStateFound(Hash256),
     BlockReplayError(BlockReplayError),
     MilhouseError(milhouse::Error),
@@ -67,8 +69,8 @@ pub enum Error {
     InvalidValidatorPubkeyBytes(bls::Error),
     ValidatorPubkeyCacheUninitialized,
     InvalidKey,
-    UpdatedOnce(UpdatedOnceError),
     UnableToDowngrade,
+    Hdiff(hdiff::Error),
     InconsistentFork(InconsistentFork),
 }
 
@@ -128,15 +130,15 @@ impl From<milhouse::Error> for Error {
     }
 }
 
-impl From<BlockReplayError> for Error {
-    fn from(e: BlockReplayError) -> Error {
-        Error::BlockReplayError(e)
+impl From<hdiff::Error> for Error {
+    fn from(e: hdiff::Error) -> Self {
+        Self::Hdiff(e)
     }
 }
 
-impl From<UpdatedOnceError> for Error {
-    fn from(e: UpdatedOnceError) -> Error {
-        Error::UpdatedOnce(e)
+impl From<BlockReplayError> for Error {
+    fn from(e: BlockReplayError) -> Error {
+        Error::BlockReplayError(e)
     }
 }
 

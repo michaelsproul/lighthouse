@@ -1,3 +1,4 @@
+use crate::hdiff::HierarchyConfig;
 use crate::{DBColumn, Error, StoreItem};
 use serde_derive::{Deserialize, Serialize};
 use ssz::{Decode, Encode};
@@ -39,11 +40,13 @@ pub struct StoreConfig {
     pub linear_blocks: bool,
     /// Whether to store finalized states compressed and linearised in the freezer database.
     pub linear_restore_points: bool,
+    /// State diff hierarchy.
+    pub hierarchy_config: HierarchyConfig,
 }
 
 /// Variant of `StoreConfig` that gets written to disk. Contains immutable configuration params.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-// FIXME(sproul): schema migration
+// FIXME(sproul): schema migration, add hdiff
 pub struct OnDiskStoreConfig {
     pub slots_per_restore_point: u64,
     pub linear_blocks: bool,
@@ -71,6 +74,7 @@ impl Default for StoreConfig {
             prune_payloads: true,
             linear_blocks: true,
             linear_restore_points: true,
+            hierarchy_config: HierarchyConfig::default(),
         }
     }
 }
