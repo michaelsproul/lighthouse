@@ -1,17 +1,19 @@
 //! Hierarchical diff implementation.
+use crate::{DBColumn, StoreItem};
 use itertools::Itertools;
-use qbsdiff::{Bsdiff, Bspatch};
 use serde::{Deserialize, Serialize};
-use ssz::Encode;
+use ssz::{Decode, Encode};
+use ssz_derive::{Decode, Encode};
 use std::io::{Read, Write};
-use types::{BeaconState, Epoch, EthSpec, VList};
+use types::{BeaconState, ChainSpec, Epoch, EthSpec, MainnetEthSpec, VList};
 use zstd::{Decoder, Encoder};
 
 #[derive(Debug)]
 pub enum Error {
     InvalidHierarchy,
     XorDeletionsNotSupported,
-    Bsdiff(std::io::Error),
+    UnableToComputeDiff,
+    UnableToApplyDiff,
     Compression(std::io::Error),
 }
 
@@ -32,34 +34,25 @@ pub enum StorageStrategy {
     Snapshot,
 }
 
-/*
-/// Hierarchical state diff input, a state with its balances extracted.
-#[derive(Debug)]
-pub struct HDiffInput<E: EthSpec> {
-    state: BeaconState<E>,
-    balances: VList<u64, E::ValidatorRegistryLimit>,
-}
-*/
-
 /// Hierarchical diff output and working buffer.
 pub struct HDiffBuffer {
     state: Vec<u8>,
-    balances: Vec<u8>,
+    balances: Vec<u64>,
 }
 
 /// Hierarchical state diff.
-#[derive(Debug)]
+#[derive(Debug, Encode, Decode)]
 pub struct HDiff {
     state_diff: BytesDiff,
     balances_diff: XorDiff,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Encode, Decode)]
 pub struct BytesDiff {
     bytes: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Encode, Decode)]
 pub struct XorDiff {
     bytes: Vec<u8>,
 }
@@ -69,9 +62,15 @@ impl HDiffBuffer {
         let balances_list = std::mem::take(beacon_state.balances_mut());
 
         let state = beacon_state.as_ssz_bytes();
-        let balances = balances_list.as_ssz_bytes();
+        let balances = balances_list.to_vec();
 
         HDiffBuffer { state, balances }
+    }
+
+    pub fn into_state<E: EthSpec>(self, spec: &ChainSpec) -> Result<BeaconState<E>, Error> {
+        let mut state = BeaconState::from_ssz_bytes(&self.state, spec).unwrap();
+        *state.balances_mut() = VList::new(self.balances).unwrap();
+        Ok(state)
     }
 }
 
@@ -87,8 +86,7 @@ impl HDiff {
     }
 
     pub fn apply(&self, source: &mut HDiffBuffer) -> Result<(), Error> {
-        // FIXME(sproul): unfortunate clone
-        let source_state = source.state.clone();
+        let source_state = std::mem::take(&mut source.state);
         self.state_diff.apply(&source_state, &mut source.state)?;
 
         self.balances_diff.apply(&mut source.balances)?;
@@ -104,28 +102,43 @@ impl HDiff {
     }
 }
 
-impl BytesDiff {
-    pub fn compute(source: &[u8], target: &[u8]) -> Result<Self, Error> {
-        // FIXME(sproul): benchmark different buffer sizes
-        let mut diff = vec![];
-        Bsdiff::new(source, target)
-            .compression_level(1)
-            .compare(&mut diff)
-            .map_err(Error::Bsdiff)?;
-        Ok(BytesDiff { bytes: diff })
+impl StoreItem for HDiff {
+    fn db_column() -> DBColumn {
+        DBColumn::BeaconStateDiff
     }
 
-    pub fn apply(&self, source: &[u8], target: &mut Vec<u8>) -> Result<(), Error> {
-        Bspatch::new(&self.bytes)
-            .and_then(|patch| patch.apply(source, std::io::Cursor::new(target)))
-            .map(|_: u64| ())
-            .map_err(Error::Bsdiff)
+    fn as_store_bytes(&self) -> Result<Vec<u8>, crate::Error> {
+        Ok(self.as_ssz_bytes())
+    }
+
+    fn from_store_bytes(bytes: &[u8]) -> Result<Self, crate::Error> {
+        Ok(Self::from_ssz_bytes(bytes)?)
     }
 }
 
-// FIXME(sproul): gotta use the u64s, keep going here
+impl BytesDiff {
+    pub fn compute(source: &[u8], target: &[u8]) -> Result<Self, Error> {
+        Self::compute_xdelta(source, target)
+    }
+
+    pub fn compute_xdelta(source_bytes: &[u8], target_bytes: &[u8]) -> Result<Self, Error> {
+        let bytes =
+            xdelta3::encode(target_bytes, source_bytes).ok_or(Error::UnableToComputeDiff)?;
+        Ok(Self { bytes })
+    }
+
+    pub fn apply(&self, source: &[u8], target: &mut Vec<u8>) -> Result<(), Error> {
+        self.apply_xdelta(source, target)
+    }
+
+    pub fn apply_xdelta(&self, source: &[u8], target: &mut Vec<u8>) -> Result<(), Error> {
+        *target = xdelta3::decode(&self.bytes, source).ok_or(Error::UnableToApplyDiff)?;
+        Ok(())
+    }
+}
+
 impl XorDiff {
-    pub fn compute(xs: &[u8], ys: &[u8]) -> Result<Self, Error> {
+    pub fn compute(xs: &[u64], ys: &[u64]) -> Result<Self, Error> {
         if xs.len() > ys.len() {
             return Err(Error::XorDeletionsNotSupported);
         }
@@ -133,11 +146,10 @@ impl XorDiff {
         let mut uncompressed_bytes: Vec<u8> = ys
             .iter()
             .enumerate()
-            .map(|(i, y)| {
+            .flat_map(|(i, y)| {
                 // Diff from 0 if the entry is new.
-                // Zero is a neutral element for XOR: 0 ^ y = y.
                 let x = xs.get(i).copied().unwrap_or(0);
-                y.wrapping_sub(x)
+                y.wrapping_sub(x).to_be_bytes()
             })
             .collect();
 
@@ -156,21 +168,28 @@ impl XorDiff {
         })
     }
 
-    pub fn apply(&self, xs: &mut Vec<u8>) -> Result<(), Error> {
+    pub fn apply(&self, xs: &mut Vec<u64>) -> Result<(), Error> {
         // Decompress balances diff.
-        let mut balances_diff = Vec::with_capacity(2 * self.bytes.len());
+        let mut balances_diff_bytes = Vec::with_capacity(2 * self.bytes.len());
         let mut decoder = Decoder::new(&*self.bytes).map_err(Error::Compression)?;
         decoder
-            .read_to_end(&mut balances_diff)
+            .read_to_end(&mut balances_diff_bytes)
             .map_err(Error::Compression)?;
 
-        for (i, diff) in balances_diff.iter().enumerate() {
+        for (i, diff_bytes) in balances_diff_bytes
+            .chunks(u64::BITS as usize / 8)
+            .enumerate()
+        {
+            // FIXME(sproul): unwrap
+            let diff = u64::from_be_bytes(diff_bytes.try_into().unwrap());
+
             if let Some(x) = xs.get_mut(i) {
-                *x = x.wrapping_add(*diff);
+                *x = x.wrapping_add(diff);
             } else {
-                xs.push(*diff);
+                xs.push(diff);
             }
         }
+
         Ok(())
     }
 }
@@ -268,16 +287,16 @@ mod tests {
         let x_bytes = to_bytes(&x_values);
         let y_bytes = to_bytes(&y_values);
 
-        let xor_diff = XorDiff::compute(&x_bytes, &y_bytes).unwrap();
+        let xor_diff = XorDiff::compute(&x_values, &y_values).unwrap();
 
-        let mut y_from_xor = x_bytes.clone();
+        let mut y_from_xor = x_values.clone();
         xor_diff.apply(&mut y_from_xor).unwrap();
 
-        assert_eq!(y_bytes, y_from_xor);
+        assert_eq!(y_values, y_from_xor);
 
         let bytes_diff = BytesDiff::compute(&x_bytes, &y_bytes).unwrap();
 
-        let mut y_from_bytes = x_bytes.clone();
+        let mut y_from_bytes = vec![];
         bytes_diff.apply(&x_bytes, &mut y_from_bytes).unwrap();
 
         assert_eq!(y_bytes, y_from_bytes);

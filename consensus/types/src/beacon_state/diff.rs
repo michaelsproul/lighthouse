@@ -100,11 +100,11 @@ pub struct BeaconStateDiffMain<T: EthSpec> {
     next_withdrawal_index: Maybe<CloneDiff<u64>>,
     next_withdrawal_validator_index: Maybe<CloneDiff<u64>>,
     historical_summaries: Maybe<ListDiff<HistoricalSummary, T::HistoricalRootsLimit>>,
-
     // Committee caches
-    committee_caches: CommitteeCachesDiff,
+    // FIXME(sproul): delete
+    // committee_caches: CommitteeCachesDiff,
     // Total active balance cache
-    total_active_balance: TotalActiveBalanceDiff,
+    // total_active_balance: TotalActiveBalanceDiff,
 }
 
 #[derive(Debug, PartialEq, Encode)]
@@ -331,6 +331,7 @@ impl<T: EthSpec> Diff for BeaconStateDiff<T> {
         }
 
         // Compute committee caches diff.
+        /* FIXME(sproul): delete
         let prev_current_epoch = orig.current_epoch();
         let current_epoch = other.current_epoch();
 
@@ -340,6 +341,7 @@ impl<T: EthSpec> Diff for BeaconStateDiff<T> {
             &(prev_current_epoch, orig_committee_caches),
             &(current_epoch, new_committee_caches),
         )?;
+        */
 
         Ok(BeaconStateDiff {
             main: BeaconStateDiffMain {
@@ -439,11 +441,12 @@ impl<T: EthSpec> Diff for BeaconStateDiff<T> {
                     other,
                     BeaconState::historical_summaries,
                 )?,
-                committee_caches,
+                /*
                 total_active_balance: TotalActiveBalanceDiff::compute_diff(
                     orig.total_active_balance(),
                     other.total_active_balance(),
                 )?,
+                */
             },
             latest_execution_payload_header: if let Ok(new_payload) =
                 other.latest_execution_payload_header()
@@ -545,16 +548,20 @@ impl<T: EthSpec> Diff for BeaconStateDiff<T> {
         )?;
 
         // Apply committee caches diff.
+        /*
         let mut committee_caches = (prev_current_epoch, target.committee_caches().clone());
         self.main
             .committee_caches
             .apply_diff(&mut committee_caches)?;
         *target.committee_caches_mut() = committee_caches.1;
+        */
 
         // Apply total active balance diff.
+        /*
         self.main
             .total_active_balance
             .apply_diff(target.total_active_balance_mut())?;
+        */
 
         Ok(())
     }

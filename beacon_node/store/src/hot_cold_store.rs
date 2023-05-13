@@ -6,7 +6,7 @@ use crate::config::{
     PREV_DEFAULT_SLOTS_PER_RESTORE_POINT,
 };
 use crate::forwards_iter::{HybridForwardsBlockRootsIterator, HybridForwardsStateRootsIterator};
-use crate::hdiff::{HierarchyModuli, StorageStrategy};
+use crate::hdiff::{HDiff, HDiffBuffer, HierarchyModuli, StorageStrategy};
 use crate::hot_state_iter::HotStateRootIter;
 use crate::impls::{
     beacon_state::{get_full_state, store_full_state},
@@ -1413,8 +1413,13 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         from_epoch: Epoch,
         ops: &mut Vec<KeyValueStoreOp>,
     ) -> Result<(), Error> {
-        unreachable!()
         // Load diff base state bytes.
+        let base_buffer = self.load_hdiff_buffer_for_epoch(from_epoch)?;
+        let target_buffer = HDiffBuffer::from_state(state.clone());
+        let diff = HDiff::compute(&base_buffer, &target_buffer)?;
+        let diff_bytes = diff.as_ssz_bytes();
+
+        ops.push
     }
 
     /// Try to load a pre-finalization state from the freezer database.
@@ -1451,22 +1456,38 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         todo!()
     }
 
-    fn load_cold_state_bytes_on_epoch(&self, epoch: Epoch) -> Result<Vec<u8>, Error> {
-        // Load the previous state.
+    fn load_hdiff_for_epoch(&self, epoch: Epoch) -> Result<HDiff, Error> {
+        self.hot_db
+            .get_bytes(
+                DBColumn::BeaconStateDiff.into(),
+                epoch.as_u64().to_be_bytes(),
+            )?
+            .map(HDiff::from_ssz_bytes)
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    fn load_hdiff_buffer_for_epoch(&self, epoch: Epoch) -> Result<HDiffBuffer, Error> {
+        // Load buffer for the previous state.
         // This amount of recursion (<10 levels) should be OK.
-        let prev_state = match self.hierarchy.storage_strategy(epoch)? {
+        let mut buffer = match self.hierarchy.storage_strategy(epoch)? {
             // Base case.
-            StorageStrategy::Snapshot => self
-                .load_cold_state_bytes_as_snapshot(epoch)?
-                .ok_or(Error::MissingSnapshot(epoch))?,
+            StorageStrategy::Snapshot => {
+                let state = self
+                    .load_cold_state_as_snapshot(epoch)?
+                    .ok_or(Error::MissingSnapshot(epoch))?;
+                return Ok(HDiffBuffer::from_state(state));
+            }
             // Recursive case.
-            StorageStrategy::DiffFrom(from) => self.load_cold_state_bytes_on_epoch(from)?,
+            StorageStrategy::DiffFrom(from) => self.load_hdiff_buffer_for_epoch(from)?,
             StorageStrategy::Nothing => unreachable!("FIXME(sproul)"),
         };
 
-        // FIXME(sproul): keep going
-        //  let diff = self.
-        panic!()
+        // Load diff and apply it to buffer.
+        let diff = self.load_diff_for_epoch(epoch)?;
+        diff.apply(&mut diff)?;
+
+        Ok(buffer)
     }
 
     /* FIXME(sproul): backwards compat
