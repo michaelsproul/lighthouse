@@ -28,7 +28,7 @@ pub mod state_advance;
 pub mod upgrade;
 pub mod verify_operation;
 
-pub use block_replayer::{BlockReplayError, BlockReplayer};
+pub use block_replayer::{BlockReplayError, BlockReplayer, StateProcessingStrategy};
 pub use consensus_context::{ConsensusContext, ContextError};
 pub use epoch_cache::{EpochCache, EpochCacheError, EpochCacheKey};
 pub use genesis::{
@@ -43,4 +43,4 @@ pub use per_epoch_processing::{
     errors::EpochProcessingError, process_epoch as per_epoch_processing,
 };
 pub use per_slot_processing::{per_slot_processing, Error as SlotProcessingError};
-pub use verify_operation::{SigVerifiedOp, VerifyOperation};
+pub use verify_operation::{SigVerifiedOp, VerifyOperation, VerifyOperationAt};

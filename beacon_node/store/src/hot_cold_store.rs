@@ -38,6 +38,7 @@ use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use state_processing::{
     block_replayer::PreSlotHook, BlockProcessingError, BlockReplayer, SlotProcessingError,
+    StateProcessingStrategy,
 };
 use std::cmp::min;
 use std::collections::VecDeque;
@@ -79,6 +80,8 @@ pub struct HotColdDB<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     state_cache: Mutex<StateCache<E>>,
     /// Immutable validator cache.
     pub immutable_validators: Arc<RwLock<ValidatorPubkeyCache<E, Hot, Cold>>>,
+    /// LRU cache of replayed states.
+    historic_state_cache: Mutex<LruCache<Slot, BeaconState<E>>>,
     /// Chain spec.
     pub(crate) spec: ChainSpec,
     /// Logger.
@@ -155,6 +158,7 @@ impl<E: EthSpec> HotColdDB<E, MemoryStore<E>, MemoryStore<E>> {
             block_cache: Mutex::new(LruCache::new(config.block_cache_size)),
             state_cache: Mutex::new(StateCache::new(config.state_cache_size)),
             immutable_validators: Arc::new(RwLock::new(Default::default())),
+            historic_state_cache: Mutex::new(LruCache::new(config.historic_state_cache_size)),
             config,
             hierarchy,
             spec,
@@ -194,6 +198,7 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
             block_cache: Mutex::new(LruCache::new(config.block_cache_size)),
             state_cache: Mutex::new(StateCache::new(config.state_cache_size)),
             immutable_validators: Arc::new(RwLock::new(Default::default())),
+            historic_state_cache: Mutex::new(LruCache::new(config.historic_state_cache_size)),
             config,
             hierarchy,
             spec,
@@ -1509,24 +1514,45 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         let low_restore_point_slot = slot / sprp * sprp;
         let high_restore_point_slot = low_restore_point_slot + sprp;
 
+        // Use low restore point as the base state.
+        let mut low_slot: Slot =
+            Slot::new(low_restore_point_idx * self.config.slots_per_restore_point);
+        let mut low_state: Option<BeaconState<E>> = None;
+
+        // Try to get a more recent state from the cache to avoid massive blocks replay.
+        for (s, state) in self.state_cache.lock().iter() {
+            if s.as_u64() / self.config.slots_per_restore_point == low_restore_point_idx
+                && *s < slot
+                && low_slot < *s
+            {
+                low_slot = *s;
+                low_state = Some(state.clone());
+            }
+        }
+
+        // If low_state is still None, use load_restore_point_by_index to load the state.
+        let low_state = match low_state {
+            Some(state) => state,
+            None => self.load_restore_point_by_index(low_restore_point_idx)?,
+        };
+
         // Acquire the read lock, so that the split can't change while this is happening.
         let split = self.split.read_recursive();
 
-        let low_restore_point = self.load_restore_point(low_restore_point_slot)?;
-        let high_restore_point = self.get_restore_point(high_restore_point_slot, &split)?;
+        let high_restore_point = self.get_restore_point(high_restore_point_idx, &split)?;
 
-        // 2. Load the blocks from the high restore point back to the low restore point.
+        // 2. Load the blocks from the high restore point back to the low point.
         let blocks = self.load_blocks_to_replay(
-            low_restore_point.slot(),
+            low_slot,
             slot,
             self.get_high_restore_point_block_root(&high_restore_point, slot)?,
         )?;
 
-        // 3. Replay the blocks on top of the low restore point.
+        // 3. Replay the blocks on top of the low point.
         // Use a forwards state root iterator to avoid doing any tree hashing.
         // The state root of the high restore point should never be used, so is safely set to 0.
         let state_root_iter = self.forwards_state_roots_iterator_until(
-            low_restore_point.slot(),
+            low_slot,
             slot,
             || (high_restore_point, Hash256::zero()),
             &self.spec,

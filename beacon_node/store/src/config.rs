@@ -14,6 +14,7 @@ pub const DEFAULT_BLOCK_CACHE_SIZE: usize = 64;
 pub const DEFAULT_STATE_CACHE_SIZE: usize = 128;
 pub const DEFAULT_COMPRESSION_LEVEL: i32 = 1;
 const EST_COMPRESSION_FACTOR: usize = 2;
+pub const DEFAULT_HISTORIC_STATE_CACHE_SIZE: usize = 1;
 
 /// Database configuration parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +31,8 @@ pub struct StoreConfig {
     pub state_cache_size: usize,
     /// Compression level for `BeaconStateDiff`s.
     pub compression_level: i32,
+    /// Maximum number of states from freezer database to store in the in-memory state cache.
+    pub historic_state_cache_size: usize,
     /// Whether to compact the database on initialization.
     pub compact_on_init: bool,
     /// Whether to compact the database during database pruning.
@@ -69,6 +72,7 @@ impl Default for StoreConfig {
             block_cache_size: DEFAULT_BLOCK_CACHE_SIZE,
             state_cache_size: DEFAULT_STATE_CACHE_SIZE,
             compression_level: DEFAULT_COMPRESSION_LEVEL,
+            historic_state_cache_size: DEFAULT_HISTORIC_STATE_CACHE_SIZE,
             compact_on_init: false,
             compact_on_prune: true,
             prune_payloads: true,
