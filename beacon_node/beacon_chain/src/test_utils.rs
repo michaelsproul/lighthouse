@@ -665,10 +665,7 @@ where
     pub fn get_current_state_and_root(&self) -> (BeaconState<E>, Hash256) {
         let head = self.chain.head_snapshot();
         let state_root = head.beacon_state_root();
-        (
-            head.beacon_state.clone_with_only_committee_caches(),
-            state_root,
-        )
+        (head.beacon_state.clone(), state_root)
     }
 
     pub fn head_slot(&self) -> Slot {

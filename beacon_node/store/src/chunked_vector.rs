@@ -17,8 +17,9 @@
 use self::UpdatePattern::*;
 use crate::*;
 use ssz::{Decode, Encode};
+use tree_hash::TreeHash;
 use typenum::Unsigned;
-use types::historical_summary::HistoricalSummary;
+use types::{historical_summary::HistoricalSummary, VList};
 
 /// Description of how a `BeaconState` field is updated during state processing.
 ///
@@ -64,7 +65,7 @@ pub trait Field<E: EthSpec>: Copy {
     /// The type of value stored in this field: the `T` from `FixedVector<T, N>`.
     ///
     /// The `Default` impl will be used to fill extra vector entries.
-    type Value: Decode + Encode + Default + Clone + PartialEq + std::fmt::Debug;
+    type Value: TreeHash + Decode + Encode + Default + Clone + PartialEq + std::fmt::Debug;
 
     /// The length of this field: the `N` from `FixedVector<T, N>`.
     type Length: Unsigned;
@@ -330,7 +331,7 @@ field!(
         activation_slot: Some(Slot::new(0)),
         deactivation_slot: None
     },
-    |state: &BeaconState<_>, index, _| safe_modulo_index(state.block_roots(), index)
+    |state: &BeaconState<_>, index, _| safe_modulo_index_vect(state.block_roots(), index)
 );
 
 field!(
@@ -344,7 +345,7 @@ field!(
         activation_slot: Some(Slot::new(0)),
         deactivation_slot: None,
     },
-    |state: &BeaconState<_>, index, _| safe_modulo_index(state.state_roots(), index)
+    |state: &BeaconState<_>, index, _| safe_modulo_index_vect(state.state_roots(), index)
 );
 
 field!(
@@ -360,7 +361,7 @@ field!(
             .capella_fork_epoch
             .map(|fork_epoch| fork_epoch.start_slot(T::slots_per_epoch())),
     },
-    |state: &BeaconState<_>, index, _| safe_modulo_index(state.historical_roots(), index)
+    |state: &BeaconState<_>, index, _| safe_modulo_index_list(state.historical_roots(), index)
 );
 
 field!(
@@ -370,7 +371,7 @@ field!(
     T::EpochsPerHistoricalVector,
     DBColumn::BeaconRandaoMixes,
     |_| OncePerEpoch { lag: 1 },
-    |state: &BeaconState<_>, index, _| safe_modulo_index(state.randao_mixes(), index)
+    |state: &BeaconState<_>, index, _| safe_modulo_index_vect(state.randao_mixes(), index)
 );
 
 field!(
@@ -386,7 +387,7 @@ field!(
             .map(|fork_epoch| fork_epoch.start_slot(T::slots_per_epoch())),
         deactivation_slot: None,
     },
-    |state: &BeaconState<_>, index, _| safe_modulo_index(
+    |state: &BeaconState<_>, index, _| safe_modulo_index_list(
         state
             .historical_summaries()
             .map_err(|_| ChunkError::InvalidFork)?,
@@ -505,7 +506,10 @@ fn range_query<S: KeyValueStore<E>, E: EthSpec, T: Decode + Encode>(
 
     for chunk_index in range {
         let key = &chunk_key(chunk_index)[..];
-        let chunk = Chunk::load(store, column, key)?.ok_or(ChunkError::Missing { chunk_index })?;
+        let chunk = Chunk::load(store, column, key)?.ok_or(ChunkError::Missing {
+            column,
+            chunk_index,
+        })?;
         result.push(chunk);
     }
 
@@ -588,7 +592,7 @@ pub fn load_vector_from_db<F: FixedLengthField<E>, E: EthSpec, S: KeyValueStore<
         default,
     )?;
 
-    Ok(result.into())
+    Ok(FixedVector::new(result)?)
 }
 
 /// The historical roots are stored in vector chunks, despite not actually being a vector.
@@ -596,7 +600,7 @@ pub fn load_variable_list_from_db<F: VariableLengthField<E>, E: EthSpec, S: KeyV
     store: &S,
     slot: Slot,
     spec: &ChainSpec,
-) -> Result<VariableList<F::Value, F::Length>, Error> {
+) -> Result<VList<F::Value, F::Length>, Error> {
     let chunk_size = F::chunk_size();
     let (start_vindex, end_vindex) = F::start_and_end_vindex(slot, spec);
     let start_cindex = start_vindex / chunk_size;
@@ -604,27 +608,46 @@ pub fn load_variable_list_from_db<F: VariableLengthField<E>, E: EthSpec, S: KeyV
 
     let chunks: Vec<Chunk<F::Value>> = range_query(store, F::column(), start_cindex, end_cindex)?;
 
-    let mut result = Vec::with_capacity(chunk_size * chunks.len());
+    let mut result = VList::empty();
 
     for (chunk_index, chunk) in chunks.into_iter().enumerate() {
         for (i, value) in chunk.values.into_iter().enumerate() {
             let vindex = chunk_index * chunk_size + i;
 
             if vindex >= start_vindex && vindex < end_vindex {
-                result.push(value);
+                result.push(value)?;
             }
         }
     }
 
-    Ok(result.into())
+    Ok(result)
 }
 
-/// Index into a field of the state, avoiding out of bounds and division by 0.
-fn safe_modulo_index<T: Copy>(values: &[T], index: u64) -> Result<T, ChunkError> {
+fn safe_modulo_index_list<T: TreeHash + Copy, N: Unsigned>(
+    values: &VList<T, N>,
+    index: u64,
+) -> Result<T, ChunkError> {
     if values.is_empty() {
         Err(ChunkError::ZeroLengthVector)
     } else {
-        Ok(values[index as usize % values.len()])
+        values
+            .get(index as usize % values.len())
+            .copied()
+            .ok_or(ChunkError::OutOfBounds)
+    }
+}
+
+fn safe_modulo_index_vect<T: TreeHash + Copy, N: Unsigned>(
+    values: &FixedVector<T, N>,
+    index: u64,
+) -> Result<T, ChunkError> {
+    if values.is_empty() {
+        Err(ChunkError::ZeroLengthVector)
+    } else {
+        values
+            .get(index as usize % values.len())
+            .copied()
+            .ok_or(ChunkError::OutOfBounds)
     }
 }
 
@@ -717,6 +740,7 @@ pub enum ChunkError {
         actual: usize,
     },
     Missing {
+        column: DBColumn,
         chunk_index: usize,
     },
     MissingGenesisValue,
@@ -742,6 +766,7 @@ pub enum ChunkError {
         end_vindex: usize,
         length: usize,
     },
+    OutOfBounds,
     InvalidFork,
 }
 

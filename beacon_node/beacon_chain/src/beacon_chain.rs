@@ -106,7 +106,6 @@ use store::{
 use task_executor::{ShutdownReason, TaskExecutor};
 use tokio_stream::Stream;
 use tree_hash::TreeHash;
-use types::beacon_state::CloneConfig;
 use types::*;
 
 pub type ForkChoiceError = fork_choice::Error<crate::ForkChoiceStoreError>;
@@ -614,7 +613,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
         let iter = self.store.forwards_block_roots_iterator(
             start_slot,
-            local_head.beacon_state.clone_with(CloneConfig::none()),
+            local_head.beacon_state.clone(),
             local_head.beacon_block_root,
             &self.spec,
         )?;
@@ -644,12 +643,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             let iter = self.store.forwards_block_roots_iterator_until(
                 start_slot,
                 end_slot,
-                || {
-                    (
-                        head.beacon_state.clone_with_only_committee_caches(),
-                        head.beacon_block_root,
-                    )
-                },
+                || (head.beacon_state.clone(), head.beacon_block_root),
                 &self.spec,
             )?;
             Ok(iter
@@ -720,7 +714,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         let iter = self.store.forwards_state_roots_iterator(
             start_slot,
             local_head.beacon_state_root(),
-            local_head.beacon_state.clone_with(CloneConfig::none()),
+            local_head.beacon_state.clone(),
             &self.spec,
         )?;
 
@@ -741,12 +735,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             let iter = self.store.forwards_state_roots_iterator_until(
                 start_slot,
                 end_slot,
-                || {
-                    (
-                        head.beacon_state.clone_with_only_committee_caches(),
-                        head.beacon_state_root(),
-                    )
-                },
+                || (head.beacon_state.clone(), head.beacon_state_root()),
                 &self.spec,
             )?;
             Ok(iter
@@ -3969,7 +3958,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 .snapshot_cache
                 .try_read_for(BLOCK_PROCESSING_CACHE_LOCK_TIMEOUT)
                 .ok_or(Error::SnapshotCacheLockTimeout)?
-                .get_cloned(parent_block_root, CloneConfig::none())
+                .get_cloned(parent_block_root)
             {
                 debug!(
                     self.log,
@@ -4313,7 +4302,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         let pubkey = state
             .validators()
             .get(proposer_index as usize)
-            .map(|v| v.pubkey)
+            .map(|v| *v.pubkey)
             .ok_or(BlockProductionError::BeaconChain(
                 BeaconChainError::ValidatorIndexUnknown(proposer_index as usize),
             ))?;
@@ -5532,11 +5521,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             // to copy the head is liable to race-conditions.
             let head_state_opt = self.with_head(|head| {
                 if head.beacon_block_root == head_block_root {
-                    Ok(Some((
-                        head.beacon_state
-                            .clone_with(CloneConfig::committee_caches_only()),
-                        head.beacon_state_root(),
-                    )))
+                    Ok(Some((head.beacon_state.clone(), head.beacon_state_root())))
                 } else {
                     Ok::<_, Error>(None)
                 }
@@ -5603,8 +5588,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
             state.build_committee_cache(relative_epoch, &self.spec)?;
 
-            let committee_cache = state.take_committee_cache(relative_epoch)?;
-            let committee_cache = Arc::new(committee_cache);
+            let committee_cache = state.committee_cache(relative_epoch)?.clone();
             let shuffling_decision_block = shuffling_id.shuffling_decision_block;
 
             self.shuffling_cache

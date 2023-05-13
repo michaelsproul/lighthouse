@@ -1,9 +1,6 @@
 use serde_derive::Serialize;
 use std::sync::Arc;
-use types::{
-    beacon_state::CloneConfig, AbstractExecPayload, BeaconState, EthSpec, FullPayload, Hash256,
-    SignedBeaconBlock,
-};
+use types::{AbstractExecPayload, BeaconState, EthSpec, FullPayload, Hash256, SignedBeaconBlock};
 
 /// Represents some block and its associated state. Generally, this will be used for tracking the
 /// head, justified head and finalized head.
@@ -47,13 +44,5 @@ impl<E: EthSpec, Payload: AbstractExecPayload<E>> BeaconSnapshot<E, Payload> {
         self.beacon_block = beacon_block;
         self.beacon_block_root = beacon_block_root;
         self.beacon_state = beacon_state;
-    }
-
-    pub fn clone_with(&self, clone_config: CloneConfig) -> Self {
-        Self {
-            beacon_block: self.beacon_block.clone(),
-            beacon_block_root: self.beacon_block_root,
-            beacon_state: self.beacon_state.clone_with(clone_config),
-        }
     }
 }

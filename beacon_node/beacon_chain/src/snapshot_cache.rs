@@ -4,8 +4,7 @@ use std::cmp;
 use std::sync::Arc;
 use std::time::Duration;
 use types::{
-    beacon_state::CloneConfig, BeaconState, BlindedPayload, ChainSpec, Epoch, EthSpec, Hash256,
-    SignedBeaconBlock, Slot,
+    BeaconState, BlindedPayload, ChainSpec, Epoch, EthSpec, Hash256, SignedBeaconBlock, Slot,
 };
 
 /// The default size of the cache.
@@ -53,9 +52,9 @@ impl<T: EthSpec> CacheItem<T> {
         }
     }
 
-    fn clone_to_snapshot_with(&self, clone_config: CloneConfig) -> BeaconSnapshot<T> {
+    fn clone_to_snapshot_with(&self) -> BeaconSnapshot<T> {
         BeaconSnapshot {
-            beacon_state: self.beacon_state.clone_with(clone_config),
+            beacon_state: self.beacon_state.clone(),
             beacon_block: self.beacon_block.clone(),
             beacon_block_root: self.beacon_block_root,
         }
@@ -289,12 +288,12 @@ impl<T: EthSpec> SnapshotCache<T> {
             .map(|snapshot| {
                 if let Some(pre_state) = &snapshot.pre_state {
                     BlockProductionPreState {
-                        pre_state: pre_state.clone_with(CloneConfig::all()),
+                        pre_state: pre_state.clone(),
                         state_root: None,
                     }
                 } else {
                     BlockProductionPreState {
-                        pre_state: snapshot.beacon_state.clone_with(CloneConfig::all()),
+                        pre_state: snapshot.beacon_state.clone(),
                         state_root: Some(snapshot.beacon_block.state_root()),
                     }
                 }
@@ -302,15 +301,11 @@ impl<T: EthSpec> SnapshotCache<T> {
     }
 
     /// If there is a snapshot with `block_root`, clone it and return the clone.
-    pub fn get_cloned(
-        &self,
-        block_root: Hash256,
-        clone_config: CloneConfig,
-    ) -> Option<BeaconSnapshot<T>> {
+    pub fn get_cloned(&self, block_root: Hash256) -> Option<BeaconSnapshot<T>> {
         self.snapshots
             .iter()
             .find(|snapshot| snapshot.beacon_block_root == block_root)
-            .map(|snapshot| snapshot.clone_to_snapshot_with(clone_config))
+            .map(|snapshot| snapshot.clone_to_snapshot_with())
     }
 
     pub fn get_for_state_advance(&mut self, block_root: Hash256) -> StateAdvance<T> {
@@ -322,9 +317,7 @@ impl<T: EthSpec> SnapshotCache<T> {
             if snapshot.pre_state.is_some() {
                 StateAdvance::AlreadyAdvanced
             } else {
-                let cloned = snapshot
-                    .beacon_state
-                    .clone_with(CloneConfig::committee_caches_only());
+                let cloned = snapshot.beacon_state.clone();
 
                 StateAdvance::State {
                     state: Box::new(std::mem::replace(&mut snapshot.beacon_state, cloned)),

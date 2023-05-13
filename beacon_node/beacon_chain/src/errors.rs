@@ -29,7 +29,7 @@ use state_processing::{
 use std::time::Duration;
 use task_executor::ShutdownReason;
 use tokio::task::JoinError;
-use types::*;
+use types::{milhouse::Error as MilhouseError, *};
 
 macro_rules! easy_from_to {
     ($from: ident, $to: ident) => {
@@ -213,6 +213,7 @@ pub enum BeaconChainError {
     BlsToExecutionConflictsWithPool,
     InconsistentFork(InconsistentFork),
     ProposerHeadForkChoiceError(fork_choice::Error<proto_array::Error>),
+    MilhouseError(MilhouseError),
 }
 
 easy_from_to!(SlotProcessingError, BeaconChainError);
@@ -238,6 +239,12 @@ easy_from_to!(StateAdvanceError, BeaconChainError);
 easy_from_to!(BlockReplayError, BeaconChainError);
 easy_from_to!(InconsistentFork, BeaconChainError);
 
+impl From<MilhouseError> for BeaconChainError {
+    fn from(e: MilhouseError) -> Self {
+        Self::MilhouseError(e)
+    }
+}
+
 #[derive(Debug)]
 pub enum BlockProductionError {
     UnableToGetBlockRootFromState,
@@ -262,6 +269,7 @@ pub enum BlockProductionError {
     TerminalPoWBlockLookupFailed(execution_layer::Error),
     GetPayloadFailed(execution_layer::Error),
     FailedToReadFinalizedBlock(store::Error),
+    FailedToLoadState(store::Error),
     MissingFinalizedBlock(Hash256),
     BlockTooLarge(usize),
     ShuttingDown,

@@ -7,6 +7,7 @@ use slog::{crit, debug, warn, Logger};
 use ssz_derive::{Decode, Encode};
 use state_processing::{
     per_block_processing::errors::AttesterSlashingValidationError, per_epoch_processing,
+    per_epoch_processing::altair::participation_cache,
 };
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -71,7 +72,7 @@ pub enum Error<T> {
         proposer_boost_root: Hash256,
     },
     UnrealizedVoteProcessing(state_processing::EpochProcessingError),
-    ParticipationCacheBuild(BeaconStateError),
+    ParticipationCacheBuild(participation_cache::Error),
     ValidatorStatuses(BeaconStateError),
 }
 
@@ -754,6 +755,7 @@ where
                 if let Some((parent_justified, parent_finalized)) = parent_checkpoints {
                     (parent_justified, parent_finalized)
                 } else {
+                    // FIXME(sproul): this might be slooow due to the full cache build
                     let justification_and_finalization_state = match block {
                         BeaconBlockRef::Capella(_)
                         | BeaconBlockRef::Merge(_)

@@ -5,7 +5,6 @@ use crate::chunked_vector::{
 use crate::{get_key_for_col, DBColumn, Error, KeyValueStore, KeyValueStoreOp};
 use ssz::{Decode, DecodeError, Encode};
 use ssz_derive::{Decode, Encode};
-use std::convert::TryInto;
 use std::sync::Arc;
 use types::historical_summary::HistoricalSummary;
 use types::superstruct;
@@ -40,16 +39,16 @@ where
     pub state_roots: Option<FixedVector<Hash256, T::SlotsPerHistoricalRoot>>,
 
     #[ssz(skip_serializing, skip_deserializing)]
-    pub historical_roots: Option<VariableList<Hash256, T::HistoricalRootsLimit>>,
+    pub historical_roots: Option<VList<Hash256, T::HistoricalRootsLimit>>,
 
     // Ethereum 1.0 chain data
     pub eth1_data: Eth1Data,
-    pub eth1_data_votes: VariableList<Eth1Data, T::SlotsPerEth1VotingPeriod>,
+    pub eth1_data_votes: VList<Eth1Data, T::SlotsPerEth1VotingPeriod>,
     pub eth1_deposit_index: u64,
 
     // Registry
-    pub validators: VariableList<Validator, T::ValidatorRegistryLimit>,
-    pub balances: VariableList<u64, T::ValidatorRegistryLimit>,
+    pub validators: VList<Validator, T::ValidatorRegistryLimit>,
+    pub balances: VList<u64, T::ValidatorRegistryLimit>,
 
     // Shuffling
     /// Randao value from the current slot, for patching into the per-epoch randao vector.
@@ -62,15 +61,15 @@ where
 
     // Attestations (genesis fork only)
     #[superstruct(only(Base))]
-    pub previous_epoch_attestations: VariableList<PendingAttestation<T>, T::MaxPendingAttestations>,
+    pub previous_epoch_attestations: VList<PendingAttestation<T>, T::MaxPendingAttestations>,
     #[superstruct(only(Base))]
-    pub current_epoch_attestations: VariableList<PendingAttestation<T>, T::MaxPendingAttestations>,
+    pub current_epoch_attestations: VList<PendingAttestation<T>, T::MaxPendingAttestations>,
 
     // Participation (Altair and later)
     #[superstruct(only(Altair, Merge, Capella))]
-    pub previous_epoch_participation: VariableList<ParticipationFlags, T::ValidatorRegistryLimit>,
+    pub previous_epoch_participation: VList<ParticipationFlags, T::ValidatorRegistryLimit>,
     #[superstruct(only(Altair, Merge, Capella))]
-    pub current_epoch_participation: VariableList<ParticipationFlags, T::ValidatorRegistryLimit>,
+    pub current_epoch_participation: VList<ParticipationFlags, T::ValidatorRegistryLimit>,
 
     // Finality
     pub justification_bits: BitVector<T::JustificationBitsLength>,
@@ -80,7 +79,7 @@ where
 
     // Inactivity
     #[superstruct(only(Altair, Merge, Capella))]
-    pub inactivity_scores: VariableList<u64, T::ValidatorRegistryLimit>,
+    pub inactivity_scores: VList<u64, T::ValidatorRegistryLimit>,
 
     // Light-client sync committees
     #[superstruct(only(Altair, Merge, Capella))]
@@ -108,7 +107,7 @@ where
 
     #[ssz(skip_serializing, skip_deserializing)]
     #[superstruct(only(Capella))]
-    pub historical_summaries: Option<VariableList<HistoricalSummary, T::HistoricalRootsLimit>>,
+    pub historical_summaries: Option<VList<HistoricalSummary, T::HistoricalRootsLimit>>,
 }
 
 /// Implement the conversion function from BeaconState -> PartialBeaconState.
@@ -326,7 +325,10 @@ impl<T: EthSpec> PartialBeaconState<T> {
             // Patch the value for the current slot into the index for the current epoch
             let current_epoch = self.slot().epoch(T::slots_per_epoch());
             let len = randao_mixes.len();
-            randao_mixes[current_epoch.as_usize() % len] = *self.latest_randao_value();
+
+            *randao_mixes
+                .get_mut(current_epoch.as_usize() % len)
+                .unwrap() = *self.latest_randao_value();
 
             *self.randao_mixes_mut() = Some(randao_mixes)
         }
@@ -376,7 +378,6 @@ macro_rules! impl_try_into_beacon_state {
             committee_caches: <_>::default(),
             pubkey_cache: <_>::default(),
             exit_cache: <_>::default(),
-            tree_hash_cache: <_>::default(),
 
             // Variant-specific fields
             $(

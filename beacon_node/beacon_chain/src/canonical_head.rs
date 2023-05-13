@@ -463,9 +463,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     pub fn head_beacon_state_cloned(&self) -> BeaconState<T::EthSpec> {
         // Don't clone whilst holding the read-lock, take an Arc-clone to reduce lock contention.
         let snapshot: Arc<_> = self.head_snapshot();
-        snapshot
-            .beacon_state
-            .clone_with(CloneConfig::committee_caches_only())
+        snapshot.beacon_state.clone()
     }
 
     /// Execute the fork choice algorithm and enthrone the result as the canonical head.
@@ -654,12 +652,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             let new_snapshot = self
                 .snapshot_cache
                 .try_read_for(BLOCK_PROCESSING_CACHE_LOCK_TIMEOUT)
-                .and_then(|snapshot_cache| {
-                    snapshot_cache.get_cloned(
-                        new_view.head_block_root,
-                        CloneConfig::committee_caches_only(),
-                    )
-                })
+                .and_then(|snapshot_cache| snapshot_cache.get_cloned(new_view.head_block_root))
                 .map::<Result<_, Error>, _>(Ok)
                 .unwrap_or_else(|| {
                     let beacon_block = self

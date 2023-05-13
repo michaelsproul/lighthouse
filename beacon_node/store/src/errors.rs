@@ -3,7 +3,7 @@ use crate::config::StoreConfigError;
 use crate::hot_cold_store::HotColdDBError;
 use ssz::DecodeError;
 use state_processing::BlockReplayError;
-use types::{BeaconStateError, Hash256, InconsistentFork, Slot};
+use types::{milhouse, BeaconStateError, Epoch, Hash256, InconsistentFork, Slot};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -40,9 +40,33 @@ pub enum Error {
         expected: Hash256,
         computed: Hash256,
     },
+    MissingStateRoot(Slot),
+    MissingState(Hash256),
+    MissingSnapshot(Epoch),
+    MissingDiff(Epoch),
+    NoBaseStateFound(Hash256),
     BlockReplayError(BlockReplayError),
+    MilhouseError(milhouse::Error),
+    Compression(std::io::Error),
+    MissingPersistedBeaconChain,
+    SlotIsBeforeSplit {
+        slot: Slot,
+    },
+    FinalizedStateDecreasingSlot,
+    FinalizedStateUnaligned,
+    StateForCacheHasPendingUpdates {
+        state_root: Hash256,
+        slot: Slot,
+    },
     AddPayloadLogicError,
     SlotClockUnavailableForMigration,
+    MissingImmutableValidator(usize),
+    MissingValidator(usize),
+    V9MigrationFailure(Hash256),
+    ValidatorPubkeyCacheError(String),
+    DuplicateValidatorPublicKey,
+    ValidatorPubkeyCacheUninitialized,
+    InvalidKey,
     UnableToDowngrade,
     InconsistentFork(InconsistentFork),
 }
@@ -94,6 +118,12 @@ impl From<DBError> for Error {
 impl From<StoreConfigError> for Error {
     fn from(e: StoreConfigError) -> Error {
         Error::ConfigError(e)
+    }
+}
+
+impl From<milhouse::Error> for Error {
+    fn from(e: milhouse::Error) -> Self {
+        Self::MilhouseError(e)
     }
 }
 
