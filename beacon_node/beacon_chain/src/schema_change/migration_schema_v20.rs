@@ -14,7 +14,7 @@ use store::{
     metadata::SchemaVersion,
     DBColumn, Error, HotColdDB, KeyValueStoreOp, StoreItem,
 };
-use types::{milhouse::Diff, BeaconState, BeaconStateDiff, EthSpec, Hash256, Slot};
+use types::{milhouse::Diff, BeaconState, EthSpec, Hash256, Slot};
 
 fn get_summary_v1<T: BeaconChainTypes>(
     db: &HotColdDB<T::EthSpec, T::HotStore, T::ColdStore>,

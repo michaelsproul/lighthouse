@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use std::io::{Read, Write};
-use types::{BeaconState, ChainSpec, Epoch, EthSpec, MainnetEthSpec, VList};
+use types::{BeaconState, ChainSpec, Epoch, EthSpec, VList};
 use zstd::{Decoder, Encoder};
 
 #[derive(Debug)]
@@ -77,7 +77,7 @@ impl HDiffBuffer {
 impl HDiff {
     pub fn compute(source: &HDiffBuffer, target: &HDiffBuffer) -> Result<Self, Error> {
         let state_diff = BytesDiff::compute(&source.state, &target.state)?;
-        let mut balances_diff = XorDiff::compute(&source.balances, &target.balances)?;
+        let balances_diff = XorDiff::compute(&source.balances, &target.balances)?;
 
         Ok(Self {
             state_diff,
@@ -143,7 +143,7 @@ impl XorDiff {
             return Err(Error::XorDeletionsNotSupported);
         }
 
-        let mut uncompressed_bytes: Vec<u8> = ys
+        let uncompressed_bytes: Vec<u8> = ys
             .iter()
             .enumerate()
             .flat_map(|(i, y)| {
@@ -155,7 +155,7 @@ impl XorDiff {
 
         // FIXME(sproul): reconsider
         let compression_level = 1;
-        let mut compressed_bytes = Vec::with_capacity(2 * uncompressed_bytes.len());
+        let mut compressed_bytes = Vec::with_capacity(uncompressed_bytes.len() / 2);
         let mut encoder =
             Encoder::new(&mut compressed_bytes, compression_level).map_err(Error::Compression)?;
         encoder

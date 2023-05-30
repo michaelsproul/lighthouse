@@ -29,7 +29,6 @@ pub use self::committee_cache::{
     compute_committee_index_in_epoch, compute_committee_range_in_epoch, epoch_committee_count,
     CommitteeCache,
 };
-pub use diff::BeaconStateDiff;
 pub use eth_spec::*;
 pub use iter::BlockRootsIter;
 pub use milhouse::{interface::Interface, List as VList, List, Vector as FixedVector};
@@ -37,7 +36,6 @@ pub use milhouse::{interface::Interface, List as VList, List, Vector as FixedVec
 #[macro_use]
 mod committee_cache;
 pub mod compact_state;
-mod diff;
 mod exit_cache;
 mod iter;
 mod pubkey_cache;

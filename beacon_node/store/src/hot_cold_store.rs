@@ -1,6 +1,8 @@
+/* FIXME(sproul): work out how to handle linear block/state roots
 use crate::chunked_vector::{
     store_updated_vector, BlockRoots, HistoricalRoots, HistoricalSummaries, RandaoMixes, StateRoots,
 };
+*/
 use crate::config::{
     OnDiskStoreConfig, StoreConfig, DEFAULT_SLOTS_PER_RESTORE_POINT,
     PREV_DEFAULT_SLOTS_PER_RESTORE_POINT,
@@ -29,7 +31,6 @@ use crate::{
 use itertools::process_results;
 use leveldb::iterator::LevelDBIterator;
 use lru::LruCache;
-use milhouse::Diff;
 use parking_lot::{Mutex, RwLock};
 use safe_arith::SafeArith;
 use serde_derive::{Deserialize, Serialize};
@@ -38,7 +39,6 @@ use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use state_processing::{
     block_replayer::PreSlotHook, BlockProcessingError, BlockReplayer, SlotProcessingError,
-    StateProcessingStrategy,
 };
 use std::cmp::min;
 use std::collections::VecDeque;
@@ -47,8 +47,8 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use types::EthSpec;
 use types::*;
-use types::{beacon_state::BeaconStateDiff, EthSpec};
 use zstd::{Decoder, Encoder};
 
 pub const MAX_PARENT_STATES_TO_CACHE: u64 = 1;
@@ -113,10 +113,12 @@ pub enum HotColdDBError {
     MissingPrevState(Hash256),
     MissingSplitState(Hash256, Slot),
     MissingStateDiff(Hash256),
+    MissingHDiff(Epoch),
     MissingExecutionPayload(Hash256),
     MissingFullBlockExecutionPayloadPruned(Hash256, Slot),
     MissingAnchorInfo,
     MissingFrozenBlockSlot(Hash256),
+    MissingFrozenBlock(Slot),
     HotStateSummaryError(BeaconStateError),
     RestorePointDecodeError(ssz::DecodeError),
     BlockReplayBeaconError(BeaconStateError),
@@ -956,9 +958,12 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
 
                 let compute_diff_timer =
                     metrics::start_timer(&metrics::BEACON_STATE_DIFF_COMPUTE_TIME);
-                let diff = BeaconStateDiff::compute_diff(&diff_base_state, state)?;
+
+                let base_buffer = HDiffBuffer::from_state(diff_base_state);
+                let target_buffer = HDiffBuffer::from_state(state.clone());
+                let diff = HDiff::compute(&base_buffer, &target_buffer)?;
                 drop(compute_diff_timer);
-                ops.push(self.state_diff_as_kv_store_op(state_root, &diff)?);
+                ops.push(diff.as_kv_store_op(*state_root)?);
             }
         }
 
@@ -1108,7 +1113,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
 
             // If there's a state diff stored at this slot, load it and store it for application.
             if !prior_summary.diff_base_state_root.is_zero() {
-                let diff = self.load_state_diff(prior_state_root)?;
+                let diff = self.load_hot_state_diff(prior_state_root)?;
                 state_diffs.push_front((prior_summary, prior_state_root, diff));
             }
         }
@@ -1178,7 +1183,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             // Get the next diff that will be applicable, taking the highest slot diff in case of
             // multiple diffs which are applicable at the same base slot, which can happen if the
             // diff frequency has changed.
-            let mut next_state_diff: Option<(HotStateSummary, Hash256, BeaconStateDiff<_>)> = None;
+            let mut next_state_diff: Option<(HotStateSummary, Hash256, HDiff)> = None;
             while let Some((summary, _, _)) = state_diffs.front() {
                 if next_state_diff.as_ref().map_or(true, |(current, _, _)| {
                     summary.diff_base_slot == current.diff_base_slot
@@ -1235,9 +1240,11 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
                     "to_slot" => summary.slot,
                     "block_root" => ?block_root,
                 );
-                debug_assert_eq!(summary.diff_base_slot, state.slot());
+                assert_eq!(summary.diff_base_slot, state.slot());
 
-                diff.apply_diff(&mut state)?;
+                let mut base_buffer = HDiffBuffer::from_state(state);
+                diff.apply(&mut base_buffer)?;
+                state = base_buffer.into_state(&self.spec)?;
 
                 state.update_tree_hash_cache()?;
                 state.build_all_caches(&self.spec)?;
@@ -1313,6 +1320,12 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         Ok((state, latest_block_root))
     }
 
+    pub fn load_hot_state_diff(&self, state_root: Hash256) -> Result<HDiff, Error> {
+        self.hot_db
+            .get(&state_root)?
+            .ok_or(HotColdDBError::MissingStateDiff(state_root).into())
+    }
+
     /// Store a pre-finalization state in the freezer database.
     pub fn store_cold_state(
         &self,
@@ -1385,7 +1398,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         &self,
         epoch: Epoch,
     ) -> Result<Option<Vec<u8>>, Error> {
-        match self.hot_db.get_bytes(
+        match self.cold_db.get_bytes(
             DBColumn::BeaconStateSnapshot.into(),
             &epoch.as_u64().to_be_bytes(),
         )? {
@@ -1424,7 +1437,12 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         let diff = HDiff::compute(&base_buffer, &target_buffer)?;
         let diff_bytes = diff.as_ssz_bytes();
 
-        ops.push
+        let key = get_key_for_col(
+            DBColumn::BeaconStateDiff.into(),
+            &state.current_epoch().as_u64().to_be_bytes(),
+        );
+        ops.push(KeyValueStoreOp::PutKeyValue(key, diff_bytes));
+        Ok(())
     }
 
     /// Try to load a pre-finalization state from the freezer database.
@@ -1441,34 +1459,29 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     ///
     /// Will reconstruct the state if it lies between restore points.
     pub fn load_cold_state_by_slot(&self, slot: Slot) -> Result<Option<BeaconState<E>>, Error> {
-        /*
-        // Guard against fetching states that do not exist due to gaps in the historic state
-        // database, which can occur due to checkpoint sync or re-indexing.
-        // See the comments in `get_historic_state_limits` for more information.
-        let (lower_limit, upper_limit) = self.get_historic_state_limits();
+        let epoch = slot.epoch(E::slots_per_epoch());
 
-        if slot <= lower_limit || slot >= upper_limit {
-            if slot % self.config.slots_per_restore_point == 0 {
-                self.load_restore_point(slot)
-            } else {
-                self.load_cold_intermediate_state(slot)
-            }
-            .map(Some)
-        } else {
-            Ok(None)
+        let hdiff_buffer = self.load_hdiff_buffer_for_epoch(epoch)?;
+        let base_state = hdiff_buffer.into_state(&self.spec)?;
+
+        if base_state.slot() == slot {
+            return Ok(Some(base_state));
         }
-        */
-        todo!()
+
+        let blocks = self.load_cold_blocks(base_state.slot() + 1, slot)?;
+        // FIXME: fix forwards iterator in absence of chunked vectors
+        self.replay_blocks(base_state, blocks, slot, std::iter::empty(), None)
+            .map(Some)
     }
 
     fn load_hdiff_for_epoch(&self, epoch: Epoch) -> Result<HDiff, Error> {
-        self.hot_db
+        self.cold_db
             .get_bytes(
                 DBColumn::BeaconStateDiff.into(),
-                epoch.as_u64().to_be_bytes(),
+                &epoch.as_u64().to_be_bytes(),
             )?
-            .map(HDiff::from_ssz_bytes)
-            .transpose()
+            .map(|bytes| HDiff::from_ssz_bytes(&bytes))
+            .ok_or(HotColdDBError::MissingHDiff(epoch))?
             .map_err(Into::into)
     }
 
@@ -1489,114 +1502,25 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         };
 
         // Load diff and apply it to buffer.
-        let diff = self.load_diff_for_epoch(epoch)?;
-        diff.apply(&mut diff)?;
+        let diff = self.load_hdiff_for_epoch(epoch)?;
+        diff.apply(&mut buffer)?;
 
         Ok(buffer)
     }
 
-    /* FIXME(sproul): backwards compat
-    /// Load a restore point state by its `restore_point_index`.
-    fn load_legacy_restore_point_by_index(
+    /// Load cold blocks between `start_slot` and `end_slot` inclusive.
+    pub fn load_cold_blocks(
         &self,
-        restore_point_index: u64,
-    ) -> Result<BeaconState<E>, Error> {
-        let state_root = self.load_restore_point_hash(restore_point_index)?;
-        self.load_restore_point(&state_root)
-    }
-    */
-
-    /// Load a frozen state that lies between restore points.
-    fn load_cold_intermediate_state(&self, slot: Slot) -> Result<BeaconState<E>, Error> {
-        /*
-        // 1. Load the restore points either side of the intermediate state.
-        let sprp = self.config.slots_per_restore_point;
-        let low_restore_point_slot = slot / sprp * sprp;
-        let high_restore_point_slot = low_restore_point_slot + sprp;
-
-        // Use low restore point as the base state.
-        let mut low_slot: Slot =
-            Slot::new(low_restore_point_idx * self.config.slots_per_restore_point);
-        let mut low_state: Option<BeaconState<E>> = None;
-
-        // Try to get a more recent state from the cache to avoid massive blocks replay.
-        for (s, state) in self.state_cache.lock().iter() {
-            if s.as_u64() / self.config.slots_per_restore_point == low_restore_point_idx
-                && *s < slot
-                && low_slot < *s
-            {
-                low_slot = *s;
-                low_state = Some(state.clone());
-            }
-        }
-
-        // If low_state is still None, use load_restore_point_by_index to load the state.
-        let low_state = match low_state {
-            Some(state) => state,
-            None => self.load_restore_point_by_index(low_restore_point_idx)?,
-        };
-
-        // Acquire the read lock, so that the split can't change while this is happening.
-        let split = self.split.read_recursive();
-
-        let high_restore_point = self.get_restore_point(high_restore_point_idx, &split)?;
-
-        // 2. Load the blocks from the high restore point back to the low point.
-        let blocks = self.load_blocks_to_replay(
-            low_slot,
-            slot,
-            self.get_high_restore_point_block_root(&high_restore_point, slot)?,
-        )?;
-
-        // 3. Replay the blocks on top of the low point.
-        // Use a forwards state root iterator to avoid doing any tree hashing.
-        // The state root of the high restore point should never be used, so is safely set to 0.
-        let state_root_iter = self.forwards_state_roots_iterator_until(
-            low_slot,
-            slot,
-            || (high_restore_point, Hash256::zero()),
-            &self.spec,
-        )?;
-
-        self.replay_blocks(low_restore_point, blocks, slot, state_root_iter, None)
-        */
-        panic!()
-    }
-
-    /// Get the restore point with the given index, or if it is out of bounds, the split state.
-    pub(crate) fn get_restore_point(
-        &self,
-        slot: Slot,
-        split: &Split,
-    ) -> Result<BeaconState<E>, Error> {
-        /*
-        if slot >= split.slot.as_u64() {
-            self.get_state(&split.state_root, Some(split.slot))?
-                .ok_or(HotColdDBError::MissingSplitState(
-                    split.state_root,
-                    split.slot,
-                ))
-                .map_err(Into::into)
-        } else {
-            self.load_restore_point(slot)
-        }
-        */
-        panic!()
-    }
-
-    /// Get a suitable block root for backtracking from `high_restore_point` to the state at `slot`.
-    ///
-    /// Defaults to the block root for `slot`, which *should* be in range.
-    fn get_high_restore_point_block_root(
-        &self,
-        high_restore_point: &BeaconState<E>,
-        slot: Slot,
-    ) -> Result<Hash256, HotColdDBError> {
-        high_restore_point
-            .get_block_root(slot)
-            .or_else(|_| high_restore_point.get_oldest_block_root())
-            .map(|x| *x)
-            .map_err(HotColdDBError::RestorePointBlockHashError)
+        start_slot: Slot,
+        end_slot: Slot,
+    ) -> Result<Vec<SignedBlindedBeaconBlock<E>>, Error> {
+        (start_slot.as_u64()..=end_slot.as_u64())
+            .map(Slot::new)
+            .map(|slot| {
+                self.get_cold_blinded_block_by_slot(slot)?
+                    .ok_or(Error::from(HotColdDBError::MissingFrozenBlock(slot)))
+            })
+            .collect()
     }
 
     /// Load the blocks between `start_slot` and `end_slot` by backtracking from `end_block_hash`.
@@ -2182,49 +2106,28 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
     // have been stored in memory, or maybe as a diff.
     store.store_full_state(&finalized_state_root, finalized_state)?;
 
-    // Compute current latest restore point slot prior to the migration. This is used by the
-    // in-memory validator cache to update bounds.
-    let latest_restore_point_slot = (current_split_slot - 1) / store.config.slots_per_restore_point
-        * store.config.slots_per_restore_point;
-
     // Copy all of the states between the new finalized state and the split slot, from the hot DB to
     // the cold DB.
     let mut hot_db_ops: Vec<StoreOp<E>> = Vec::new();
     let mut cold_db_block_ops: Vec<KeyValueStoreOp> = vec![];
 
-    let state_root_iter = RootsIterator::new(&store, finalized_state);
-    for maybe_tuple in state_root_iter.take_while(|result| match result {
-        Ok((_, _, slot)) => {
-            slot >= &current_split_slot
-                && anchor_slot.map_or(true, |anchor_slot| slot >= &anchor_slot)
-        }
-        Err(_) => true,
-    }) {
-        let (block_root, state_root, slot) = maybe_tuple?;
+    let mut state_roots = RootsIterator::new(&store, finalized_state)
+        .take_while(|result| match result {
+            Ok((_, _, slot)) => {
+                slot >= &current_split_slot
+                    && anchor_slot.map_or(true, |anchor_slot| slot >= &anchor_slot)
+            }
+            Err(_) => true,
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
+    for (block_root, state_root, slot) in state_roots.into_iter().rev() {
         let mut cold_db_ops: Vec<KeyValueStoreOp> = Vec::new();
 
-        if slot % store.config.slots_per_restore_point == 0 {
+        if slot % E::slots_per_epoch() == 0 {
             let state: BeaconState<E> = store
                 .get_hot_state(&state_root)?
                 .ok_or(HotColdDBError::MissingStateToFreeze(state_root))?;
-
-            /*
-            let t = std::time::Instant::now();
-            let (num_validators_updated, num_fields_updated) =
-                store
-                    .immutable_validators
-                    .write()
-                    .update_for_finalized_state(&state, latest_restore_point_slot, &store.spec)?;
-            debug!(
-                store.log,
-                "Updated in-memory validator store";
-                "slot" => slot,
-                "validators_updated" => num_validators_updated,
-                "fields_updated" => num_fields_updated,
-                "time_taken_ms" => t.elapsed().as_millis()
-            );
-            */
 
             store.store_cold_state(&state_root, &state, &mut cold_db_ops)?;
         } else {

@@ -27,7 +27,6 @@ pub mod metadata;
 pub mod metrics;
 pub mod reconstruct;
 mod state_cache;
-mod state_diff;
 pub mod validator_pubkey_cache;
 
 pub mod iter;
