@@ -1215,12 +1215,12 @@ pub fn serve<T: BeaconChainTypes>(
         .and(chain_filter.clone())
         .and(network_tx_filter.clone())
         .and(log_filter.clone())
-        .and_then(
+        .then(
             |block: Arc<SignedBeaconBlock<T::EthSpec>>,
              chain: Arc<BeaconChain<T>>,
              network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>,
              log: Logger| async move {
-                publish_blocks::publish_block(
+                match publish_blocks::publish_block(
                     None,
                     ProvenancedBlock::Local(block),
                     chain,
@@ -1228,7 +1228,13 @@ pub fn serve<T: BeaconChainTypes>(
                     log,
                 )
                 .await
-                .map(|()| warp::reply().into_response())
+                {
+                    Ok(()) => warp::reply().into_response(),
+                    Err(e) => warp_utils::reject::handle_rejection(e)
+                        .await
+                        .unwrap()
+                        .into_response(),
+                }
             },
         );
 
