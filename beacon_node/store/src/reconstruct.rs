@@ -44,22 +44,15 @@ where
 
         // Iterate blocks from the state lower limit to the upper limit.
         let lower_limit_slot = anchor.state_lower_limit;
+        let upper_limit_slot = anchor.state_upper_limit;
         let split = self.get_split_info();
-        let upper_limit_state = self.get_restore_point(anchor.state_upper_limit, &split)?;
-        let upper_limit_slot = upper_limit_state.slot();
-        // FIXME(sproul): think about case where there is no restore point stored yet
-        let latest_restore_point_slot =
-            (split.slot - 1) / slots_per_restore_point * slots_per_restore_point;
-
-        // Use a dummy root, as we never read the block for the upper limit state.
-        let upper_limit_block_root = Hash256::repeat_byte(0xff);
 
         // If `num_blocks` is not specified iterate all blocks.
         let block_root_iter = self
-            .forwards_block_roots_iterator(
+            .forwards_block_roots_iterator_until(
                 lower_limit_slot,
-                upper_limit_state,
-                upper_limit_block_root,
+                upper_limit_slot,
+                || panic!("FIXME(sproul): reconstruction doesn't need this state"),
                 &self.spec,
             )?
             .take(num_blocks.unwrap_or(usize::MAX));

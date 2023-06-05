@@ -179,8 +179,11 @@ impl<E: EthSpec> KeyValueStore<E> for LevelDB<E> {
 
     /// Iterate through all keys and values in a particular column.
     fn iter_column<K: Key>(&self, column: DBColumn) -> ColumnIter<K> {
-        let start_key =
-            BytesKey::from_vec(get_key_for_col(column.into(), &vec![0; column.key_size()]));
+        self.iter_column_from(column, &vec![0; column.key_size()])
+    }
+
+    fn iter_column_from<K: Key>(&self, column: DBColumn, from: &[u8]) -> ColumnIter<K> {
+        let start_key = BytesKey::from_vec(get_key_for_col(column.into(), &from));
 
         let iter = self.db.iter(self.read_options());
         iter.seek(&start_key);

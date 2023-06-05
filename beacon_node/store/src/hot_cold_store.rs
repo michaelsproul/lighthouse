@@ -551,6 +551,15 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         let slot = block.slot();
         kv_store_ops.push(FrozenBlockSlot(slot).as_kv_store_op(*block_root)?);
 
+        // Write the slot to block root mapping.
+        kv_store_ops.push(KeyValueStoreOp::PutKeyValue(
+            get_key_for_col(
+                DBColumn::BeaconBlockRoots.into(),
+                &slot.as_u64().to_be_bytes(),
+            ),
+            block_root.as_bytes().to_vec(),
+        ));
+
         // Write the block keyed by slot.
         let db_key = get_key_for_col(
             DBColumn::BeaconBlockFrozen.into(),
@@ -734,6 +743,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     ) -> Result<impl Iterator<Item = Result<(Hash256, Slot), Error>> + '_, Error> {
         HybridForwardsBlockRootsIterator::new(
             self,
+            DBColumn::BeaconBlockRoots,
             start_slot,
             None,
             || (end_state, end_block_root),
@@ -748,7 +758,14 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         get_state: impl FnOnce() -> (BeaconState<E>, Hash256),
         spec: &ChainSpec,
     ) -> Result<HybridForwardsBlockRootsIterator<E, Hot, Cold>, Error> {
-        HybridForwardsBlockRootsIterator::new(self, start_slot, Some(end_slot), get_state, spec)
+        HybridForwardsBlockRootsIterator::new(
+            self,
+            DBColumn::BeaconBlockRoots,
+            start_slot,
+            Some(end_slot),
+            get_state,
+            spec,
+        )
     }
 
     pub fn forwards_state_roots_iterator(
@@ -760,6 +777,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     ) -> Result<impl Iterator<Item = Result<(Hash256, Slot), Error>> + '_, Error> {
         HybridForwardsStateRootsIterator::new(
             self,
+            DBColumn::BeaconStateRoots,
             start_slot,
             None,
             || (end_state, end_state_root),
@@ -774,7 +792,14 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         get_state: impl FnOnce() -> (BeaconState<E>, Hash256),
         spec: &ChainSpec,
     ) -> Result<HybridForwardsStateRootsIterator<E, Hot, Cold>, Error> {
-        HybridForwardsStateRootsIterator::new(self, start_slot, Some(end_slot), get_state, spec)
+        HybridForwardsStateRootsIterator::new(
+            self,
+            DBColumn::BeaconStateRoots,
+            start_slot,
+            Some(end_slot),
+            get_state,
+            spec,
+        )
     }
 
     pub fn put_item<I: StoreItem>(&self, key: &Hash256, item: &I) -> Result<(), Error> {
@@ -1619,12 +1644,6 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
 
     pub fn set_split(&self, slot: Slot, state_root: Hash256) {
         *self.split.write() = Split { slot, state_root };
-    }
-
-    /// Fetch the slot of the most recently stored restore point.
-    pub fn get_latest_restore_point_slot(&self) -> Slot {
-        (self.get_split_slot() - 1) / self.config.slots_per_restore_point
-            * self.config.slots_per_restore_point
     }
 
     /// Load the database schema version from disk.

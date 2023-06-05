@@ -10,9 +10,6 @@
 #[macro_use]
 extern crate lazy_static;
 
-mod chunk_writer;
-pub mod chunked_iter;
-pub mod chunked_vector;
 pub mod config;
 pub mod errors;
 mod forwards_iter;
@@ -31,7 +28,6 @@ pub mod validator_pubkey_cache;
 
 pub mod iter;
 
-pub use self::chunk_writer::ChunkWriter;
 pub use self::config::StoreConfig;
 pub use self::hot_cold_store::{HotColdDB, HotStateSummary, Split};
 pub use self::leveldb_store::LevelDB;
@@ -83,7 +79,11 @@ pub trait KeyValueStore<E: EthSpec>: Sync + Send + Sized + 'static {
     fn compact(&self) -> Result<(), Error>;
 
     /// Iterate through all keys and values in a particular column.
-    fn iter_column<K: Key>(&self, _column: DBColumn) -> ColumnIter<K> {
+    fn iter_column<K: Key>(&self, column: DBColumn) -> ColumnIter<K> {
+        self.iter_column_from(column, &vec![0; column.key_size()])
+    }
+
+    fn iter_column_from<K: Key>(&self, _column: DBColumn, _from: &[u8]) -> ColumnIter<K> {
         // Default impl for non LevelDB databases
         Box::new(std::iter::empty())
     }
@@ -288,11 +288,11 @@ impl DBColumn {
             | Self::PubkeyCache
             | Self::BeaconRestorePoint
             | Self::DhtEnrs
-            | Self::OptimisticTransitionBlock
-            | Self::BeaconHistoricalSummaries => 32,
+            | Self::OptimisticTransitionBlock => 32,
             Self::BeaconBlockRoots
             | Self::BeaconStateRoots
             | Self::BeaconHistoricalRoots
+            | Self::BeaconHistoricalSummaries
             | Self::BeaconRandaoMixes
             | Self::BeaconBlockFrozen
             | Self::BeaconStateSnapshot
