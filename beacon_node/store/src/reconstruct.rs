@@ -8,7 +8,7 @@ use state_processing::{
     StateProcessingStrategy, VerifyBlockRoot,
 };
 use std::sync::Arc;
-use types::{EthSpec, Hash256};
+use types::EthSpec;
 
 impl<E, Hot, Cold> HotColdDB<E, Hot, Cold>
 where
@@ -41,9 +41,9 @@ where
         );
 
         // Iterate blocks from the state lower limit to the upper limit.
-        let lower_limit_slot = anchor.state_lower_limit;
-        let upper_limit_slot = anchor.state_upper_limit;
         let split = self.get_split_info();
+        let lower_limit_slot = anchor.state_lower_limit;
+        let upper_limit_slot = std::cmp::min(split.slot, anchor.state_upper_limit);
 
         // If `num_blocks` is not specified iterate all blocks.
         let block_root_iter = self

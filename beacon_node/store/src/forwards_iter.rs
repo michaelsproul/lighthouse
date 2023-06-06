@@ -3,7 +3,7 @@ use crate::iter::{BlockRootsIterator, StateRootsIterator};
 use crate::{ColumnIter, DBColumn, HotColdDB, ItemStore};
 use itertools::process_results;
 use std::marker::PhantomData;
-use types::{BeaconState, ChainSpec, EthSpec, Hash256, Slot};
+use types::{BeaconState, EthSpec, Hash256, Slot};
 
 pub type HybridForwardsBlockRootsIterator<'a, E, Hot, Cold> =
     HybridForwardsIterator<'a, E, Hot, Cold>;

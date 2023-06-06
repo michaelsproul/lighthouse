@@ -340,7 +340,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
                 warn!(
                     log,
                     "Database migration failed";
-                    "error" => format!("{:?}", e)
+                    "error" => ?e
                 );
                 return;
             }

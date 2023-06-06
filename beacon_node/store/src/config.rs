@@ -4,7 +4,6 @@ use serde_derive::{Deserialize, Serialize};
 use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use std::io::Write;
-use types::{EthSpec, MinimalEthSpec};
 use zstd::Encoder;
 
 pub const DEFAULT_EPOCHS_PER_STATE_DIFF: u64 = 4;
@@ -83,7 +82,7 @@ impl StoreConfig {
 
     pub fn check_compatibility(
         &self,
-        on_disk_config: &OnDiskStoreConfig,
+        _on_disk_config: &OnDiskStoreConfig,
     ) -> Result<(), StoreConfigError> {
         // FIXME(sproul): TODO
         Ok(())

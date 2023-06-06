@@ -73,6 +73,8 @@ pub struct HotColdDB<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     /// Immutable validator cache.
     pub immutable_validators: Arc<RwLock<ValidatorPubkeyCache<E, Hot, Cold>>>,
     /// LRU cache of replayed states.
+    // FIXME(sproul): re-enable historic state cache
+    #[allow(dead_code)]
     historic_state_cache: Mutex<LruCache<Slot, BeaconState<E>>>,
     /// Chain spec.
     pub(crate) spec: ChainSpec,
@@ -701,12 +703,13 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         self.do_atomically(vec![StoreOp::DeleteState(*state_root, Some(slot))])
     }
 
+    // FIXME(sproul): remove spec param
     pub fn forwards_block_roots_iterator(
         &self,
         start_slot: Slot,
         end_state: BeaconState<E>,
         end_block_root: Hash256,
-        spec: &ChainSpec,
+        _spec: &ChainSpec,
     ) -> Result<impl Iterator<Item = Result<(Hash256, Slot), Error>> + '_, Error> {
         HybridForwardsBlockRootsIterator::new(
             self,
@@ -714,16 +717,16 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             start_slot,
             None,
             || (end_state, end_block_root),
-            spec,
         )
     }
 
+    // FIXME(sproul): remove spec param
     pub fn forwards_block_roots_iterator_until(
         &self,
         start_slot: Slot,
         end_slot: Slot,
         get_state: impl FnOnce() -> (BeaconState<E>, Hash256),
-        spec: &ChainSpec,
+        _spec: &ChainSpec,
     ) -> Result<HybridForwardsBlockRootsIterator<E, Hot, Cold>, Error> {
         HybridForwardsBlockRootsIterator::new(
             self,
@@ -731,16 +734,16 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             start_slot,
             Some(end_slot),
             get_state,
-            spec,
         )
     }
 
+    // FIXME(sproul): remove spec param
     pub fn forwards_state_roots_iterator(
         &self,
         start_slot: Slot,
         end_state_root: Hash256,
         end_state: BeaconState<E>,
-        spec: &ChainSpec,
+        _spec: &ChainSpec,
     ) -> Result<impl Iterator<Item = Result<(Hash256, Slot), Error>> + '_, Error> {
         HybridForwardsStateRootsIterator::new(
             self,
@@ -748,16 +751,16 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             start_slot,
             None,
             || (end_state, end_state_root),
-            spec,
         )
     }
 
+    // FIXME(sproul): remove spec param
     pub fn forwards_state_roots_iterator_until(
         &self,
         start_slot: Slot,
         end_slot: Slot,
         get_state: impl FnOnce() -> (BeaconState<E>, Hash256),
-        spec: &ChainSpec,
+        _spec: &ChainSpec,
     ) -> Result<HybridForwardsStateRootsIterator<E, Hot, Cold>, Error> {
         HybridForwardsStateRootsIterator::new(
             self,
@@ -765,7 +768,6 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             start_slot,
             Some(end_slot),
             get_state,
-            spec,
         )
     }
 
@@ -2056,11 +2058,8 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
     // The new finalized state must increase the current split slot, and lie on an epoch
     // boundary (in order for the hot state summary scheme to work).
     let current_split_slot = store.split.read_recursive().slot;
-    let anchor_slot = store
-        .anchor_info
-        .read_recursive()
-        .as_ref()
-        .map(|a| a.anchor_slot);
+    let anchor_info = store.anchor_info.read_recursive().clone();
+    let anchor_slot = anchor_info.as_ref().map(|a| a.anchor_slot);
 
     if finalized_state.slot() < current_split_slot {
         return Err(HotColdDBError::FreezeSlotError {
@@ -2093,27 +2092,8 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    // Iterate states in slot ascending order, as they are stored wrt previous states.
     for (block_root, state_root, slot) in state_roots.into_iter().rev() {
-        let mut cold_db_ops: Vec<KeyValueStoreOp> = Vec::new();
-
-        if slot % E::slots_per_epoch() == 0 {
-            let state: BeaconState<E> = store
-                .get_hot_state(&state_root)?
-                .ok_or(HotColdDBError::MissingStateToFreeze(state_root))?;
-
-            store.store_cold_state(&state_root, &state, &mut cold_db_ops)?;
-        } else {
-            // Store slot -> state_root and state_root -> slot mappings.
-            store.store_cold_state_summary(&state_root, slot, &mut cold_db_ops)?;
-        }
-
-        // There are data dependencies between calls to `store_cold_state()` that prevent us from
-        // doing one big call to `store.cold_db.do_atomically()` at end of the loop.
-        store.cold_db.do_atomically(cold_db_ops)?;
-
-        // Delete the old summary, and the full state if we lie on an epoch boundary.
-        hot_db_ops.push(StoreOp::DeleteState(state_root, Some(slot)));
-
         // Delete the execution payload if payload pruning is enabled. At a skipped slot we may
         // delete the payload for the finalized block itself, but that's OK as we only guarantee
         // that payloads are present for slots >= the split slot. The payload fetching code is also
@@ -2133,6 +2113,35 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
                 &mut cold_db_block_ops,
             )?;
         }
+
+        // Delete the old summary, and the full state if we lie on an epoch boundary.
+        hot_db_ops.push(StoreOp::DeleteState(state_root, Some(slot)));
+
+        // Do not try to store states if the first snapshot is yet to be stored.
+        if anchor_info
+            .as_ref()
+            .map_or(false, |anchor| slot < anchor.state_upper_limit)
+        {
+            debug!(store.log, "Skipping cold state storage"; "slot" => slot);
+            continue;
+        }
+
+        let mut cold_db_ops: Vec<KeyValueStoreOp> = Vec::new();
+
+        if slot % E::slots_per_epoch() == 0 {
+            let state: BeaconState<E> = store
+                .get_hot_state(&state_root)?
+                .ok_or(HotColdDBError::MissingStateToFreeze(state_root))?;
+
+            store.store_cold_state(&state_root, &state, &mut cold_db_ops)?;
+        } else {
+            // Store slot -> state_root and state_root -> slot mappings.
+            store.store_cold_state_summary(&state_root, slot, &mut cold_db_ops)?;
+        }
+
+        // There are data dependencies between calls to `store_cold_state()` that prevent us from
+        // doing one big call to `store.cold_db.do_atomically()` at end of the loop.
+        store.cold_db.do_atomically(cold_db_ops)?;
     }
 
     // Warning: Critical section.  We have to take care not to put any of the two databases in an

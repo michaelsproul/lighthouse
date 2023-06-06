@@ -6,7 +6,7 @@ use ssz_derive::{Decode, Encode};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use types::{BeaconState, EthSpec, Hash256, PublicKey, PublicKeyBytes, Slot, Validator};
+use types::{BeaconState, EthSpec, Hash256, PublicKey, PublicKeyBytes};
 
 /// Provides a mapping of `validator_index -> validator_publickey`.
 ///
@@ -209,7 +209,8 @@ impl DatabaseValidator {
         Hash256::from_low_u64_be(index as u64)
     }
 
-    fn from_immutable_validator(pubkey: &PublicKey, validator: &PublicKeyBytes) -> Self {
+    // FIXME(sproul): remove param
+    fn from_immutable_validator(pubkey: &PublicKey, _validator: &PublicKeyBytes) -> Self {
         DatabaseValidator {
             pubkey: pubkey.serialize_uncompressed().into(),
         }

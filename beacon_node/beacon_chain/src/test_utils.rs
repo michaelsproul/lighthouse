@@ -38,7 +38,7 @@ use sensitive_url::SensitiveUrl;
 use slog::Logger;
 use slot_clock::{SlotClock, TestingSlotClock};
 use state_processing::per_block_processing::compute_timestamp_at_slot;
-use state_processing::{state_advance::complete_state_advance, StateProcessingStrategy};
+use state_processing::state_advance::complete_state_advance;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
