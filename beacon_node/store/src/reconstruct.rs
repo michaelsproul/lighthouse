@@ -40,8 +40,6 @@ where
             "start_slot" => anchor.state_lower_limit,
         );
 
-        let slots_per_restore_point = self.config.slots_per_restore_point;
-
         // Iterate blocks from the state lower limit to the upper limit.
         let lower_limit_slot = anchor.state_lower_limit;
         let upper_limit_slot = anchor.state_upper_limit;
@@ -113,7 +111,7 @@ where
                 self.store_cold_state(&state_root, &state, &mut io_batch)?;
 
                 // If the slot lies on an epoch boundary, commit the batch and update the anchor.
-                if slot % slots_per_restore_point == 0 || slot + 1 == upper_limit_slot {
+                if slot % E::slots_per_epoch() == 0 || slot + 1 == upper_limit_slot {
                     info!(
                         self.log,
                         "State reconstruction in progress";

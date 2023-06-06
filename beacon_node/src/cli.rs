@@ -1127,4 +1127,10 @@ pub fn cli_app<'a, 'b>() -> App<'a, 'b> {
             // always using the builder.
             .conflicts_with("builder-profit-threshold")
         )
+        .arg(
+            Arg::with_name("unsafe-and-dangerous-mode")
+            .long("unsafe-and-dangerous-mode")
+            .help("Don't use this flag unless you know what you're doing. Go back and download a \
+                   stable Lighthouse release")
+        )
 }

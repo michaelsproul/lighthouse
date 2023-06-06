@@ -1,12 +1,4 @@
-/* FIXME(sproul): work out how to handle linear block/state roots
-use crate::chunked_vector::{
-    store_updated_vector, BlockRoots, HistoricalRoots, HistoricalSummaries, RandaoMixes, StateRoots,
-};
-*/
-use crate::config::{
-    OnDiskStoreConfig, StoreConfig, DEFAULT_SLOTS_PER_RESTORE_POINT,
-    PREV_DEFAULT_SLOTS_PER_RESTORE_POINT,
-};
+use crate::config::{OnDiskStoreConfig, StoreConfig};
 use crate::forwards_iter::{HybridForwardsBlockRootsIterator, HybridForwardsStateRootsIterator};
 use crate::hdiff::{HDiff, HDiffBuffer, HierarchyModuli, StorageStrategy};
 use crate::hot_state_iter::HotStateRootIter;
@@ -125,11 +117,6 @@ pub enum HotColdDBError {
     BlockReplaySlotError(SlotProcessingError),
     BlockReplayBlockError(BlockProcessingError),
     MissingLowerLimitState(Slot),
-    InvalidSlotsPerRestorePoint {
-        slots_per_restore_point: u64,
-        slots_per_historical_root: u64,
-        slots_per_epoch: u64,
-    },
     RestorePointBlockHashError(BeaconStateError),
     IterationError {
         unexpected_key: BytesKey,
@@ -147,7 +134,6 @@ impl<E: EthSpec> HotColdDB<E, MemoryStore<E>, MemoryStore<E>> {
         spec: ChainSpec,
         log: Logger,
     ) -> Result<HotColdDB<E, MemoryStore<E>, MemoryStore<E>>, Error> {
-        Self::verify_slots_per_restore_point(config.slots_per_restore_point)?;
         config.verify_compression_level()?;
 
         let hierarchy = config.hierarchy_config.to_moduli()?;
@@ -175,8 +161,6 @@ impl<E: EthSpec> HotColdDB<E, MemoryStore<E>, MemoryStore<E>> {
 impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
     /// Open a new or existing database, with the given paths to the hot and cold DBs.
     ///
-    /// The `slots_per_restore_point` parameter must be a divisor of `SLOTS_PER_HISTORICAL_ROOT`.
-    ///
     /// The `migrate_schema` function is passed in so that the parent `BeaconChain` can provide
     /// context and access `BeaconChain`-level code without creating a circular dependency.
     pub fn open(
@@ -187,12 +171,11 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
         spec: ChainSpec,
         log: Logger,
     ) -> Result<Arc<Self>, Error> {
-        Self::verify_slots_per_restore_point(config.slots_per_restore_point)?;
         config.verify_compression_level()?;
 
         let hierarchy = config.hierarchy_config.to_moduli()?;
 
-        let mut db = HotColdDB {
+        let db = HotColdDB {
             split: RwLock::new(Split::default()),
             anchor_info: RwLock::new(None),
             cold_db: LevelDB::open(cold_path)?,
@@ -208,25 +191,9 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
             _phantom: PhantomData,
         };
 
-        // Allow the slots-per-restore-point value to stay at the previous default if the config
-        // uses the new default. Don't error on a failed read because the config itself may need
-        // migrating.
-        if let Ok(Some(disk_config)) = db.load_config() {
-            if !db.config.slots_per_restore_point_set_explicitly
-                && disk_config.slots_per_restore_point == PREV_DEFAULT_SLOTS_PER_RESTORE_POINT
-                && db.config.slots_per_restore_point == DEFAULT_SLOTS_PER_RESTORE_POINT
-            {
-                debug!(
-                    db.log,
-                    "Ignoring slots-per-restore-point config in favour of on-disk value";
-                    "config" => db.config.slots_per_restore_point,
-                    "on_disk" => disk_config.slots_per_restore_point,
-                );
-
-                // Mutate the in-memory config so that it's compatible.
-                db.config.slots_per_restore_point = PREV_DEFAULT_SLOTS_PER_RESTORE_POINT;
-            }
-        }
+        // Load the config from disk but don't error on a failed read because the config itself may
+        // need migrating.
+        let _ = db.load_config();
 
         // Load the previous split slot from the database (if any). This ensures we can
         // stop and restart correctly. This needs to occur *before* running any migrations
@@ -1691,20 +1658,19 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     /// Initialise the anchor info for checkpoint sync starting from `block`.
     pub fn init_anchor_info(&self, block: BeaconBlockRef<'_, E>) -> Result<KeyValueStoreOp, Error> {
         let anchor_slot = block.slot();
-        let slots_per_restore_point = self.config.slots_per_restore_point;
+        let anchor_epoch = anchor_slot.epoch(E::slots_per_epoch());
 
-        // Set the `state_upper_limit` to the slot of the *next* restore point.
+        // Set the `state_upper_limit` to the slot of the *next* checkpoint.
         // See `get_state_upper_limit` for rationale.
-        let next_restore_point_slot = if anchor_slot % slots_per_restore_point == 0 {
-            anchor_slot
-        } else {
-            (anchor_slot / slots_per_restore_point + 1) * slots_per_restore_point
-        };
+        let next_snapshot_slot = self
+            .hierarchy
+            .next_snapshot_epoch(anchor_epoch)?
+            .start_slot(E::slots_per_epoch());
         let anchor_info = AnchorInfo {
             anchor_slot,
             oldest_block_slot: anchor_slot,
             oldest_block_parent: block.parent_root(),
-            state_upper_limit: next_restore_point_slot,
+            state_upper_limit: next_snapshot_slot,
             state_lower_limit: self.spec.genesis_slot,
         };
         self.compare_and_set_anchor_info(None, Some(anchor_info))
@@ -1916,36 +1882,6 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         self.hot_db.get(state_root)
     }
 
-    /// Check that the restore point frequency is valid.
-    ///
-    /// Specifically, check that it is:
-    /// (1) A divisor of the number of slots per historical root, and
-    /// (2) Divisible by the number of slots per epoch
-    ///
-    ///
-    /// (1) ensures that we have at least one restore point within range of our state
-    /// root history when iterating backwards (and allows for more frequent restore points if
-    /// desired).
-    ///
-    /// (2) ensures that restore points align with hot state summaries, making it
-    /// quick to migrate hot to cold.
-    fn verify_slots_per_restore_point(slots_per_restore_point: u64) -> Result<(), HotColdDBError> {
-        let slots_per_historical_root = E::SlotsPerHistoricalRoot::to_u64();
-        let slots_per_epoch = E::slots_per_epoch();
-        if slots_per_restore_point > 0
-            && slots_per_historical_root % slots_per_restore_point == 0
-            && slots_per_restore_point % slots_per_epoch == 0
-        {
-            Ok(())
-        } else {
-            Err(HotColdDBError::InvalidSlotsPerRestorePoint {
-                slots_per_restore_point,
-                slots_per_historical_root,
-                slots_per_epoch,
-            })
-        }
-    }
-
     /// Run a compaction pass to free up space used by deleted states.
     pub fn compact(&self) -> Result<(), Error> {
         self.hot_db.compact()?;
@@ -2147,7 +2083,7 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
     let mut hot_db_ops: Vec<StoreOp<E>> = Vec::new();
     let mut cold_db_block_ops: Vec<KeyValueStoreOp> = vec![];
 
-    let mut state_roots = RootsIterator::new(&store, finalized_state)
+    let state_roots = RootsIterator::new(&store, finalized_state)
         .take_while(|result| match result {
             Ok((_, _, slot)) => {
                 slot >= &current_split_slot

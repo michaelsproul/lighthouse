@@ -240,6 +240,17 @@ impl HierarchyModuli {
         });
         Ok(diff_from.map_or(StorageStrategy::Nothing, StorageStrategy::DiffFrom))
     }
+
+    /// Return the smallest epoch greater than or equal to `epoch` at which a full snapshot should
+    /// be stored.
+    pub fn next_snapshot_epoch(&self, epoch: Epoch) -> Result<Epoch, Error> {
+        let last = self.moduli.last().copied().ok_or(Error::InvalidHierarchy)?;
+        if epoch % last == 0 {
+            Ok(epoch)
+        } else {
+            Ok((epoch / last + 1) * last)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +284,36 @@ mod tests {
         assert_eq!(
             moduli.storage_strategy(first_layer * 2).unwrap(),
             StorageStrategy::DiffFrom(first_layer)
+        );
+    }
+
+    #[test]
+    fn next_snapshot_epoch() {
+        let config = HierarchyConfig::default();
+        config.validate().unwrap();
+
+        let moduli = config.to_moduli().unwrap();
+        let snapshot_freq = Epoch::new(1 << 16);
+
+        assert_eq!(
+            moduli.next_snapshot_epoch(snapshot_freq).unwrap(),
+            snapshot_freq
+        );
+        assert_eq!(
+            moduli.next_snapshot_epoch(snapshot_freq + 1).unwrap(),
+            snapshot_freq * 2
+        );
+        assert_eq!(
+            moduli.next_snapshot_epoch(snapshot_freq * 2 - 1).unwrap(),
+            snapshot_freq * 2
+        );
+        assert_eq!(
+            moduli.next_snapshot_epoch(snapshot_freq * 2).unwrap(),
+            snapshot_freq * 2
+        );
+        assert_eq!(
+            moduli.next_snapshot_epoch(snapshot_freq * 100).unwrap(),
+            snapshot_freq * 100
         );
     }
 

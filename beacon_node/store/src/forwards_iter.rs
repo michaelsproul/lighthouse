@@ -81,7 +81,6 @@ impl<'a, E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>
         column: DBColumn,
         start_slot: Slot,
         end_slot: Slot,
-        spec: &ChainSpec,
     ) -> Self {
         if column != DBColumn::BeaconBlockRoots && column != DBColumn::BeaconStateRoots {
             panic!("FIXME(sproul): bad column error");
@@ -181,7 +180,6 @@ impl<'a, E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>
         start_slot: Slot,
         end_slot: Option<Slot>,
         get_state: impl FnOnce() -> (BeaconState<E>, Hash256),
-        spec: &ChainSpec,
     ) -> Result<Self> {
         use HybridForwardsIterator::*;
 
@@ -190,7 +188,7 @@ impl<'a, E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>
 
         let result = if start_slot < split_slot {
             let iter = Box::new(FrozenForwardsIterator::new(
-                store, column, start_slot, split_slot, spec,
+                store, column, start_slot, split_slot,
             ));
 
             // No continuation data is needed if the forwards iterator plans to halt before
