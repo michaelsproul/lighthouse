@@ -731,13 +731,11 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         self.do_atomically(vec![StoreOp::DeleteState(*state_root, Some(slot))])
     }
 
-    // FIXME(sproul): remove spec param
     pub fn forwards_block_roots_iterator(
         &self,
         start_slot: Slot,
         end_state: BeaconState<E>,
         end_block_root: Hash256,
-        _spec: &ChainSpec,
     ) -> Result<impl Iterator<Item = Result<(Hash256, Slot), Error>> + '_, Error> {
         HybridForwardsBlockRootsIterator::new(
             self,
@@ -748,13 +746,11 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         )
     }
 
-    // FIXME(sproul): remove spec param
     pub fn forwards_block_roots_iterator_until(
         &self,
         start_slot: Slot,
         end_slot: Slot,
         get_state: impl FnOnce() -> (BeaconState<E>, Hash256),
-        _spec: &ChainSpec,
     ) -> Result<HybridForwardsBlockRootsIterator<E, Hot, Cold>, Error> {
         HybridForwardsBlockRootsIterator::new(
             self,
@@ -765,13 +761,11 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         )
     }
 
-    // FIXME(sproul): remove spec param
     pub fn forwards_state_roots_iterator(
         &self,
         start_slot: Slot,
         end_state_root: Hash256,
         end_state: BeaconState<E>,
-        _spec: &ChainSpec,
     ) -> Result<impl Iterator<Item = Result<(Hash256, Slot), Error>> + '_, Error> {
         HybridForwardsStateRootsIterator::new(
             self,
@@ -782,13 +776,11 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         )
     }
 
-    // FIXME(sproul): remove spec param
     pub fn forwards_state_roots_iterator_until(
         &self,
         start_slot: Slot,
         end_slot: Slot,
         get_state: impl FnOnce() -> (BeaconState<E>, Hash256),
-        _spec: &ChainSpec,
     ) -> Result<HybridForwardsStateRootsIterator<E, Hot, Cold>, Error> {
         HybridForwardsStateRootsIterator::new(
             self,
@@ -1508,8 +1500,14 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         }
 
         let blocks = self.load_cold_blocks(base_state.slot() + 1, slot)?;
-        // FIXME: fix forwards iterator in absence of chunked vectors
-        self.replay_blocks(base_state, blocks, slot, std::iter::empty(), None)
+
+        // Include state root for base state as it is required by block processing.
+        let state_root_iter =
+            self.forwards_state_roots_iterator_until(base_state.slot(), slot, || {
+                panic!("FIXME(sproul): unreachable state root iter miss")
+            })?;
+
+        self.replay_blocks(base_state, blocks, slot, state_root_iter, None)
             .map(Some)
     }
 
@@ -1643,12 +1641,13 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         block_replayer
             .apply_blocks(blocks, Some(target_slot))
             .map(|block_replayer| {
-                // FIXME(sproul): tweak state miss condition
-                /*
                 if block_replayer.state_root_miss() {
-                    Err(Error::MissingStateRoot(target_slot))
+                    warn!(
+                        self.log,
+                        "State root cache miss during block replay";
+                        "slot" => target_slot,
+                    );
                 }
-                */
                 block_replayer.into_state()
             })
     }
