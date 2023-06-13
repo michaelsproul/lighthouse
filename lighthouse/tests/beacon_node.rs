@@ -2,6 +2,7 @@ use beacon_node::ClientConfig as Config;
 
 use crate::exec::{CommandLineTestExec, CompletedTest};
 use beacon_node::beacon_chain::chain_config::{
+    DisallowedReOrgOffsets, DEFAULT_RE_ORG_CUTOFF_DENOMINATOR,
     DEFAULT_RE_ORG_MAX_EPOCHS_SINCE_FINALIZATION, DEFAULT_RE_ORG_THRESHOLD,
 };
 use eth1::Eth1Endpoint;
@@ -342,6 +343,23 @@ fn trusted_peers_flag() {
                 peers[1].to_bytes()
             );
         });
+}
+
+#[test]
+fn genesis_backfill_flag() {
+    CommandLineTest::new()
+        .flag("genesis-backfill", None)
+        .run_with_zero_port()
+        .with_config(|config| assert_eq!(config.chain.genesis_backfill, true));
+}
+
+/// The genesis backfill flag should be enabled if historic states flag is set.
+#[test]
+fn genesis_backfill_with_historic_flag() {
+    CommandLineTest::new()
+        .flag("reconstruct-historic-states", None)
+        .run_with_zero_port()
+        .with_config(|config| assert_eq!(config.chain.genesis_backfill, true));
 }
 
 #[test]
@@ -715,6 +733,40 @@ fn builder_fallback_flags() {
     );
 }
 
+#[test]
+fn builder_user_agent() {
+    run_payload_builder_flag_test_with_config(
+        "builder",
+        "http://meow.cats",
+        None,
+        None,
+        |config| {
+            assert_eq!(
+                config.execution_layer.as_ref().unwrap().builder_user_agent,
+                None
+            );
+        },
+    );
+    run_payload_builder_flag_test_with_config(
+        "builder",
+        "http://meow.cats",
+        Some("builder-user-agent"),
+        Some("anon"),
+        |config| {
+            assert_eq!(
+                config
+                    .execution_layer
+                    .as_ref()
+                    .unwrap()
+                    .builder_user_agent
+                    .as_ref()
+                    .unwrap(),
+                "anon"
+            );
+        },
+    );
+}
+
 fn run_jwt_optional_flags_test(jwt_flag: &str, jwt_id_flag: &str, jwt_version_flag: &str) {
     use sensitive_url::SensitiveUrl;
 
@@ -1045,11 +1097,31 @@ fn disable_discovery_flag() {
         .with_config(|config| assert!(config.network.disable_discovery));
 }
 #[test]
+fn disable_peer_scoring_flag() {
+    CommandLineTest::new()
+        .flag("disable-peer-scoring", None)
+        .run_with_zero_port()
+        .with_config(|config| assert!(config.network.disable_peer_scoring));
+}
+#[test]
 fn disable_upnp_flag() {
     CommandLineTest::new()
         .flag("disable-upnp", None)
         .run_with_zero_port()
         .with_config(|config| assert!(!config.network.upnp_enabled));
+}
+#[test]
+fn disable_backfill_rate_limiting_flag() {
+    CommandLineTest::new()
+        .flag("disable-backfill-rate-limiting", None)
+        .run_with_zero_port()
+        .with_config(|config| assert!(!config.chain.enable_backfill_rate_limiting));
+}
+#[test]
+fn default_backfill_rate_limiting_flag() {
+    CommandLineTest::new()
+        .run_with_zero_port()
+        .with_config(|config| assert!(config.chain.enable_backfill_rate_limiting));
 }
 #[test]
 fn default_boot_nodes() {
@@ -1379,6 +1451,26 @@ fn empty_self_limiter_flag() {
             )
         });
 }
+
+#[test]
+fn empty_inbound_rate_limiter_flag() {
+    CommandLineTest::new()
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert_eq!(
+                config.network.inbound_rate_limiter_config,
+                Some(lighthouse_network::rpc::config::InboundRateLimiterConfig::default())
+            )
+        });
+}
+#[test]
+fn disable_inbound_rate_limiter_flag() {
+    CommandLineTest::new()
+        .flag("inbound-rate-limiter", Some("disabled"))
+        .run_with_zero_port()
+        .with_config(|config| assert_eq!(config.network.inbound_rate_limiter_config, None));
+}
+
 #[test]
 fn http_allow_origin_flag() {
     CommandLineTest::new()
@@ -1614,6 +1706,25 @@ fn block_cache_size_flag() {
         .with_config(|config| assert_eq!(config.store.block_cache_size, 4_usize));
 }
 #[test]
+fn historic_state_cache_size_flag() {
+    CommandLineTest::new()
+        .flag("historic-state-cache-size", Some("4"))
+        .run_with_zero_port()
+        .with_config(|config| assert_eq!(config.store.historic_state_cache_size, 4_usize));
+}
+#[test]
+fn historic_state_cache_size_default() {
+    use beacon_node::beacon_chain::store::config::DEFAULT_HISTORIC_STATE_CACHE_SIZE;
+    CommandLineTest::new()
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert_eq!(
+                config.store.historic_state_cache_size,
+                DEFAULT_HISTORIC_STATE_CACHE_SIZE
+            );
+        });
+}
+#[test]
 fn auto_compact_db_flag() {
     CommandLineTest::new()
         .flag("auto-compact-db", Some("false"))
@@ -1656,10 +1767,12 @@ fn no_reconstruct_historic_states_flag() {
 }
 
 // Tests for Slasher flags.
+// Using `--slasher-max-db-size` to work around https://github.com/sigp/lighthouse/issues/2342
 #[test]
 fn slasher_flag() {
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .run_with_zero_port()
         .with_config_and_dir(|config, dir| {
             if let Some(slasher_config) = &config.slasher {
@@ -1677,6 +1790,7 @@ fn slasher_dir_flag() {
     let dir = TempDir::new().expect("Unable to create temporary directory");
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .flag("slasher-dir", dir.path().as_os_str().to_str())
         .run_with_zero_port()
         .with_config(|config| {
@@ -1691,6 +1805,7 @@ fn slasher_dir_flag() {
 fn slasher_update_period_flag() {
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .flag("slasher-update-period", Some("100"))
         .run_with_zero_port()
         .with_config(|config| {
@@ -1705,6 +1820,7 @@ fn slasher_update_period_flag() {
 fn slasher_slot_offset_flag() {
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .flag("slasher-slot-offset", Some("11.25"))
         .run_with_zero_port()
         .with_config(|config| {
@@ -1717,6 +1833,7 @@ fn slasher_slot_offset_flag() {
 fn slasher_slot_offset_nan_flag() {
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .flag("slasher-slot-offset", Some("NaN"))
         .run_with_zero_port();
 }
@@ -1724,6 +1841,7 @@ fn slasher_slot_offset_nan_flag() {
 fn slasher_history_length_flag() {
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .flag("slasher-history-length", Some("2048"))
         .run_with_zero_port()
         .with_config(|config| {
@@ -1738,20 +1856,21 @@ fn slasher_history_length_flag() {
 fn slasher_max_db_size_flag() {
     CommandLineTest::new()
         .flag("slasher", None)
-        .flag("slasher-max-db-size", Some("10"))
+        .flag("slasher-max-db-size", Some("2"))
         .run_with_zero_port()
         .with_config(|config| {
             let slasher_config = config
                 .slasher
                 .as_ref()
                 .expect("Unable to parse Slasher config");
-            assert_eq!(slasher_config.max_db_size_mbs, 10240);
+            assert_eq!(slasher_config.max_db_size_mbs, 2048);
         });
 }
 #[test]
 fn slasher_attestation_cache_size_flag() {
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .flag("slasher-att-cache-size", Some("10000"))
         .run_with_zero_port()
         .with_config(|config| {
@@ -1766,6 +1885,7 @@ fn slasher_attestation_cache_size_flag() {
 fn slasher_chunk_size_flag() {
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .flag("slasher-chunk-size", Some("32"))
         .run_with_zero_port()
         .with_config(|config| {
@@ -1780,6 +1900,7 @@ fn slasher_chunk_size_flag() {
 fn slasher_validator_chunk_size_flag() {
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .flag("slasher-validator-chunk-size", Some("512"))
         .run_with_zero_port()
         .with_config(|config| {
@@ -1791,9 +1912,10 @@ fn slasher_validator_chunk_size_flag() {
         });
 }
 #[test]
-fn slasher_broadcast_flag() {
+fn slasher_broadcast_flag_no_args() {
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .flag("slasher-broadcast", None)
         .run_with_zero_port()
         .with_config(|config| {
@@ -1804,29 +1926,62 @@ fn slasher_broadcast_flag() {
             assert!(slasher_config.broadcast);
         });
 }
-
 #[test]
-fn slasher_backend_default() {
+fn slasher_broadcast_flag_no_default() {
     CommandLineTest::new()
         .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
         .run_with_zero_port()
         .with_config(|config| {
-            let slasher_config = config.slasher.as_ref().unwrap();
-            assert_eq!(slasher_config.backend, slasher::DatabaseBackend::Mdbx);
+            let slasher_config = config
+                .slasher
+                .as_ref()
+                .expect("Unable to parse Slasher config");
+            assert!(slasher_config.broadcast);
         });
 }
-
+#[test]
+fn slasher_broadcast_flag_true() {
+    CommandLineTest::new()
+        .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
+        .flag("slasher-broadcast", Some("true"))
+        .run_with_zero_port()
+        .with_config(|config| {
+            let slasher_config = config
+                .slasher
+                .as_ref()
+                .expect("Unable to parse Slasher config");
+            assert!(slasher_config.broadcast);
+        });
+}
+#[test]
+fn slasher_broadcast_flag_false() {
+    CommandLineTest::new()
+        .flag("slasher", None)
+        .flag("slasher-max-db-size", Some("1"))
+        .flag("slasher-broadcast", Some("false"))
+        .run_with_zero_port()
+        .with_config(|config| {
+            let slasher_config = config
+                .slasher
+                .as_ref()
+                .expect("Unable to parse Slasher config");
+            assert!(!slasher_config.broadcast);
+        });
+}
 #[test]
 fn slasher_backend_override_to_default() {
     // Hard to test this flag because all but one backend is disabled by default and the backend
     // called "disabled" results in a panic.
     CommandLineTest::new()
         .flag("slasher", None)
-        .flag("slasher-backend", Some("mdbx"))
+        .flag("slasher-max-db-size", Some("1"))
+        .flag("slasher-backend", Some("lmdb"))
         .run_with_zero_port()
         .with_config(|config| {
             let slasher_config = config.slasher.as_ref().unwrap();
-            assert_eq!(slasher_config.backend, slasher::DatabaseBackend::Mdbx);
+            assert_eq!(slasher_config.backend, slasher::DatabaseBackend::Lmdb);
         });
 }
 
@@ -1868,6 +2023,10 @@ fn enable_proposer_re_orgs_default() {
                 config.chain.re_org_max_epochs_since_finalization,
                 DEFAULT_RE_ORG_MAX_EPOCHS_SINCE_FINALIZATION,
             );
+            assert_eq!(
+                config.chain.re_org_cutoff(12),
+                Duration::from_secs(12) / DEFAULT_RE_ORG_CUTOFF_DENOMINATOR
+            );
         });
 }
 
@@ -1898,6 +2057,49 @@ fn proposer_re_org_max_epochs_since_finalization() {
                 8
             )
         });
+}
+
+#[test]
+fn proposer_re_org_cutoff() {
+    CommandLineTest::new()
+        .flag("proposer-reorg-cutoff", Some("500"))
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert_eq!(config.chain.re_org_cutoff(12), Duration::from_millis(500))
+        });
+}
+
+#[test]
+fn proposer_re_org_disallowed_offsets_default() {
+    CommandLineTest::new()
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert_eq!(
+                config.chain.re_org_disallowed_offsets,
+                DisallowedReOrgOffsets::new::<MainnetEthSpec>(vec![0]).unwrap()
+            )
+        });
+}
+
+#[test]
+fn proposer_re_org_disallowed_offsets_override() {
+    CommandLineTest::new()
+        .flag("--proposer-reorg-disallowed-offsets", Some("1,2,3"))
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert_eq!(
+                config.chain.re_org_disallowed_offsets,
+                DisallowedReOrgOffsets::new::<MainnetEthSpec>(vec![1, 2, 3]).unwrap()
+            )
+        });
+}
+
+#[test]
+#[should_panic]
+fn proposer_re_org_disallowed_offsets_invalid() {
+    CommandLineTest::new()
+        .flag("--proposer-reorg-disallowed-offsets", Some("32,33,34"))
+        .run_with_zero_port();
 }
 
 #[test]
@@ -2059,5 +2261,26 @@ fn disable_optimistic_finalized_sync() {
         .run_with_zero_port()
         .with_config(|config| {
             assert!(!config.chain.optimistic_finalized_sync);
+        });
+}
+
+#[test]
+fn invalid_gossip_verified_blocks_path_default() {
+    CommandLineTest::new()
+        .run_with_zero_port()
+        .with_config(|config| assert_eq!(config.network.invalid_block_storage, None));
+}
+
+#[test]
+fn invalid_gossip_verified_blocks_path() {
+    let path = "/home/karlm/naughty-blocks";
+    CommandLineTest::new()
+        .flag("invalid-gossip-verified-blocks-path", Some(path))
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert_eq!(
+                config.network.invalid_block_storage,
+                Some(PathBuf::from(path))
+            )
         });
 }
