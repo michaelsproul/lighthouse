@@ -36,12 +36,16 @@ use std::cmp::min;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use types::EthSpec;
 use types::*;
 use zstd::{Decoder, Encoder};
+
+// FIXME(sproul): configurable
+const DIFF_BUFFER_CACHE_SIZE: usize = 16;
 
 pub const MAX_PARENT_STATES_TO_CACHE: u64 = 1;
 
@@ -76,6 +80,10 @@ pub struct HotColdDB<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     // FIXME(sproul): re-enable historic state cache
     #[allow(dead_code)]
     historic_state_cache: Mutex<LruCache<Slot, BeaconState<E>>>,
+    /// Cache of hierarchical diff buffers.
+    diff_buffer_cache: Mutex<LruCache<Epoch, HDiffBuffer>>,
+    // Cache of hierarchical diffs.
+    // FIXME(sproul): see if this is necessary
     /// Chain spec.
     pub(crate) spec: ChainSpec,
     /// Logger.
@@ -140,15 +148,25 @@ impl<E: EthSpec> HotColdDB<E, MemoryStore<E>, MemoryStore<E>> {
 
         let hierarchy = config.hierarchy_config.to_moduli()?;
 
+        let block_cache_size =
+            NonZeroUsize::new(config.block_cache_size).ok_or(Error::ZeroCacheSize)?;
+        let state_cache_size =
+            NonZeroUsize::new(config.state_cache_size).ok_or(Error::ZeroCacheSize)?;
+        let historic_state_cache_size =
+            NonZeroUsize::new(config.historic_state_cache_size).ok_or(Error::ZeroCacheSize)?;
+        let diff_buffer_cache_size =
+            NonZeroUsize::new(DIFF_BUFFER_CACHE_SIZE).ok_or(Error::ZeroCacheSize)?;
+
         let db = HotColdDB {
             split: RwLock::new(Split::default()),
             anchor_info: RwLock::new(None),
             cold_db: MemoryStore::open(),
             hot_db: MemoryStore::open(),
-            block_cache: Mutex::new(LruCache::new(config.block_cache_size)),
-            state_cache: Mutex::new(StateCache::new(config.state_cache_size)),
+            block_cache: Mutex::new(LruCache::new(block_cache_size)),
+            state_cache: Mutex::new(StateCache::new(state_cache_size)),
             immutable_validators: Arc::new(RwLock::new(Default::default())),
-            historic_state_cache: Mutex::new(LruCache::new(config.historic_state_cache_size)),
+            historic_state_cache: Mutex::new(LruCache::new(historic_state_cache_size)),
+            diff_buffer_cache: Mutex::new(LruCache::new(diff_buffer_cache_size)),
             config,
             hierarchy,
             spec,
@@ -177,15 +195,25 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
 
         let hierarchy = config.hierarchy_config.to_moduli()?;
 
+        let block_cache_size =
+            NonZeroUsize::new(config.block_cache_size).ok_or(Error::ZeroCacheSize)?;
+        let state_cache_size =
+            NonZeroUsize::new(config.state_cache_size).ok_or(Error::ZeroCacheSize)?;
+        let historic_state_cache_size =
+            NonZeroUsize::new(config.historic_state_cache_size).ok_or(Error::ZeroCacheSize)?;
+        let diff_buffer_cache_size =
+            NonZeroUsize::new(DIFF_BUFFER_CACHE_SIZE).ok_or(Error::ZeroCacheSize)?;
+
         let db = HotColdDB {
             split: RwLock::new(Split::default()),
             anchor_info: RwLock::new(None),
             cold_db: LevelDB::open(cold_path)?,
             hot_db: LevelDB::open(hot_path)?,
-            block_cache: Mutex::new(LruCache::new(config.block_cache_size)),
-            state_cache: Mutex::new(StateCache::new(config.state_cache_size)),
+            block_cache: Mutex::new(LruCache::new(block_cache_size)),
+            state_cache: Mutex::new(StateCache::new(state_cache_size)),
             immutable_validators: Arc::new(RwLock::new(Default::default())),
-            historic_state_cache: Mutex::new(LruCache::new(config.historic_state_cache_size)),
+            historic_state_cache: Mutex::new(LruCache::new(historic_state_cache_size)),
+            diff_buffer_cache: Mutex::new(LruCache::new(diff_buffer_cache_size)),
             config,
             hierarchy,
             spec,
@@ -1497,8 +1525,18 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     }
 
     fn load_hdiff_buffer_for_epoch(&self, epoch: Epoch) -> Result<HDiffBuffer, Error> {
+        if let Some(buffer) = self.diff_buffer_cache.lock().get(&epoch) {
+            debug!(
+                self.log,
+                "Hit diff buffer cache";
+                "epoch" => epoch
+            );
+            return Ok(buffer.clone());
+        }
+
         // Load buffer for the previous state.
         // This amount of recursion (<10 levels) should be OK.
+        let t = std::time::Instant::now();
         let mut buffer = match self.hierarchy.storage_strategy(epoch)? {
             // Base case.
             StorageStrategy::Snapshot => {
@@ -1515,6 +1553,14 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         // Load diff and apply it to buffer.
         let diff = self.load_hdiff_for_epoch(epoch)?;
         diff.apply(&mut buffer)?;
+
+        self.diff_buffer_cache.lock().put(epoch, buffer.clone());
+        debug!(
+            self.log,
+            "Added diff buffer to cache";
+            "load_time_ms" => t.elapsed().as_millis(),
+            "epoch" => epoch
+        );
 
         Ok(buffer)
     }

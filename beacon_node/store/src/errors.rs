@@ -70,6 +70,7 @@ pub enum Error {
     UnableToDowngrade,
     Hdiff(hdiff::Error),
     InconsistentFork(InconsistentFork),
+    ZeroCacheSize,
 }
 
 pub trait HandleUnavailable<T> {

@@ -24,7 +24,7 @@ serde = "1.0.116"
 serde_derive = "1.0.116"
 lazy_static = "1.4.0"
 lighthouse_metrics = { path = "../../common/lighthouse_metrics" }
-lru = "0.7.1"
+lru = "0.10.0"
 sloggers = { version = "2.1.1", features = ["json"] }
 directory = { path = "../../common/directory" }
 tree_hash = "0.5.0"

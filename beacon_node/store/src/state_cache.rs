@@ -1,6 +1,7 @@
 use crate::Error;
 use lru::LruCache;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::num::NonZeroUsize;
 use types::{BeaconState, EthSpec, Hash256, Slot};
 
 #[derive(Debug)]
@@ -36,7 +37,7 @@ pub enum PutStateOutcome {
 }
 
 impl<E: EthSpec> StateCache<E> {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: NonZeroUsize) -> Self {
         StateCache {
             finalized_state: None,
             states: LruCache::new(capacity),

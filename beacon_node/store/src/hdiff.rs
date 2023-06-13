@@ -35,6 +35,7 @@ pub enum StorageStrategy {
 }
 
 /// Hierarchical diff output and working buffer.
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct HDiffBuffer {
     state: Vec<u8>,
     balances: Vec<u64>,
