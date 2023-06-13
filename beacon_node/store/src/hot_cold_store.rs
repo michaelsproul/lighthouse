@@ -1571,13 +1571,12 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         start_slot: Slot,
         end_slot: Slot,
     ) -> Result<Vec<SignedBlindedBeaconBlock<E>>, Error> {
-        (start_slot.as_u64()..=end_slot.as_u64())
-            .map(Slot::new)
-            .map(|slot| {
-                self.get_cold_blinded_block_by_slot(slot)?
-                    .ok_or(Error::from(HotColdDBError::MissingFrozenBlock(slot)))
-            })
-            .collect()
+        process_results(
+            (start_slot.as_u64()..=end_slot.as_u64())
+                .map(Slot::new)
+                .map(|slot| self.get_cold_blinded_block_by_slot(slot)),
+            |iter| iter.filter_map(|x| x).collect(),
+        )
     }
 
     /// Load the blocks between `start_slot` and `end_slot` by backtracking from `end_block_hash`.
