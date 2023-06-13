@@ -1,7 +1,7 @@
-use beacon_chain::test_utils::test_spec;
+use beacon_chain::{test_utils::test_spec, ChainConfig};
 use beacon_chain_fuzz::{Config, LogConfig, LogInterceptor, Runner, TestHarness};
 use tokio::runtime::Runtime;
-use types::{ChainSpec, ForkName, Keypair, Uint256};
+use types::{ChainSpec, ForkName, Keypair, ProgressiveBalancesMode, Uint256};
 
 const TEST_FORK: ForkName = ForkName::Capella;
 
@@ -41,6 +41,10 @@ fn get_harness(
         .spec(spec)
         .logger(log)
         .keypairs(keypairs.to_vec())
+        .chain_config(ChainConfig {
+            progressive_balances_mode: ProgressiveBalancesMode::Checked,
+            ..ChainConfig::default()
+        })
         .mock_execution_layer_generic(terminal_block_number)
         .fresh_ephemeral_store()
         .build();
