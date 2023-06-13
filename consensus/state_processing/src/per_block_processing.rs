@@ -41,6 +41,7 @@ mod verify_proposer_slashing;
 use crate::common::decrease_balance;
 use crate::StateProcessingStrategy;
 
+use crate::common::initialize_progressive_balances_cache::initialize_progressive_balances_cache;
 #[cfg(feature = "arbitrary-fuzz")]
 use arbitrary::Arbitrary;
 
@@ -113,6 +114,8 @@ pub fn per_block_processing<T: EthSpec, Payload: AbstractExecPayload<T>>(
     state
         .fork_name(spec)
         .map_err(BlockProcessingError::InconsistentStateFork)?;
+
+    initialize_progressive_balances_cache(state, None, spec)?;
 
     let verify_signatures = match block_signature_strategy {
         BlockSignatureStrategy::VerifyBulk => {

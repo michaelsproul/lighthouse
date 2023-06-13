@@ -1,6 +1,7 @@
 #![cfg(not(debug_assertions))] // Tests run too slow in debug.
 
 use beacon_chain::test_utils::BeaconChainHarness;
+use beacon_chain::ChainConfig;
 use execution_layer::test_utils::Block;
 use types::*;
 
@@ -41,6 +42,10 @@ async fn base_altair_merge_capella() {
     let harness = BeaconChainHarness::builder(E::default())
         .spec(spec)
         .logger(logging::test_logger())
+        .chain_config(ChainConfig {
+            progressive_balances_mode: ProgressiveBalancesMode::Checked,
+            ..Default::default()
+        })
         .deterministic_keypairs(VALIDATOR_COUNT)
         .fresh_ephemeral_store()
         .mock_execution_layer()
@@ -133,13 +138,8 @@ async fn base_altair_merge_capella() {
     for _ in (merge_fork_slot.as_u64() + 3)..capella_fork_slot.as_u64() {
         harness.extend_slots(1).await;
         let block = &harness.chain.head_snapshot().beacon_block;
-        let full_payload: FullPayload<E> = block
-            .message()
-            .body()
-            .execution_payload()
-            .unwrap()
-            .clone()
-            .into();
+        let full_payload: FullPayload<E> =
+            block.message().body().execution_payload().unwrap().into();
         // pre-capella shouldn't have withdrawals
         assert!(full_payload.withdrawals_root().is_err());
         execution_payloads.push(full_payload);
@@ -151,13 +151,8 @@ async fn base_altair_merge_capella() {
     for _ in 0..16 {
         harness.extend_slots(1).await;
         let block = &harness.chain.head_snapshot().beacon_block;
-        let full_payload: FullPayload<E> = block
-            .message()
-            .body()
-            .execution_payload()
-            .unwrap()
-            .clone()
-            .into();
+        let full_payload: FullPayload<E> =
+            block.message().body().execution_payload().unwrap().into();
         // post-capella should have withdrawals
         assert!(full_payload.withdrawals_root().is_ok());
         execution_payloads.push(full_payload);
