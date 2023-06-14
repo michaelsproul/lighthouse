@@ -6,6 +6,9 @@ use beacon_node::{get_data_dir, ClientConfig};
 use clap::{App, Arg, ArgMatches};
 use environment::{Environment, RuntimeContext};
 use slog::{info, Logger};
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
 use store::{
     errors::Error,
     metadata::{SchemaVersion, CURRENT_SCHEMA_VERSION},
@@ -74,6 +77,13 @@ pub fn inspect_cli_app<'a, 'b>() -> App<'a, 'b> {
                 .long("freezer")
                 .help("Inspect the freezer DB rather than the hot DB")
                 .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("output-dir")
+                .long("output-dir")
+                .value_name("DIR")
+                .help("Base directory for the output files. Defaults to the current directory")
+                .takes_value(true),
         )
 }
 
@@ -190,7 +200,7 @@ pub enum InspectTarget {
     #[strum(serialize = "total")]
     ValueTotal,
     #[strum(serialize = "values")]
-    ValueBytes,
+    Values,
     #[strum(serialize = "gaps")]
     Gaps,
 }
@@ -201,6 +211,8 @@ pub struct InspectConfig {
     skip: Option<usize>,
     limit: Option<usize>,
     freezer: bool,
+    /// Configures where the inspect output should be stored.
+    output_dir: PathBuf,
 }
 
 fn parse_inspect_config(cli_args: &ArgMatches) -> Result<InspectConfig, String> {
@@ -210,12 +222,15 @@ fn parse_inspect_config(cli_args: &ArgMatches) -> Result<InspectConfig, String> 
     let limit = clap_utils::parse_optional(cli_args, "limit")?;
     let freezer = cli_args.is_present("freezer");
 
+    let output_dir: PathBuf =
+        clap_utils::parse_optional(cli_args, "output-dir")?.unwrap_or_else(PathBuf::new);
     Ok(InspectConfig {
         column,
         target,
         skip,
         limit,
         freezer,
+        output_dir,
     })
 }
 
@@ -224,7 +239,7 @@ pub fn inspect_db<E: EthSpec>(
     client_config: ClientConfig,
     runtime_context: &RuntimeContext<E>,
     log: Logger,
-) -> Result<(), Error> {
+) -> Result<(), String> {
     let spec = runtime_context.eth2_config.spec.clone();
     let hot_path = client_config.get_db_path();
     let cold_path = client_config.get_freezer_db_path();
@@ -236,7 +251,8 @@ pub fn inspect_db<E: EthSpec>(
         client_config.store,
         spec,
         log,
-    )?;
+    )
+    .map_err(|e| format!("{:?}", e))?;
 
     let mut total = 0;
     let mut num_keys = 0;
@@ -253,19 +269,23 @@ pub fn inspect_db<E: EthSpec>(
     let mut prev_key = 0;
     let mut found_gaps = false;
 
+    let base_path = &inspect_config.output_dir;
+
+    if let InspectTarget::Values = inspect_config.target {
+        fs::create_dir_all(base_path)
+            .map_err(|e| format!("Unable to create import directory: {:?}", e))?;
+    }
+
     for res in sub_db
         .iter_column::<Vec<u8>>(inspect_config.column)
         .skip(skip)
         .take(limit)
     {
-        let (key, value) = res?;
+        let (key, value) = res.map_err(|e| format!("{:?}", e))?;
 
         match inspect_config.target {
             InspectTarget::ValueSizes => {
                 println!("{}: {} bytes", hex::encode(&key), value.len());
-            }
-            InspectTarget::ValueBytes => {
-                println!("{}: {}", hex::encode(&key), hex::encode(&value));
             }
             InspectTarget::Gaps => {
                 // Convert last 8 bytes of key to u64.
@@ -285,6 +305,30 @@ pub fn inspect_db<E: EthSpec>(
                 prev_key = numeric_key;
             }
             InspectTarget::ValueTotal => (),
+            InspectTarget::Values => {
+                let file_path = base_path.join(format!(
+                    "{}_{}.ssz",
+                    inspect_config.column.as_str(),
+                    hex::encode(&key)
+                ));
+
+                let write_result = fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .open(&file_path)
+                    .map_err(|e| format!("Failed to open file: {:?}", e))
+                    .map(|mut file| {
+                        file.write_all(&value)
+                            .map_err(|e| format!("Failed to write file: {:?}", e))
+                    });
+                if let Err(e) = write_result {
+                    println!("Error writing values to file {:?}: {:?}", file_path, e);
+                } else {
+                    println!("Successfully saved values to file: {:?}", file_path);
+                }
+
+                total += value.len();
+            }
         }
         total += value.len();
         num_keys += 1;
@@ -351,7 +395,6 @@ pub fn migrate_db<E: EthSpec>(
     )
 }
 
-use std::path::PathBuf;
 pub struct DiffConfig {
     first: PathBuf,
     second: PathBuf,
@@ -432,25 +475,27 @@ pub fn run<T: EthSpec>(cli_args: &ArgMatches<'_>, env: Environment<T>) -> Result
     let client_config = parse_client_config(cli_args, &env)?;
     let context = env.core_context();
     let log = context.log().clone();
+    let format_err = |e| format!("Fatal error: {:?}", e);
 
     match cli_args.subcommand() {
-        ("version", Some(_)) => display_db_version(client_config, &context, log),
+        ("version", Some(_)) => {
+            display_db_version(client_config, &context, log).map_err(format_err)
+        }
         ("migrate", Some(cli_args)) => {
             let migrate_config = parse_migrate_config(cli_args)?;
-            migrate_db(migrate_config, client_config, &context, log)
+            migrate_db(migrate_config, client_config, &context, log).map_err(format_err)
         }
         ("inspect", Some(cli_args)) => {
             let inspect_config = parse_inspect_config(cli_args)?;
             inspect_db(inspect_config, client_config, &context, log)
         }
-        ("prune_payloads", Some(_)) => prune_payloads(client_config, &context, log),
+        ("prune_payloads", Some(_)) => {
+            prune_payloads(client_config, &context, log).map_err(format_err)
+        }
         ("diff", Some(cli_args)) => {
             let diff_config = parse_diff_config(cli_args)?;
-            diff::<T>(&diff_config, log)
+            diff::<T>(&diff_config, log).map_err(format_err)
         }
-        _ => {
-            return Err("Unknown subcommand, for help `lighthouse database_manager --help`".into())
-        }
+        _ => Err("Unknown subcommand, for help `lighthouse database_manager --help`".into()),
     }
-    .map_err(|e| format!("Fatal error: {:?}", e))
 }
