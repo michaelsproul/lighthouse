@@ -2147,6 +2147,7 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
         }
 
         // Copy the blinded block from the hot database to the freezer.
+        // FIXME(sproul): make this load lazy
         let blinded_block = store
             .get_blinded_block(&block_root, None)?
             .ok_or(Error::BlockNotFound(block_root))?;
@@ -2157,6 +2158,15 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
                 &mut cold_db_block_ops,
             )?;
         }
+
+        // Store the slot to block root mapping.
+        cold_db_block_ops.push(KeyValueStoreOp::PutKeyValue(
+            get_key_for_col(
+                DBColumn::BeaconBlockRoots.into(),
+                &slot.as_u64().to_be_bytes(),
+            ),
+            block_root.as_bytes().to_vec(),
+        ));
 
         // Delete the old summary, and the full state if we lie on an epoch boundary.
         hot_db_ops.push(StoreOp::DeleteState(state_root, Some(slot)));
