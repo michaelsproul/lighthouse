@@ -47,7 +47,7 @@ where
 
         // If `num_blocks` is not specified iterate all blocks.
         let block_root_iter = self
-            .forwards_block_roots_iterator_until(lower_limit_slot, upper_limit_slot, || {
+            .forwards_block_roots_iterator_until(lower_limit_slot, upper_limit_slot - 1, || {
                 panic!("FIXME(sproul): reconstruction doesn't need this state")
             })?
             .take(num_blocks.unwrap_or(usize::MAX));
