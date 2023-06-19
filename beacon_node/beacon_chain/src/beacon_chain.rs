@@ -62,7 +62,6 @@ use execution_layer::{
     BlockProposalContents, BuilderParams, ChainHealth, ExecutionLayer, FailedCondition,
     PayloadAttributes, PayloadStatus,
 };
-pub use fork_choice::CountUnrealized;
 use fork_choice::{
     AttestationFromBlock, ExecutionStatus, ForkChoice, ForkchoiceUpdateParameters,
     InvalidationOperation, PayloadVerificationStatus, ResetPayloadStatuses,
@@ -2475,7 +2474,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     pub async fn process_chain_segment(
         self: &Arc<Self>,
         chain_segment: Vec<Arc<SignedBeaconBlock<T::EthSpec>>>,
-        count_unrealized: CountUnrealized,
         notify_execution_layer: NotifyExecutionLayer,
     ) -> ChainSegmentResult<T::EthSpec> {
         let mut imported_blocks = 0;
@@ -2544,7 +2542,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                     .process_block(
                         signature_verified_block.block_root(),
                         signature_verified_block,
-                        count_unrealized,
                         notify_execution_layer,
                     )
                     .await
@@ -2633,7 +2630,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         self: &Arc<Self>,
         block_root: Hash256,
         unverified_block: B,
-        count_unrealized: CountUnrealized,
         notify_execution_layer: NotifyExecutionLayer,
     ) -> Result<Hash256, BlockError<T::EthSpec>> {
         // Start the Prometheus timer.
@@ -2654,7 +2650,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 notify_execution_layer,
             )?;
             chain
-                .import_execution_pending_block(execution_pending, count_unrealized)
+                .import_execution_pending_block(execution_pending)
                 .await
         };
 
@@ -2709,10 +2705,9 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     ///
     /// An error is returned if the block was unable to be imported. It may be partially imported
     /// (i.e., this function is not atomic).
-    async fn import_execution_pending_block(
+    pub async fn import_execution_pending_block(
         self: Arc<Self>,
         execution_pending_block: ExecutionPendingBlock<T>,
-        count_unrealized: CountUnrealized,
     ) -> Result<Hash256, BlockError<T::EthSpec>> {
         let ExecutionPendingBlock {
             block,
@@ -2773,7 +2768,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                         state,
                         confirmed_state_roots,
                         payload_verification_status,
-                        count_unrealized,
                         parent_block,
                         parent_eth1_finalization_data,
                         consensus_context,
@@ -2799,7 +2793,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         mut state: BeaconState<T::EthSpec>,
         confirmed_state_roots: Vec<Hash256>,
         payload_verification_status: PayloadVerificationStatus,
-        count_unrealized: CountUnrealized,
         parent_block: SignedBlindedBeaconBlock<T::EthSpec>,
         parent_eth1_finalization_data: Eth1FinalizationData,
         mut consensus_context: ConsensusContext<T::EthSpec>,
@@ -2867,7 +2860,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                     &state,
                     payload_verification_status,
                     &self.spec,
-                    count_unrealized,
                 )
                 .map_err(|e| BlockError::BeaconChainError(e.into()))?;
         }
