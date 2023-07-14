@@ -5165,7 +5165,7 @@ dependencies = [
 [[package]]
 name = "milhouse"
 version = "0.1.0"
-source = "git+https://github.com/sigp/milhouse?branch=main#e30719aaf1e4b46e3ff1962f7370965e68fa548b"
+source = "git+http://github.com/macladson/milhouse.git?branch=dedup-packed-leaf#33ebf5c7e74112f48240b64377958675cdbef8bd"
 dependencies = [
  "arbitrary",
  "derivative",
