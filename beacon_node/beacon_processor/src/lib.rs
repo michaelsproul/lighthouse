@@ -62,7 +62,7 @@ use std::time::Duration;
 use task_executor::TaskExecutor;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use types::{Attestation, EthSpec, Hash256, SignedAggregateAndProof, Slot, SubnetId, LazySignedAggregateAndProof};
+use types::{Attestation, EthSpec, Hash256, LazySignedAggregateAndProof, Slot, SubnetId};
 use work_reprocessing_queue::IgnoredRpcBlock;
 
 mod metrics;

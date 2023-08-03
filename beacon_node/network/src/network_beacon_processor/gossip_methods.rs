@@ -32,9 +32,8 @@ use types::{
     Attestation, AttesterSlashing, EthSpec, Hash256, IndexedAttestation, LightClientFinalityUpdate,
     LightClientOptimisticUpdate, ProposerSlashing, SignedAggregateAndProof, SignedBeaconBlock,
     SignedBlsToExecutionChange, SignedContributionAndProof, SignedVoluntaryExit, Slot, SubnetId,
-    SyncCommitteeMessage, SyncSubnetId, LazySignedAggregateAndProof,
+    SyncCommitteeMessage, SyncSubnetId,
 };
-use tree_hash::TreeHash;
 
 use beacon_processor::{
     work_reprocessing_queue::{
@@ -444,13 +443,12 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let aggregates: Vec<SignedAggregateAndProof<T::EthSpec>> = packages
             .iter()
             .map(|package| package.aggregate.as_ref())
-            .filter(|agg| !self
-                .chain
-                .observed_attestations
-                .write()
-                .is_lazy_att_known_subset(&agg.message.aggregate, agg.message.aggregate.data.tree_hash_root())
-                .unwrap_or(false)
-            )
+            .filter(|agg| {
+                !self
+                    .chain
+                    .is_lazy_att_observed_subset(&agg.message.aggregate)
+                    .unwrap_or(false)
+            })
             .map(|agg| agg.clone().not_lazy().unwrap())
             .collect();
 

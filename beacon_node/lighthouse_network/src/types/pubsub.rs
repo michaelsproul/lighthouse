@@ -10,10 +10,10 @@ use std::io::{Error, ErrorKind};
 use std::sync::Arc;
 use types::{
     Attestation, AttesterSlashing, EthSpec, ForkContext, ForkName, LazySignedAggregateAndProof,
-    LightClientFinalityUpdate, LightClientOptimisticUpdate, ProposerSlashing,
-    SignedAggregateAndProof, SignedBeaconBlock, SignedBeaconBlockAltair, SignedBeaconBlockBase,
-    SignedBeaconBlockCapella, SignedBeaconBlockMerge, SignedBlsToExecutionChange,
-    SignedContributionAndProof, SignedVoluntaryExit, SubnetId, SyncCommitteeMessage, SyncSubnetId,
+    LightClientFinalityUpdate, LightClientOptimisticUpdate, ProposerSlashing, SignedBeaconBlock,
+    SignedBeaconBlockAltair, SignedBeaconBlockBase, SignedBeaconBlockCapella,
+    SignedBeaconBlockMerge, SignedBlsToExecutionChange, SignedContributionAndProof,
+    SignedVoluntaryExit, SubnetId, SyncCommitteeMessage, SyncSubnetId,
 };
 
 #[derive(Debug, Clone, PartialEq)]

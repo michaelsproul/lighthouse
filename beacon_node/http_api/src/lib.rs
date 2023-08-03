@@ -50,7 +50,7 @@ pub use publish_blocks::{
 use serde::{Deserialize, Serialize};
 use slog::{crit, debug, error, info, warn, Logger};
 use slot_clock::SlotClock;
-use ssz::Encode;
+use ssz::{Decode, Encode};
 pub use state_id::StateId;
 use std::borrow::Cow;
 use std::future::Future;
@@ -69,10 +69,10 @@ use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 use types::{
     Attestation, AttestationData, AttestationShufflingId, AttesterSlashing, BeaconStateError,
     BlindedPayload, CommitteeCache, ConfigAndPreset, Epoch, EthSpec, ForkName, FullPayload,
-    ProposerPreparationData, ProposerSlashing, RelativeEpoch, SignedAggregateAndProof,
-    SignedBeaconBlock, SignedBlindedBeaconBlock, SignedBlsToExecutionChange,
-    SignedContributionAndProof, SignedValidatorRegistrationData, SignedVoluntaryExit, Slot,
-    SyncCommitteeMessage, SyncContributionData,
+    LazySignedAggregateAndProof, ProposerPreparationData, ProposerSlashing, RelativeEpoch,
+    SignedAggregateAndProof, SignedBeaconBlock, SignedBlindedBeaconBlock,
+    SignedBlsToExecutionChange, SignedContributionAndProof, SignedValidatorRegistrationData,
+    SignedVoluntaryExit, Slot, SyncCommitteeMessage, SyncContributionData,
 };
 use validator::pubkey_to_validator_index;
 use version::{
@@ -3293,7 +3293,13 @@ pub fn serve<T: BeaconChainTypes>(
                         match chain.verify_aggregated_attestation_for_gossip(aggregate) {
                             Ok(verified_aggregate) => {
                                 messages.push(PubsubMessage::AggregateAndProofAttestation(Box::new(
-                                    verified_aggregate.aggregate().clone().not_lazy(),
+                                    LazySignedAggregateAndProof::from_ssz_bytes(&verified_aggregate.aggregate().clone().as_ssz_bytes()).map_err(|e| {
+                            warp_utils::reject::custom_bad_request(format!(
+                                "unable to decode as LazySignedAggregateAndProof: {:?}",
+                                e
+                            ))
+                        })?
+                                    ,
                                 )));
 
                                 // Notify the validator monitor.
