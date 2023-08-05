@@ -20,16 +20,17 @@ use lighthouse_network::{
     Client, MessageId, NetworkGlobals, PeerId,
 };
 use slot_clock::SlotClock;
+use ssz::{Decode, Encode};
 use std::cmp;
 use std::iter::Iterator;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use types::{
-    Attestation, AttesterSlashing, Epoch, EthSpec, Hash256, MainnetEthSpec, ProposerSlashing,
-    SignedAggregateAndProof, SignedBeaconBlock, SignedVoluntaryExit, SubnetId, LazySignedAggregateAndProof
+    Attestation, AttesterSlashing, Epoch, EthSpec, Hash256, LazySignedAggregateAndProof,
+    MainnetEthSpec, ProposerSlashing, SignedAggregateAndProof, SignedBeaconBlock,
+    SignedVoluntaryExit, SubnetId,
 };
-use ssz::{Encode, Decode};
 
 type E = MainnetEthSpec;
 type T = EphemeralHarnessType<E>;
