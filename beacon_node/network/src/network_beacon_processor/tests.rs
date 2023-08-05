@@ -27,8 +27,9 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use types::{
     Attestation, AttesterSlashing, Epoch, EthSpec, Hash256, MainnetEthSpec, ProposerSlashing,
-    SignedAggregateAndProof, SignedBeaconBlock, SignedVoluntaryExit, SubnetId,
+    SignedAggregateAndProof, SignedBeaconBlock, SignedVoluntaryExit, SubnetId, LazySignedAggregateAndProof
 };
+use ssz::{Encode, Decode};
 
 type E = MainnetEthSpec;
 type T = EphemeralHarnessType<E>;
@@ -384,7 +385,7 @@ impl TestRig {
             .send_aggregated_attestation(
                 junk_message_id(),
                 junk_peer_id(),
-                aggregate,
+                LazySignedAggregateAndProof::from_ssz_bytes(&aggregate.as_ssz_bytes()).unwrap(),
                 Duration::from_secs(0),
             )
             .unwrap();
