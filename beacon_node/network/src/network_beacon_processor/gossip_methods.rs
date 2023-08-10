@@ -515,6 +515,12 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 Err(_) => itertools::Either::Right((AttnError::InvalidSignature, p)),
             }
         });
+        debug!(
+            self.log,
+            "Processing aggregate batch";
+            "skipped" => skip.len(),
+            "total" => skip.len() + to_process.len(),
+        );
 
         let results = match self
             .chain
