@@ -164,7 +164,7 @@ pub enum WhenSlotSkipped {
     ///
     /// This is how the HTTP API behaves.
     None,
-    /// If the slot it a skip slot, return the previous non-skipped block.
+    /// If the slot is a skip slot, return the previous non-skipped block.
     ///
     /// This is generally how the specification behaves.
     Prev,
@@ -4419,6 +4419,19 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             )
             .map_err(BlockProductionError::OpPoolError)?;
         drop(attestation_packing_timer);
+
+        let simple_attestation_ordering = true;
+        if simple_attestation_ordering {
+            attestations.sort_unstable_by_key(|att| {
+                // This 4-tuple should be unique per attestation.
+                (
+                    att.data.slot,
+                    att.data.index,
+                    att.data.beacon_block_root,
+                    att.aggregation_bits.tree_hash_root(),
+                )
+            });
+        }
 
         // If paranoid mode is enabled re-check the signatures of every included message.
         // This will be a lot slower but guards against bugs in block production and can be

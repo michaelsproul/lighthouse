@@ -1,6 +1,7 @@
 use crate::observed_operations::ObservationOutcome;
 pub use crate::persisted_beacon_chain::PersistedBeaconChain;
 pub use crate::{
+    attestation_verification::Error as AttestationError,
     beacon_chain::{BEACON_CHAIN_DB_KEY, ETH1_CACHE_DB_KEY, FORK_CHOICE_DB_KEY, OP_POOL_DB_KEY},
     migrate::MigratorConfig,
     sync_committee_verification::Error as SyncCommitteeError,
@@ -119,7 +120,7 @@ pub enum SyncCommitteeStrategy {
 
 /// Indicates whether the `BeaconChainHarness` should use the `state.current_sync_committee` or
 /// `state.next_sync_committee` when creating sync messages or contributions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum RelativeSyncCommittee {
     Current,
     Next,
@@ -181,6 +182,11 @@ impl<E: EthSpec> Builder<EphemeralHarnessType<E>> {
             .clone()
             .expect("cannot build without validator keypairs");
 
+        let genesis_execution_payload_header = self
+            .mock_execution_layer
+            .as_ref()
+            .and_then(|el| el.genesis_execution_payload_header());
+
         let store = Arc::new(
             HotColdDB::open_ephemeral(
                 self.store_config.clone().unwrap_or_default(),
@@ -194,7 +200,7 @@ impl<E: EthSpec> Builder<EphemeralHarnessType<E>> {
                 &validator_keypairs,
                 HARNESS_GENESIS_TIME,
                 Hash256::from_slice(DEFAULT_ETH1_BLOCK_HASH),
-                None,
+                genesis_execution_payload_header,
                 builder.get_spec(),
             )
             .expect("should generate interop state");
@@ -433,14 +439,19 @@ where
         self
     }
 
-    pub fn mock_execution_layer(mut self) -> Self {
+    pub fn mock_execution_layer(self) -> Self {
+        self.mock_execution_layer_generic(DEFAULT_TERMINAL_BLOCK)
+    }
+
+    pub fn mock_execution_layer_generic(mut self, terminal_block_number: u64) -> Self {
         let spec = self.spec.clone().expect("cannot build without spec");
         let shanghai_time = spec.capella_fork_epoch.map(|epoch| {
             HARNESS_GENESIS_TIME + spec.seconds_per_slot * E::slots_per_epoch() * epoch.as_u64()
         });
         let mock = MockExecutionLayer::new(
             self.runtime.task_executor.clone(),
-            DEFAULT_TERMINAL_BLOCK,
+            terminal_block_number,
+            HARNESS_GENESIS_TIME,
             shanghai_time,
             None,
             Some(JwtKey::from_slice(&DEFAULT_JWT_SECRET).unwrap()),
@@ -467,6 +478,7 @@ where
         });
         let mock_el = MockExecutionLayer::new(
             self.runtime.task_executor.clone(),
+            HARNESS_GENESIS_TIME,
             DEFAULT_TERMINAL_BLOCK,
             shanghai_time,
             builder_threshold,
@@ -1062,15 +1074,12 @@ where
         relative_sync_committee: RelativeSyncCommittee,
     ) -> Vec<Vec<(SyncCommitteeMessage, usize)>> {
         let sync_committee: Arc<SyncCommittee<E>> = match relative_sync_committee {
-            RelativeSyncCommittee::Current => state
-                .current_sync_committee()
-                .expect("should be called on altair beacon state")
-                .clone(),
-            RelativeSyncCommittee::Next => state
-                .next_sync_committee()
-                .expect("should be called on altair beacon state")
-                .clone(),
-        };
+            RelativeSyncCommittee::Current => state.current_sync_committee(),
+            RelativeSyncCommittee::Next => state.next_sync_committee(),
+        }
+        .expect("should be called on altair beacon state")
+        .clone();
+
         let fork = self
             .spec
             .fork_at_epoch(message_slot.epoch(E::slots_per_epoch()));
@@ -1286,10 +1295,12 @@ where
             .map(|(subnet_id, committee_messages)| {
                 // If there are any sync messages in this committee, create an aggregate.
                 if let Some((sync_message, subcommittee_position)) = committee_messages.first() {
-                    let sync_committee: Arc<SyncCommittee<E>> = state
-                        .current_sync_committee()
-                        .expect("should be called on altair beacon state")
-                        .clone();
+                    let sync_committee: Arc<SyncCommittee<E>> = match relative_sync_committee {
+                        RelativeSyncCommittee::Current => state.current_sync_committee(),
+                        RelativeSyncCommittee::Next => state.next_sync_committee(),
+                    }
+                    .expect("should be called on altair beacon state")
+                    .clone();
 
                     let aggregator_index = sync_committee
                         .get_subcommittee_pubkeys(subnet_id)
@@ -1801,6 +1812,18 @@ where
         }
     }
 
+    pub fn process_unaggregated_attestation(
+        &self,
+        attestation: Attestation<E>,
+    ) -> Result<(), AttestationError> {
+        let verified = self
+            .chain
+            .verify_unaggregated_attestation_for_gossip(&attestation, None)?;
+        self.chain.add_to_naive_aggregation_pool(&verified)?;
+        self.chain.apply_attestation_to_fork_choice(&verified)?;
+        self.chain.add_to_block_inclusion_pool(verified)
+    }
+
     pub fn set_current_slot(&self, slot: Slot) {
         let current_slot = self.chain.slot().unwrap();
         let current_epoch = current_slot.epoch(E::slots_per_epoch());
@@ -2257,7 +2280,9 @@ where
         let mut verified_contributions = Vec::with_capacity(sync_contributions.len());
 
         for (_, contribution_and_proof) in sync_contributions {
-            let signed_contribution_and_proof = contribution_and_proof.unwrap();
+            let Some(signed_contribution_and_proof) = contribution_and_proof else {
+                continue;
+            };
 
             let verified_contribution = self
                 .chain
