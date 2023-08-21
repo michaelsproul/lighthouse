@@ -57,6 +57,7 @@ unused_port = { path = "../common/unused_port" }
 database_manager = { path = "../database_manager" }
 slasher = { path = "../slasher" }
 validator_manager = { path = "../validator_manager" }
+console-subscriber = "0.1.10"
 
 [dev-dependencies]
 tempfile = "3.1.0"

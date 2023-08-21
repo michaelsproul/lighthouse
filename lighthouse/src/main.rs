@@ -54,6 +54,8 @@ fn main() {
         std::env::set_var("RUST_BACKTRACE", "1");
     }
 
+    console_subscriber::init();
+
     // Parse the CLI parameters.
     let matches = App::new("Lighthouse")
         .version(VERSION.replace("Lighthouse/", "").as_str())
