@@ -7,7 +7,6 @@ use directory::{parse_path_or_default, DEFAULT_BEACON_NODE_DIR, DEFAULT_VALIDATO
 use env_logger::{Builder, Env};
 use environment::{EnvironmentBuilder, LoggerConfig};
 use eth2_network_config::{Eth2NetworkConfig, DEFAULT_HARDCODED_NETWORK, HARDCODED_NET_NAMES};
-use ethereum_hashing::have_sha_extensions;
 use lighthouse_version::VERSION;
 use malloc_utils::configure_memory_allocator;
 use slog::{crit, info, warn};
@@ -54,6 +53,9 @@ fn main() {
         std::env::set_var("RUST_BACKTRACE", "1");
     }
 
+    // Run EverCrypt CPU detection.
+    ethereum_hashing::init();
+
     // Parse the CLI parameters.
     let matches = App::new("Lighthouse")
         .version(VERSION.replace("Lighthouse/", "").as_str())
@@ -73,7 +75,7 @@ fn main() {
                  Specs: mainnet (true), minimal ({}), gnosis ({})",
                  VERSION.replace("Lighthouse/", ""),
                  bls_library_name(),
-                 have_sha_extensions(),
+                 true, // FIXME(sproul)
                  allocator_name(),
                  build_profile_name(),
                  cfg!(feature = "spec-minimal"),
