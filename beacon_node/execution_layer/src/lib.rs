@@ -40,9 +40,9 @@ use tokio_stream::wrappers::WatchStream;
 use tree_hash::TreeHash;
 use types::{AbstractExecPayload, BeaconStateError, ExecPayload};
 use types::{
-    BlindedPayload, BlockType, ChainSpec, Epoch, ExecutionPayloadCapella, ExecutionPayloadMerge,
-    ForkVersionedResponse, ProposerPreparationData, PublicKeyBytes, Signature, SignedBeaconBlock,
-    Slot,
+    BlindedPayload, BlockType, ChainSpec, Epoch, ExecutionPayloadCapella,
+    ExecutionPayloadHeaderRef, ExecutionPayloadMerge, ForkVersionedResponse,
+    ProposerPreparationData, PublicKeyBytes, Signature, SignedBeaconBlock, Slot,
 };
 
 mod block_hash;
@@ -1554,7 +1554,7 @@ impl<T: EthSpec> ExecutionLayer<T> {
     /// This will fail if the payload is not from the finalized portion of the chain.
     pub async fn get_payload_for_header(
         &self,
-        header: &ExecutionPayloadHeader<T>,
+        header: ExecutionPayloadHeaderRef<'_, T>,
         fork: ForkName,
     ) -> Result<Option<ExecutionPayload<T>>, Error> {
         let hash = header.block_hash();
@@ -1584,7 +1584,7 @@ impl<T: EthSpec> ExecutionLayer<T> {
             let opt_payload_body = payload_bodies.pop().flatten();
             opt_payload_body
                 .map(|body| {
-                    body.to_payload(header.clone())
+                    body.to_payload(header.clone_as_header())
                         .map_err(Error::InvalidPayloadBody)
                 })
                 .transpose()

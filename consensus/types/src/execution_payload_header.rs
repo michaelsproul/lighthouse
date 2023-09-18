@@ -28,9 +28,13 @@ use BeaconStateError;
         serde(bound = "T: EthSpec", deny_unknown_fields),
         arbitrary(bound = "T: EthSpec")
     ),
-    ref_attributes(derive(PartialEq, TreeHash), tree_hash(enum_behaviour = "transparent")),
+    ref_attributes(
+        derive(PartialEq, TreeHash, Debug),
+        tree_hash(enum_behaviour = "transparent")
+    ),
     cast_error(ty = "Error", expr = "BeaconStateError::IncorrectStateVariant"),
-    partial_getter_error(ty = "Error", expr = "BeaconStateError::IncorrectStateVariant")
+    partial_getter_error(ty = "Error", expr = "BeaconStateError::IncorrectStateVariant"),
+    map_ref_into(ExecutionPayloadHeader)
 )]
 #[derive(
     Debug, Clone, Serialize, Deserialize, Encode, TreeHash, Derivative, arbitrary::Arbitrary,
@@ -103,6 +107,14 @@ impl<'a, T: EthSpec> ExecutionPayloadHeaderRef<'a, T> {
             cons(inner);
             *inner == Default::default()
         })
+    }
+
+    pub fn clone_as_header(self) -> ExecutionPayloadHeader<T> {
+        map_execution_payload_header_ref_into_execution_payload_header!(
+            &'a _,
+            self,
+            |inner, cons| { cons(inner.into()) }
+        )
     }
 }
 
