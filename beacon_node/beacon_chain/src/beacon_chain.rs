@@ -391,7 +391,7 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     /// HTTP server is enabled.
     pub event_handler: Option<ServerSentEventHandler<T::EthSpec>>,
     /// Used to track the heads of the beacon chain.
-    pub(crate) head_tracker: Arc<HeadTracker>,
+    pub head_tracker: Arc<HeadTracker>,
     /// A cache dedicated to block processing.
     pub(crate) snapshot_cache: TimeoutRwLock<SnapshotCache<T::EthSpec>>,
     /// Caches the attester shuffling for a given epoch and shuffling key root.
@@ -4396,6 +4396,19 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             )
             .map_err(BlockProductionError::OpPoolError)?;
         drop(attestation_packing_timer);
+
+        let simple_attestation_ordering = true;
+        if simple_attestation_ordering {
+            attestations.sort_unstable_by_key(|att| {
+                // This 4-tuple should be unique per attestation.
+                (
+                    att.data.slot,
+                    att.data.index,
+                    att.data.beacon_block_root,
+                    att.aggregation_bits.tree_hash_root(),
+                )
+            });
+        }
 
         // If paranoid mode is enabled re-check the signatures of every included message.
         // This will be a lot slower but guards against bugs in block production and can be
