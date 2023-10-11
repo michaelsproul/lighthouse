@@ -99,7 +99,7 @@ use state_processing::{
     },
     per_slot_processing,
     state_advance::{complete_state_advance, partial_state_advance},
-    BlockSignatureStrategy, ConsensusContext, SigVerifiedOp, StateProcessingStrategy,
+    AllCaches, BlockSignatureStrategy, ConsensusContext, SigVerifiedOp, StateProcessingStrategy,
     VerifyBlockRoot, VerifyOperation,
 };
 use std::borrow::Cow;
@@ -4001,6 +4001,17 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
             (state, None)
         };
+
+        let all_caches_built = state.all_caches_built();
+        if state.slot() != slot || !all_caches_built {
+            warn!(
+                self.log,
+                "Block production state is imperfect";
+                "state_slot" => state.slot(),
+                "production_slot" => slot,
+                "all_caches_built" => all_caches_built
+            );
+        }
 
         drop(state_load_timer);
 

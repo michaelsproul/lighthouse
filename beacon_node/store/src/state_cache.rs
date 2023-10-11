@@ -1,5 +1,6 @@
 use crate::Error;
 use lru::LruCache;
+use state_processing::AllCaches;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroUsize;
 use types::{BeaconState, Epoch, EthSpec, Hash256, Slot};
@@ -121,6 +122,13 @@ impl<E: EthSpec> StateCache<E> {
         // Refuse states with pending mutations: we want cached states to be as small as possible
         // i.e. stored entirely as a binary merkle tree with no updates overlaid.
         if state.has_pending_mutations() {
+            return Err(Error::StateForCacheHasPendingUpdates {
+                state_root,
+                slot: state.slot(),
+            });
+        }
+
+        if !state.all_caches_built() {
             return Err(Error::StateForCacheHasPendingUpdates {
                 state_root,
                 slot: state.slot(),
