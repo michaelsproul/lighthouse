@@ -41,28 +41,28 @@ jobs:
                 include:
                     -   arch: aarch64-unknown-linux-gnu
                         runner: ${{ github.repository == 'sigp/lighthouse' && fromJson('["self-hosted", "linux", "release", "large"]') || 'ubuntu-latest'  }}
-                        profile: maxperf
+                        profile: release
                     -   arch: aarch64-unknown-linux-gnu-portable
                         runner: ${{ github.repository == 'sigp/lighthouse' && fromJson('["self-hosted", "linux", "release", "large"]') || 'ubuntu-latest'  }}
-                        profile: maxperf
+                        profile: release
                     -   arch: x86_64-unknown-linux-gnu
                         runner: ${{ github.repository == 'sigp/lighthouse' && fromJson('["self-hosted", "linux", "release", "large"]') || 'ubuntu-latest'  }}
-                        profile: maxperf
+                        profile: release
                     -   arch: x86_64-unknown-linux-gnu-portable
                         runner: ${{ github.repository == 'sigp/lighthouse' && fromJson('["self-hosted", "linux", "release", "large"]') || 'ubuntu-latest'  }}
-                        profile: maxperf
+                        profile: release
                     -   arch: x86_64-apple-darwin
                         runner: macos-latest
-                        profile: maxperf
+                        profile: release
                     -   arch: x86_64-apple-darwin-portable
                         runner: macos-latest
-                        profile: maxperf
+                        profile: release
                     -   arch: x86_64-windows
                         runner: ${{ github.repository == 'sigp/lighthouse' && fromJson('["self-hosted", "windows", "release"]') || 'windows-2019'  }}
-                        profile: maxperf
+                        profile: release
                     -   arch: x86_64-windows-portable
                         runner: ${{ github.repository == 'sigp/lighthouse' && fromJson('["self-hosted", "windows", "release"]') || 'windows-2019'  }}
-                        profile: maxperf
+                        profile: release
 
         runs-on:    ${{ matrix.runner }}
         needs: extract-version
@@ -114,6 +114,11 @@ jobs:
                 cargo install cross
                 env CROSS_PROFILE=${{ matrix.profile }} make build-x86_64
 
+            - name: Show xdelta3 failure
+              if: ${{ failure() }}
+              run: |
+                cat target/aarch64-unknown-linux-gnu/${{ matrix.profile }}/build/xdelta3-*/output
+                exit 111
             - name: Move cross-compiled binary
               if:  startsWith(matrix.arch, 'aarch64')
               run: mv target/aarch64-unknown-linux-gnu/${{ matrix.profile }}/lighthouse ~/.cargo/bin/lighthouse
