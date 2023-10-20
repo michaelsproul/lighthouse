@@ -9280,7 +9280,7 @@ dependencies = [
 [[package]]
 name = "xdelta3"
 version = "0.1.5"
-source = "git+http://github.com/michaelsproul/xdelta3-rs?rev=d12f71b36a55b5ca0247a38151fb7c2be5c0e742#d12f71b36a55b5ca0247a38151fb7c2be5c0e742"
+source = "git+http://github.com/michaelsproul/xdelta3-rs?rev=ae9a1d2585ef998f4656acdc35cf263ee88e6dfa#ae9a1d2585ef998f4656acdc35cf263ee88e6dfa"
 dependencies = [
  "bindgen 0.66.1",
  "cc",
