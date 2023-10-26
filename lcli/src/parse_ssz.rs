@@ -102,6 +102,7 @@ pub fn run_parse_ssz<T: EthSpec>(
             decode_and_print(&bytes, BeaconStateDeneb::<T>::from_ssz_bytes, format)?
         }
         "BlobSidecar" => decode_and_print(&bytes, BlobSidecar::<T>::from_ssz_bytes, format)?,
+        "Attestation" => decode_and_print(&bytes, Attestation::<T>::from_ssz_bytes, format)?,
         other => return Err(format!("Unknown type: {}", other)),
     };
 

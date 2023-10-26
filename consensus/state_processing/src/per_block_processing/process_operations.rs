@@ -152,6 +152,10 @@ pub mod altair_deneb {
 
             let validator_effective_balance = state.epoch_cache().get_effective_balance(index)?;
             let validator_slashed = state.slashings_cache().is_slashed(index);
+            println!(
+                "validator {} attested with participation indices: {:?}, effective_balance: {}, slashed? {}",
+                index, participation_flag_indices, validator_effective_balance, validator_slashed
+            );
 
             for (flag_index, &weight) in PARTICIPATION_FLAG_WEIGHTS.iter().enumerate() {
                 let epoch_participation = state.get_epoch_participation_mut(

@@ -13,6 +13,7 @@ mod interop_genesis;
 mod mnemonic_validators;
 mod new_testnet;
 mod parse_ssz;
+mod process_attestation;
 mod replace_state_pubkeys;
 mod skip_slots;
 mod state_diff;
@@ -211,6 +212,33 @@ fn main() {
                         .takes_value(false)
                         .help("If present, don't rebuild the tree-hash-cache after applying \
                             the block."),
+                )
+        )
+        .subcommand(
+            SubCommand::with_name("process-attestation")
+                .about("Process single attestation")
+                .arg(
+                    Arg::with_name("pre-state-path")
+                        .long("pre-state-path")
+                        .value_name("PATH")
+                        .takes_value(true)
+                        .required(true)
+                        .help("Path to load a BeaconState from as SSZ."),
+                )
+                .arg(
+                    Arg::with_name("attestation-path")
+                        .long("attestation-path")
+                        .value_name("PATH")
+                        .takes_value(true)
+                        .required(true)
+                        .help("Path to load an Attestation from as SSZ."),
+                )
+                .arg(
+                    Arg::with_name("post-state-output-path")
+                        .long("post-state-output-path")
+                        .value_name("PATH")
+                        .takes_value(true)
+                        .help("Path to output the post-state."),
                 )
         )
         .subcommand(
@@ -987,6 +1015,11 @@ fn run<T: EthSpec>(
             let network_config = get_network_config()?;
             transition_blocks::run::<T>(env, network_config, matches)
                 .map_err(|e| format!("Failed to transition blocks: {}", e))
+        }
+        ("process-attestation", Some(matches)) => {
+            let network_config = get_network_config()?;
+            process_attestation::run::<T>(env, network_config, matches)
+                .map_err(|e| format!("Failed to process attestation: {}", e))
         }
         ("skip-slots", Some(matches)) => {
             let network_config = get_network_config()?;
