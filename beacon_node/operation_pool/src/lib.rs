@@ -319,13 +319,9 @@ impl<T: EthSpec> OperationPool<T> {
                 // aggregate unaggregate attestations into the clique aggregates
                 // if compatible
                 if let Some(unaggregate_attestations) = unaggregate_attestations.get(data) {
-                    for attestation in unaggregate_attestations.iter().filter(|indexed| {
-                        validity_filter(&AttestationRef {
-                            checkpoint: checkpoint_key,
-                            data,
-                            indexed,
-                        })
-                    }) {
+                    // No need to re-run the validity filter, as it has already succeeded for
+                    // this attestation data.
+                    for attestation in unaggregate_attestations {
                         num_valid.fetch_add(1, Ordering::Relaxed);
                         for clique_aggregate in &mut clique_aggregates {
                             if clique_aggregate.signers_disjoint_from(attestation) {
@@ -349,16 +345,18 @@ impl<T: EthSpec> OperationPool<T> {
                     && !aggregate_attestations.contains_key(data)
             })
             .for_each(|(data, unaggregates)| {
-                let mut valid_attestations = unaggregates.iter().filter(|indexed| {
-                    validity_filter(&AttestationRef {
+                let mut unaggregates = unaggregates.iter();
+                if let Some(att) = unaggregates.next() {
+                    if !validity_filter(&AttestationRef {
                         checkpoint: checkpoint_key,
                         data,
-                        indexed,
-                    })
-                });
-                if let Some(att) = valid_attestations.next() {
+                        indexed: att,
+                    }) {
+                        return;
+                    }
+
                     let mut att = att.clone();
-                    valid_attestations.for_each(|valid_att| att.aggregate(valid_att));
+                    unaggregates.for_each(|valid_att| att.aggregate(valid_att));
                     cliques_from_aggregates.push((data, vec![att]))
                 }
             });
