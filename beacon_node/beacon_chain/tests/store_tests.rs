@@ -303,6 +303,27 @@ async fn full_participation_no_skips() {
 }
 
 #[tokio::test]
+async fn deadlock_block_production() {
+    let num_blocks_produced = E::slots_per_epoch() * 5;
+    let db_path = tempdir().unwrap();
+    let store = get_store(&db_path);
+    let harness = get_harness(store.clone(), LOW_VALIDATOR_COUNT);
+
+    harness
+        .extend_chain(
+            num_blocks_produced as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+        )
+        .await;
+
+    check_finalization(&harness, num_blocks_produced);
+    check_split_slot(&harness, store);
+    check_chain_dump(&harness, num_blocks_produced + 1);
+    check_iterators(&harness);
+}
+
+#[tokio::test]
 async fn randomised_skips() {
     let num_slots = E::slots_per_epoch() * 5;
     let mut num_blocks_produced = 0;

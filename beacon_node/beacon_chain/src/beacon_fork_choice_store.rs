@@ -165,6 +165,10 @@ where
     Hot: ItemStore<E>,
     Cold: ItemStore<E>,
 {
+    pub fn flush_balances_cache(&mut self) {
+        self.balances_cache = BalancesCache::default();
+    }
+
     /// Initialize `Self` from some `anchor` checkpoint which may or may not be the genesis state.
     ///
     /// ## Specification
