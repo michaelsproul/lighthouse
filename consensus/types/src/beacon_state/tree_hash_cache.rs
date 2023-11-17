@@ -30,7 +30,8 @@ const NODES_PER_VALIDATOR: usize = 15;
 /// == 8` then it is possible to do a 2-core concurrent hash.
 ///
 /// Do not set to 0.
-const VALIDATORS_PER_ARENA: usize = 4_096;
+// FIXME(sproul): fucking around
+const VALIDATORS_PER_ARENA: usize = 1;
 
 #[derive(Debug, PartialEq, Clone, Encode, Decode)]
 pub struct Eth1DataVotesTreeHashCache<T: EthSpec> {
@@ -532,10 +533,17 @@ impl ParallelValidatorTreeHash {
             Ordering::Equal => (),
         }
 
+        // FIXME(sproul): forcing parallelism
+        println!("there are only {} arenas", self.arenas.len());
         self.arenas
             .par_iter_mut()
+            .with_max_len(1)
             .enumerate()
             .map(|(arena_index, (arena, caches))| {
+                println!(
+                    "running tree hashing on t{:?}",
+                    rayon::current_thread_index()
+                );
                 caches
                     .iter_mut()
                     .enumerate()

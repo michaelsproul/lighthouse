@@ -1718,6 +1718,7 @@ impl<T: EthSpec> BeaconState<T> {
     ///
     /// Initialize the tree hash cache if it isn't already initialized.
     pub fn update_tree_hash_cache(&mut self) -> Result<Hash256, Error> {
+        println!("running tree hashing");
         self.initialize_tree_hash_cache();
 
         let cache = self.tree_hash_cache_mut().take();

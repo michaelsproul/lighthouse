@@ -306,21 +306,53 @@ impl<T: EthSpec> OperationPool<T> {
 
         let (prev_cover, curr_cover) = rayon::join(
             move || {
+                println!("building block at slot {}", state.slot());
+                if state.slot() == 41 {
+                    println!(
+                        "waiting for s4 on t{}",
+                        rayon::current_thread_index().unwrap()
+                    );
+                    drop(hiatus::step(4));
+                    println!("continuing exec of s4");
+                }
                 let _timer = metrics::start_timer(&metrics::ATTESTATION_PREV_EPOCH_PACKING_TIME);
                 // If we're in the genesis epoch, just use the current epoch attestations.
-                if prev_epoch_key == curr_epoch_key {
+                let res = if prev_epoch_key == curr_epoch_key {
                     vec![]
                 } else {
                     maximum_cover(prev_epoch_att, prev_epoch_limit, "prev_epoch_attestations")
+                };
+                if state.slot() == 41 {
+                    println!(
+                        "finished prev epoch packing on t{}",
+                        rayon::current_thread_index().unwrap()
+                    );
                 }
+                res
             },
             move || {
+                println!("building block at slot {}", state.slot());
+                if state.slot() == 41 {
+                    println!(
+                        "waiting for s5 on t{}",
+                        rayon::current_thread_index().unwrap()
+                    );
+                    drop(hiatus::step(5));
+                    println!("continuing exec of s5");
+                }
                 let _timer = metrics::start_timer(&metrics::ATTESTATION_CURR_EPOCH_PACKING_TIME);
-                maximum_cover(
+                let res = maximum_cover(
                     curr_epoch_att,
                     T::MaxAttestations::to_usize(),
                     "curr_epoch_attestations",
-                )
+                );
+                if state.slot() == 41 {
+                    println!(
+                        "finished curr epoch packing on t{}",
+                        rayon::current_thread_index().unwrap()
+                    );
+                }
+                res
             },
         );
 

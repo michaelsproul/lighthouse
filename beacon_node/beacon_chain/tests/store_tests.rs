@@ -304,7 +304,10 @@ async fn full_participation_no_skips() {
 
 #[tokio::test]
 async fn deadlock_block_production() {
-    let num_blocks_produced = E::slots_per_epoch() * 5;
+    use beacon_chain::*;
+    use types::payload::BlockProductionVersion;
+
+    let num_blocks_produced = E::slots_per_epoch() * 5 - 1;
     let db_path = tempdir().unwrap();
     let store = get_store(&db_path);
     let harness = get_harness(store.clone(), LOW_VALIDATOR_COUNT);
@@ -316,11 +319,71 @@ async fn deadlock_block_production() {
             AttestationStrategy::AllValidators,
         )
         .await;
+    harness.advance_slot();
+    harness.advance_slot();
 
-    check_finalization(&harness, num_blocks_produced);
-    check_split_slot(&harness, store);
-    check_chain_dump(&harness, num_blocks_produced + 1);
-    check_iterators(&harness);
+    // Add some attestations to the pool for the current epoch (5).
+    // This ensures that both op pool threads are busy
+    let canonical_head = harness.chain.canonical_head.cached_head();
+    let state = canonical_head.snapshot.beacon_state.clone();
+    let block = canonical_head.snapshot.beacon_block.clone();
+    let block_root = block.canonical_root();
+    let all_validators = (0..LOW_VALIDATOR_COUNT).collect::<Vec<_>>();
+    let attestations = harness.make_attestations(
+        &all_validators,
+        &state,
+        state.canonical_root(),
+        block_root.into(),
+        block.slot() + 1,
+    );
+    harness.process_attestations(attestations);
+
+    // Process a new block which misses the balances cache concurrently with the production of
+    // a new block.
+    println!("HERE");
+    hiatus::enable();
+    assert!(hiatus::is_enabled());
+    println!("enabling hiatus");
+
+    let import_block = async {
+        println!("importing block");
+        let ((block, blobs), _) = harness
+            .make_block(state, Slot::new(num_blocks_produced) + 1)
+            .await;
+        println!("slot {} block built", num_blocks_produced + 1);
+        harness
+            .chain
+            .canonical_head
+            .fork_choice_write_lock()
+            .fc_store
+            .flush_balances_cache();
+        let block_root = block.canonical_root();
+        harness
+            .chain
+            .process_block(
+                block_root,
+                Arc::new(block),
+                NotifyExecutionLayer::No,
+                || Ok(()),
+            )
+            .await
+            .unwrap();
+    };
+    let produce_block = async {
+        println!("producing block");
+        harness
+            .chain
+            .produce_block_with_verification(
+                Signature::infinity().unwrap(),
+                Slot::new(num_blocks_produced) + 2,
+                None,
+                ProduceBlockVerification::NoVerification,
+                BlockProductionVersion::V3,
+            )
+            .await
+            .unwrap();
+    };
+    futures::future::join(import_block, produce_block).await;
 }
 
 #[tokio::test]

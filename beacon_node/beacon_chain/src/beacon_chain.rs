@@ -110,6 +110,7 @@ use std::collections::HashSet;
 use std::io::prelude::*;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::Once;
 use std::time::{Duration, Instant};
 use store::iter::{BlockRootsIterator, ParentRootBlockIterator, StateRootsIterator};
 use store::{
@@ -123,6 +124,8 @@ use types::blob_sidecar::{BlobSidecarList, FixedBlobSidecarList};
 use types::payload::BlockProductionVersion;
 use types::sidecar::BlobItems;
 use types::*;
+
+static INIT: Once = Once::new();
 
 pub type ForkChoiceError = fork_choice::Error<crate::ForkChoiceStoreError>;
 
@@ -2294,7 +2297,21 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // return `false`: where an attestation for the previous epoch nominates the pivot block
         // which is the parent block of the finalized block. Such attestations are not useful, so
         // this doesn't matter.
+        let step = if state.slot() == 41 {
+            INIT.call_once(|| {
+                println!("waiting for step 6");
+                drop(hiatus::step(6));
+                println!("executed step 6");
+            });
+            hiatus::Step::Dummy
+        } else {
+            hiatus::Step::Dummy
+        };
         let fork_choice_lock = self.canonical_head.fork_choice_read_lock();
+        if state.slot() == 41 {
+            println!("got the fork choice lock!");
+            drop(step);
+        }
         let block = fork_choice_lock
             .get_block(block_root)
             .ok_or(Error::AttestationHeadNotInForkChoice(*block_root))?;
@@ -3235,7 +3252,25 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
         // Take an exclusive write-lock on fork choice. It's very important to prevent deadlocks by
         // avoiding taking other locks whilst holding this lock.
+        if hiatus::is_enabled() {
+            println!("waiting for s3");
+        }
+        let step1 = hiatus::step(3);
+        if hiatus::is_enabled() {
+            println!("executing s3");
+        }
         let mut fork_choice = self.canonical_head.fork_choice_write_lock();
+        if hiatus::is_enabled() {
+            println!("waiting for s7 (holding lock)");
+            let step = step1.then(7);
+            println!("executing step 7 and sleeping 5s");
+            drop(step);
+            std::thread::sleep(std::time::Duration::from_secs(5));
+
+            // FIXME(sproul): force tree hashing here, getting this to trigger in fork choice
+            // is too fiddly for my current level of patience
+            state.update_tree_hash_cache().unwrap();
+        }
 
         // Do not import a block that doesn't descend from the finalized root.
         let signed_block =
@@ -3413,6 +3448,9 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
         // The fork choice write-lock is dropped *after* the on-disk database has been updated.
         // This prevents inconsistency between the two at the expense of concurrency.
+        if hiatus::is_enabled() {
+            println!("dropping fork choice lock");
+        }
         drop(fork_choice);
 
         // We're declaring the block "imported" at this point, since fork choice and the DB know
@@ -4001,6 +4039,13 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         self: &Arc<Self>,
         slot: Slot,
     ) -> Result<(BeaconState<T::EthSpec>, Option<Hash256>), BlockProductionError> {
+        // Let the block producer finish running fork choice
+        let step = if slot == 41 {
+            println!("waiting for step 1");
+            hiatus::step(1)
+        } else {
+            hiatus::Step::Dummy
+        };
         let fork_choice_timer = metrics::start_timer(&metrics::BLOCK_PRODUCTION_FORK_CHOICE_TIMES);
         self.wait_for_fork_choice_before_block_production(slot)?;
         drop(fork_choice_timer);
@@ -4067,6 +4112,8 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         };
 
         drop(state_load_timer);
+        drop(step);
+        println!("step 1 complete");
 
         Ok((state, state_root_opt))
     }
@@ -4792,6 +4839,11 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             self.filter_op_pool_attestation(&mut curr_filter_cache, att, &state)
         };
 
+        if state.slot() == 41 {
+            println!("getting attestations step 2");
+            drop(hiatus::step(2));
+            println!("continuing step 2");
+        }
         let mut attestations = self
             .op_pool
             .get_attestations(

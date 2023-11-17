@@ -329,6 +329,14 @@ where
                 .justified_checkpoint
                 .epoch
                 .start_slot(E::slots_per_epoch());
+            println!("waiting for step 8");
+            /*
+            if 1 > 0 {
+                panic!("ugh");
+            }
+            */
+            let step = hiatus::step(8);
+            println!("executing step 8");
             let (_, state) = self
                 .store
                 .get_advanced_hot_state(
@@ -338,6 +346,7 @@ where
                 )
                 .map_err(Error::FailedToReadState)?
                 .ok_or_else(|| Error::MissingState(justified_block.state_root()))?;
+            drop(step);
 
             self.justified_balances = JustifiedBalances::from_justified_state(&state)?;
         }

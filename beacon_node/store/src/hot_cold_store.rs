@@ -743,10 +743,14 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         } else {
             state_root
         };
-        let state = self
+        let mut state = self
             .load_hot_state(&state_root, state_processing_strategy)?
             .map(|state| (state_root, state));
         drop(split);
+        // FIXME(sproul): this COULD happen here
+        state
+            .as_mut()
+            .map(|(_, state)| state.update_tree_hash_cache().unwrap());
         Ok(state)
     }
 
@@ -2215,7 +2219,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     }
 
     /// This function fills in missing block roots between last restore point slot and split
-    /// slot, if any.  
+    /// slot, if any.
     pub fn heal_freezer_block_roots(&self) -> Result<(), Error> {
         let split = self.get_split_info();
         let last_restore_point_slot = (split.slot - 1) / self.config.slots_per_restore_point

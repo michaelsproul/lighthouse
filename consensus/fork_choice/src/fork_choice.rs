@@ -319,7 +319,7 @@ pub struct ForkChoiceView {
 /// - Queuing of attestations from the current slot.
 pub struct ForkChoice<T, E> {
     /// Storage for `ForkChoice`, modelled off the spec `Store` object.
-    fc_store: T,
+    pub fc_store: T,
     /// The underlying representation of the block DAG.
     proto_array: ProtoArrayForkChoice,
     /// Attestations that arrived at the current slot and must be queued for later processing.
@@ -1163,6 +1163,7 @@ where
         }
 
         // Process any attestations that might now be eligible.
+        // FIXME(sproul): put this back
         self.process_attestation_queue()?;
 
         Ok(self.fc_store.get_current_slot())
