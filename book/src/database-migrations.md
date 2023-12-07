@@ -40,7 +40,7 @@ To apply a downgrade you need to use the `lighthouse db migrate` command with th
 
 1. Make sure you have a copy of the latest version of Lighthouse. This will be the version that
    knows about the latest schema change, and has the ability to revert it.
-2. Work out the schema version you would like to downgrade to by checking the table above, or the [Full list of schema versions](#full-list-of-schema-versions) below. E.g. if you want to downgrade from v4.2.0, which upgraded the version from v16 to v17, then you'll want to downgrade to v16 in order to run v4.0.1
+2. Work out the schema version you would like to downgrade to by checking the table above, or the [Full list of schema versions](#full-list-of-schema-versions) below. E.g. if you want to downgrade from v4.2.0, which upgraded the version from v16 to v17, then you'll want to downgrade to v16 in order to run v4.0.1.
 3. **Ensure that downgrading is feasible**. Not all schema upgrades can be reverted, and some of
    them are time-sensitive. The release notes will state whether a downgrade is available and
    whether any caveats apply to it.
