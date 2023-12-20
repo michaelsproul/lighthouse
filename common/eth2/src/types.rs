@@ -1543,7 +1543,7 @@ fn dummy_consensus_version() -> ForkName {
 }
 
 /// Metadata about a `ProduceBlockV3Response` which is returned in the body & headers.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProduceBlockV3Metadata {
     // The consensus version is serialized & deserialized by `ForkVersionedResponse`.
     #[serde(

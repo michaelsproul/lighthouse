@@ -46,6 +46,8 @@ pub const EXECUTION_PAYLOAD_BLINDED_HEADER: &str = "Eth-Execution-Payload-Blinde
 pub const EXECUTION_PAYLOAD_VALUE_HEADER: &str = "Eth-Execution-Payload-Value";
 pub const CONSENSUS_BLOCK_VALUE_HEADER: &str = "Eth-Consensus-Block-Value";
 
+type JsonBlockV3Response<T> = ForkVersionedResponse<T, ProduceBlockV3Metadata>;
+
 #[derive(Debug)]
 pub enum Error {
     /// The `reqwest` client raised an error.
@@ -1886,22 +1888,28 @@ impl BeaconNodeHttpClient {
                 Accept::Json,
                 self.timeouts.get_validator_block,
                 |response, headers| async move {
-                    let header_metadata = ProduceBlockV3Metadata::try_from(&headers)
-                        .map_err(Error::InvalidHeaders)?;
-                    if header_metadata.execution_payload_blinded {
+                    // Ignore headers if they fail to parse.
+                    // FIXME(sproul): this is broken in the case where we don't get a blinded header
+                    let opt_header_metadata = ProduceBlockV3Metadata::try_from(&headers).ok();
+                    if opt_header_metadata
+                        .as_ref()
+                        .map_or(false, |metadata| metadata.execution_payload_blinded)
+                    {
                         let blinded_response = response
-                            .json::<ForkVersionedResponse<BlindedBeaconBlock<T>,
-                                ProduceBlockV3Metadata>>()
+                            .json::<JsonBlockV3Response<BlindedBeaconBlock<T>>>()
                             .await?
                             .map_data(ProduceBlockV3Response::Blinded);
-                        Ok((blinded_response, header_metadata))
+                        let metadata = opt_header_metadata
+                            .unwrap_or_else(|| blinded_response.metadata.clone());
+                        Ok((blinded_response, metadata))
                     } else {
-                        let full_block_response= response
-                            .json::<ForkVersionedResponse<FullBlockContents<T>,
-                            ProduceBlockV3Metadata>>()
+                        let full_block_response = response
+                            .json::<JsonBlockV3Response<FullBlockContents<T>>>()
                             .await?
                             .map_data(ProduceBlockV3Response::Full);
-                        Ok((full_block_response, header_metadata))
+                        let metadata = opt_header_metadata
+                            .unwrap_or_else(|| full_block_response.metadata.clone());
+                        Ok((full_block_response, metadata))
                     }
                 },
             )
