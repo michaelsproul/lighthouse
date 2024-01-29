@@ -7,45 +7,19 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 #[derive(Debug)]
-pub struct PromiseCache<K, V, P>
+pub struct PromiseCache<K, V>
 where
     K: Hash + Eq + Clone,
-    P: Protect<K>,
 {
     cache: HashMap<K, CacheItem<V>>,
     capacity: usize,
-    protector: P,
     max_concurrent_promises: usize,
-    logger: Logger,
-}
-
-/// A value implementing `Protect` is capable of preventing keys of type `K` from being evicted.
-///
-/// It also dictates an ordering on keys which is used to prioritise evictions.
-pub trait Protect<K> {
-    type SortKey: Ord;
-
-    fn sort_key(&self, k: &K) -> Self::SortKey;
-
-    fn protect_from_eviction(&self, k: &K) -> bool;
-
-    fn notify_eviction(&self, _k: &K, _log: &Logger) {}
 }
 
 #[derive(Derivative)]
 #[derivative(Clone(bound = ""))]
-pub enum CacheItem<T> {
-    Complete(Arc<T>),
-    Promise(Receiver<Arc<T>>),
-}
-
-impl<T: std::fmt::Debug> std::fmt::Debug for CacheItem<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self {
-            CacheItem::Complete(value) => value.fmt(f),
-            CacheItem::Promise(_) => "Promise(..)".fmt(f),
-        }
-    }
+pub struct CacheItem<T> {
+    rx: Receiver<Arc<T>>,
 }
 
 #[derive(Debug)]
@@ -59,15 +33,8 @@ pub trait ToArc<T> {
 }
 
 impl<T> CacheItem<T> {
-    pub fn is_promise(&self) -> bool {
-        matches!(self, CacheItem::Promise(_))
-    }
-
     pub fn wait(self) -> Result<Arc<T>, PromiseCacheError> {
-        match self {
-            CacheItem::Complete(value) => Ok(value),
-            CacheItem::Promise(receiver) => receiver.recv().map_err(PromiseCacheError::Failed),
-        }
+        self.rx.recv().map_err(PromiseCacheError::Failed),
     }
 }
 
@@ -91,10 +58,7 @@ where
     K: Hash + Eq + Clone,
     P: Protect<K>,
 {
-    pub fn new(capacity: usize, protector: P, logger: Logger) -> Self {
-        // Making the concurrent promises directly configurable is considered overkill for now,
-        // so we just derive a vaguely sensible value from the cache size.
-        let max_concurrent_promises = std::cmp::max(2, capacity / 8);
+    pub fn new(max_concurrent_promises: usize) -> Self {
         Self {
             cache: HashMap::new(),
             capacity,
