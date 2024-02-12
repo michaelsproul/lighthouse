@@ -1510,11 +1510,13 @@ impl<AppReqId: ReqId, TSpec: EthSpec> Network<AppReqId, TSpec> {
         match event {
             identify::Event::Received { peer_id, mut info } => {
                 if info.listen_addrs.len() > MAX_IDENTIFY_ADDRESSES {
+                    info.listen_addrs.truncate(MAX_IDENTIFY_ADDRESSES);
                     debug!(
                         self.log,
-                        "More than 10 addresses have been identified, truncating"
+                        "More than 10 addresses have been identified, truncating";
+                        "peer_id" => peer_id,
+                        "listen_addrs" => ?info.listen_addrs
                     );
-                    info.listen_addrs.truncate(MAX_IDENTIFY_ADDRESSES);
                 }
                 // send peer info to the peer manager.
                 self.peer_manager_mut().identify(&peer_id, &info);
