@@ -438,9 +438,23 @@ impl<T: BeaconChainTypes> NetworkService<T> {
     fn spawn_service(mut self, executor: task_executor::TaskExecutor) {
         let mut shutdown_sender = executor.shutdown_sender();
 
+        let logger = self.log.clone();
+        let log_exceptional = move |t: &std::time::Instant, name: &str| {
+            let elapsed = t.elapsed();
+            if elapsed > Duration::from_millis(500) {
+                info!(
+                    logger,
+                    "Slow select";
+                    "name" => name,
+                    "time_ms" => elapsed.as_millis()
+                );
+            }
+        };
+
         // spawn on the current executor
         let service_fut = async move {
             loop {
+                let t = std::time::Instant::now();
                 tokio::select! {
                     _ = self.metrics_update.tick(), if self.metrics_enabled => {
                         // update various network metrics
@@ -450,31 +464,54 @@ impl<T: BeaconChainTypes> NetworkService<T> {
                             );
                         // update sync metrics
                         metrics::update_sync_metrics(&self.network_globals);
+                        log_exceptional(&t, "metrics");
                     }
 
-                    _ = self.gossipsub_parameter_update.tick() => self.update_gossipsub_parameters(),
+                    _ = self.gossipsub_parameter_update.tick() => {
+                        self.update_gossipsub_parameters();
+                        log_exceptional(&t, "gossipsub_params");
+                    }
 
                     // handle a message sent to the network
-                    Some(msg) = self.network_recv.recv() => self.on_network_msg(msg, &mut shutdown_sender).await,
+                    Some(msg) = self.network_recv.recv() => {
+                        self.on_network_msg(msg, &mut shutdown_sender).await;
+                        log_exceptional(&t, "on_network_msg");
+                    }
 
                     // handle a message from a validator requesting a subscription to a subnet
-                    Some(msg) = self.validator_subscription_recv.recv() => self.on_validator_subscription_msg(msg).await,
+                    Some(msg) = self.validator_subscription_recv.recv() => {
+                        self.on_validator_subscription_msg(msg).await;
+                        log_exceptional(&t, "on_validator_subscription");
+                    }
 
                     // process any attestation service events
-                    Some(msg) = self.attestation_service.next() => self.on_attestation_service_msg(msg),
+                    Some(msg) = self.attestation_service.next() => {
+                        self.on_attestation_service_msg(msg);
+                        log_exceptional(&t, "attestation_service");
+                    }
 
                     // process any sync committee service events
-                    Some(msg) = self.sync_committee_service.next() => self.on_sync_committee_service_message(msg),
+                    Some(msg) = self.sync_committee_service.next() => {
+                        self.on_sync_committee_service_message(msg);
+                        log_exceptional(&t, "sync_committee");
+                    }
 
-                    event = self.libp2p.next_event() => self.on_libp2p_event(event, &mut shutdown_sender).await,
+                    event = self.libp2p.next_event() => {
+                        self.on_libp2p_event(event, &mut shutdown_sender).await;
+                        log_exceptional(&t, "libp2p");
+                    }
 
-                    Some(_) = &mut self.next_fork_update => self.update_next_fork(),
+                    Some(_) = &mut self.next_fork_update => {
+                        self.update_next_fork();
+                        log_exceptional(&t, "update_next_fork");
+                    }
 
                     Some(_) = &mut self.next_unsubscribe => {
                         let new_enr_fork_id = self.beacon_chain.enr_fork_id();
                         self.libp2p.unsubscribe_from_fork_topics_except(new_enr_fork_id.fork_digest);
                         info!(self.log, "Unsubscribed from old fork topics");
                         self.next_unsubscribe = Box::pin(None.into());
+                        log_exceptional(&t, "next_unsubscribe");
                     }
 
                     Some(_) = &mut self.next_fork_subscriptions => {
@@ -484,12 +521,14 @@ impl<T: BeaconChainTypes> NetworkService<T> {
                             info!(self.log, "Subscribing to new fork topics");
                             self.libp2p.subscribe_new_fork_topics(fork_name, fork_digest);
                             self.next_fork_subscriptions = Box::pin(None.into());
+                            log_exceptional(&t, "next_fork_subscriptions");
                         }
                         else {
                             error!(self.log, "Fork subscription scheduled but no fork scheduled");
                         }
                     }
                 }
+                log_exceptional(&t, "global_select");
             }
         };
         executor.spawn(service_fut, "network");
