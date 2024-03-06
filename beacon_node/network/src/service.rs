@@ -441,7 +441,7 @@ impl<T: BeaconChainTypes> NetworkService<T> {
         let logger = self.log.clone();
         let log_exceptional = move |t: &std::time::Instant, name: &str| {
             let elapsed = t.elapsed();
-            if elapsed > Duration::from_millis(500) {
+            if elapsed > Duration::from_millis(50) {
                 info!(
                     logger,
                     "Slow select";
@@ -454,9 +454,9 @@ impl<T: BeaconChainTypes> NetworkService<T> {
         // spawn on the current executor
         let service_fut = async move {
             loop {
-                let t = std::time::Instant::now();
                 tokio::select! {
                     _ = self.metrics_update.tick(), if self.metrics_enabled => {
+                        let t = std::time::Instant::now();
                         // update various network metrics
                         metrics::update_gossip_metrics::<T::EthSpec>(
                             self.libp2p.gossipsub(),
@@ -468,45 +468,53 @@ impl<T: BeaconChainTypes> NetworkService<T> {
                     }
 
                     _ = self.gossipsub_parameter_update.tick() => {
+                        let t = std::time::Instant::now();
                         self.update_gossipsub_parameters();
                         log_exceptional(&t, "gossipsub_params");
                     }
 
                     // handle a message sent to the network
                     Some(msg) = self.network_recv.recv() => {
+                        let t = std::time::Instant::now();
                         self.on_network_msg(msg, &mut shutdown_sender).await;
                         log_exceptional(&t, "on_network_msg");
                     }
 
                     // handle a message from a validator requesting a subscription to a subnet
                     Some(msg) = self.validator_subscription_recv.recv() => {
+                        let t = std::time::Instant::now();
                         self.on_validator_subscription_msg(msg).await;
                         log_exceptional(&t, "on_validator_subscription");
                     }
 
                     // process any attestation service events
                     Some(msg) = self.attestation_service.next() => {
+                        let t = std::time::Instant::now();
                         self.on_attestation_service_msg(msg);
                         log_exceptional(&t, "attestation_service");
                     }
 
                     // process any sync committee service events
                     Some(msg) = self.sync_committee_service.next() => {
+                        let t = std::time::Instant::now();
                         self.on_sync_committee_service_message(msg);
                         log_exceptional(&t, "sync_committee");
                     }
 
                     event = self.libp2p.next_event() => {
+                        let t = std::time::Instant::now();
                         self.on_libp2p_event(event, &mut shutdown_sender).await;
                         log_exceptional(&t, "libp2p");
                     }
 
                     Some(_) = &mut self.next_fork_update => {
+                        let t = std::time::Instant::now();
                         self.update_next_fork();
                         log_exceptional(&t, "update_next_fork");
                     }
 
                     Some(_) = &mut self.next_unsubscribe => {
+                        let t = std::time::Instant::now();
                         let new_enr_fork_id = self.beacon_chain.enr_fork_id();
                         self.libp2p.unsubscribe_from_fork_topics_except(new_enr_fork_id.fork_digest);
                         info!(self.log, "Unsubscribed from old fork topics");
@@ -515,6 +523,7 @@ impl<T: BeaconChainTypes> NetworkService<T> {
                     }
 
                     Some(_) = &mut self.next_fork_subscriptions => {
+                        let t = std::time::Instant::now();
                         if let Some((fork_name, _)) = self.beacon_chain.duration_to_next_fork() {
                             let fork_version = self.beacon_chain.spec.fork_version_for_name(fork_name);
                             let fork_digest = ChainSpec::compute_fork_digest(fork_version, self.beacon_chain.genesis_validators_root);
@@ -528,7 +537,6 @@ impl<T: BeaconChainTypes> NetworkService<T> {
                         }
                     }
                 }
-                log_exceptional(&t, "global_select");
             }
         };
         executor.spawn(service_fut, "network");
