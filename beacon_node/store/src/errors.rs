@@ -2,6 +2,7 @@ use crate::chunked_vector::ChunkError;
 use crate::config::StoreConfigError;
 use crate::hdiff;
 use crate::hot_cold_store::HotColdDBError;
+use promise_cache::PromiseCacheError;
 use ssz::DecodeError;
 use state_processing::BlockReplayError;
 use types::{milhouse, BeaconStateError, Epoch, EpochCacheError, Hash256, InconsistentFork, Slot};
@@ -77,6 +78,7 @@ pub enum Error {
     InconsistentFork(InconsistentFork),
     ZeroCacheSize,
     CacheBuildError(EpochCacheError),
+    CachedComputationError,
 }
 
 pub trait HandleUnavailable<T> {
@@ -156,6 +158,15 @@ impl From<InconsistentFork> for Error {
 impl From<EpochCacheError> for Error {
     fn from(e: EpochCacheError) -> Error {
         Error::CacheBuildError(e)
+    }
+}
+
+impl From<PromiseCacheError<Error>> for Error {
+    fn from(e: PromiseCacheError<Error>) -> Error {
+        match e {
+            PromiseCacheError::Error(Some(e)) => e,
+            _ => Error::CachedComputationError,
+        }
     }
 }
 

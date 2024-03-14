@@ -32,3 +32,4 @@ bls = { workspace = true }
 smallvec = { workspace = true }
 logging = { workspace = true }
 superstruct = { workspace = true }
+promise_cache = { path = "../../common/promise_cache" }
