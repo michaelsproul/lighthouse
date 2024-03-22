@@ -31,7 +31,7 @@ use store::metadata::STATE_UPPER_LIMIT_NO_RETAIN;
 use store::{
     config::StoreConfigError,
     iter::{BlockRootsIterator, StateRootsIterator},
-    BlobInfo, Error as StoreError, HotColdDB, LevelDB, StoreConfig,
+    BlobInfo, Error as StoreError, HotColdDB, KeyValueStore, LevelDB, StoreConfig,
 };
 use tempfile::{tempdir, TempDir};
 use types::test_utils::{SeedableRng, XorShiftRng};
@@ -3285,9 +3285,11 @@ async fn prune_historic_states() {
         assert!(store.get_state(&state_root, Some(slot)).unwrap().is_some());
     }
 
+    let mut ops = vec![];
     store
-        .prune_historic_states(genesis_state_root, &genesis_state)
+        .prune_historic_states(genesis_state_root, &genesis_state, &mut ops)
         .unwrap();
+    store.cold_db.do_atomically(ops).unwrap();
 
     // Check that anchor info is updated.
     let anchor_info = store.get_anchor_info().unwrap();

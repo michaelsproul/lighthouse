@@ -24,7 +24,7 @@ use itertools::process_results;
 use leveldb::iterator::LevelDBIterator;
 use lru::LruCache;
 use parking_lot::{Mutex, RwLock};
-use promise_cache::PromiseCache;
+use promise_cache::{Promise, PromiseCache};
 use safe_arith::SafeArith;
 use serde::{Deserialize, Serialize};
 use slog::{debug, error, info, trace, warn, Logger};
@@ -42,6 +42,7 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use tailcall::tailcall;
 use types::blob_sidecar::BlobSidecarList;
 use types::*;
 use zstd::{Decoder, Encoder};
@@ -77,7 +78,7 @@ pub struct HotColdDB<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     ///
     /// LOCK ORDERING: this lock must always be locked *after* the `split` if both are required.
     state_cache: Mutex<StateCache<E>>,
-    state_promise_cache: PromiseCache<Hash256, Option<BeaconState<E>>>,
+    state_promise_cache: PromiseCache<Hash256, BeaconState<E>>,
     /// Immutable validator cache.
     pub immutable_validators: Arc<RwLock<ValidatorPubkeyCache<E, Hot, Cold>>>,
     /// LRU cache of replayed states.
@@ -404,6 +405,205 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
                     .into()
                 })
             })
+    }
+}
+
+enum CurrentState<E: EthSpec> {
+    State(BeaconState<E>),
+    Buffer(Slot, HDiffBuffer),
+}
+
+impl<E: EthSpec> CurrentState<E> {
+    fn slot(&self) -> Slot {
+        match self {
+            Self::State(state) => state.slot(),
+            Self::Buffer(slot, _) => *slot,
+        }
+    }
+
+    fn into_state(self, spec: &ChainSpec) -> Result<BeaconState<E>, crate::hdiff::Error> {
+        match self {
+            Self::State(state) => Ok(state),
+            Self::Buffer(_, buffer) => buffer.into_state(spec),
+        }
+    }
+
+    fn into_buffer(self) -> HDiffBuffer {
+        match self {
+            Self::State(state) => HDiffBuffer::from_state(state),
+            Self::Buffer(_, buffer) => buffer,
+        }
+    }
+}
+
+/// - diffs_to_apply: diffs in slot-descending order
+/// - promises_to_resolve: promises in slot-descending order
+/// - state_root_iter: in slot-descending order
+#[tailcall]
+pub fn get_hot_state_and_apply<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
+    store: &HotColdDB<E, Hot, Cold>,
+    state_root: Hash256,
+    final_state_slot: Option<Slot>,
+    mut diffs_to_apply: Vec<(Slot, Slot, HDiff)>,
+    mut blocks_to_apply: Vec<SignedBlindedBeaconBlock<E>>,
+    mut state_root_iter: Vec<(Hash256, Slot)>,
+    mut latest_block: Option<SignedBlindedBeaconBlock<E>>,
+    mut promises_to_resolve: Vec<promise_cache::Sender<BeaconState<E>>>,
+) -> Result<Option<BeaconState<E>>, Error> {
+    // Check state cache.
+    let mut cached_state: Option<BeaconState<E>> =
+        store.state_cache.lock().get_by_state_root(state_root);
+    let mut promise = None;
+
+    if cached_state.is_none() {
+        match store.state_promise_cache.get_or_create_promise(state_root) {
+            Promise::Wait(recv) => {
+                if let Ok(state) = recv.recv() {
+                    let s: BeaconState<E> = state;
+                    cached_state = Some(s);
+                }
+            }
+            Promise::Ready(state) => {
+                cached_state = Some(state);
+            }
+            Promise::Compute(sender) => {
+                promise = Some(sender);
+            }
+        }
+    }
+
+    // If the state is the finalized state, load it from disk. This should only be necessary
+    // once during start-up, after which point the finalized state will be cached.
+    if cached_state.is_none() && state_root == store.get_split_info().state_root {
+        let (split_state, _) = store.load_hot_state_full(&state_root)?;
+        cached_state = Some(split_state);
+    }
+
+    if let Some(start_state) = cached_state {
+        // Base case: apply accumulated diffs and blocks.
+        let mut current_state = CurrentState::State(start_state);
+        loop {
+            if diffs_to_apply
+                .last()
+                .map_or(false, |(diff_base_slot, _, _)| {
+                    *diff_base_slot == current_state.slot()
+                })
+            {
+                let (_, target_slot, diff) = diffs_to_apply.pop().unwrap();
+                let mut buffer = current_state.into_buffer();
+                diff.apply(&mut buffer).unwrap();
+                current_state = CurrentState::Buffer(target_slot, buffer);
+            } else if let Some(block) = blocks_to_apply.pop() {
+                // Take state roots until reaching the slot of the current state.
+                let mut state_roots = vec![];
+                while state_root_iter
+                    .last()
+                    .map_or(false, |(_, slot)| *slot <= block.slot())
+                {
+                    if let Some(elem) = state_root_iter.pop() {
+                        state_roots.push(elem);
+                    }
+                }
+
+                // Replay blocks.
+                let target_slot = block.slot();
+                let state = current_state.into_state(&store.spec).unwrap();
+                // TODO: resolve promises & cache in pre-slot hook?
+                let replayed_state = store
+                    .replay_blocks(
+                        state,
+                        vec![block],
+                        target_slot,
+                        state_roots.into_iter().map(Ok),
+                        None,
+                    )
+                    .unwrap();
+                current_state = CurrentState::State(replayed_state);
+            } else {
+                assert!(diffs_to_apply.is_empty());
+                let state = current_state.into_state(&store.spec).unwrap();
+                let advanced_state = if let Some(target_slot) = final_state_slot {
+                    store
+                        .replay_blocks(
+                            state,
+                            vec![],
+                            target_slot,
+                            state_root_iter.into_iter().rev().map(Ok),
+                            None,
+                        )
+                        .unwrap()
+                } else {
+                    state
+                };
+                current_state = CurrentState::State(advanced_state);
+                break;
+            }
+        }
+        Ok(Some(current_state.into_state(&store.spec).unwrap()))
+    } else {
+        if let Some(sender) = promise {
+            promises_to_resolve.push(sender);
+        }
+
+        // Load hot state summary.
+        let Some(state_summary) = store.load_hot_state_summary(&state_root)? else {
+            return Ok(None);
+        };
+
+        state_root_iter.push((state_root, state_summary.slot));
+
+        // If the state is a diff state, load the diff and apply it to the diff base state.
+        let base_state_root = if !state_summary.diff_base_state_root.is_zero() {
+            let diff = store.load_hot_state_diff(state_root)?;
+            diffs_to_apply.push((state_summary.diff_base_slot, state_summary.slot, diff));
+            latest_block = None;
+            state_summary.diff_base_state_root
+        }
+        // Otherwise if there is no diff, iterate back until the most recently applied block.
+        else {
+            if latest_block.is_none()
+                && state_summary.latest_block_root != store.get_split_info().block_root
+            {
+                latest_block = Some(
+                    store
+                        .get_hot_blinded_block(&state_summary.latest_block_root)?
+                        .ok_or(Error::BlockNotFound(state_summary.latest_block_root))?,
+                );
+            }
+            latest_block = if let Some(block) = latest_block {
+                if block.slot() == state_summary.slot {
+                    // Stage this block for application.
+                    blocks_to_apply.push(block);
+                    None
+                } else {
+                    Some(block)
+                }
+            } else {
+                None
+            };
+            state_summary.prev_state_root
+        };
+
+        debug!(
+            store.log,
+            "recursing from {} at {} to {}, diffs: {}, blocks: {}, latest_block? {}",
+            state_root,
+            state_summary.slot,
+            base_state_root,
+            diffs_to_apply.len(),
+            blocks_to_apply.len(),
+            latest_block.is_some()
+        );
+        get_hot_state_and_apply(
+            store,
+            base_state_root,
+            final_state_slot.or(Some(state_summary.slot)),
+            diffs_to_apply,
+            blocks_to_apply,
+            state_root_iter,
+            latest_block,
+            promises_to_resolve,
+        )
     }
 }
 
@@ -1332,6 +1532,17 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
 
     /// Get a post-finalization state from the database or store.
     pub fn get_hot_state(&self, state_root: &Hash256) -> Result<Option<BeaconState<E>>, Error> {
+        get_hot_state_and_apply(
+            self,
+            *state_root,
+            None,
+            vec![],
+            vec![],
+            vec![],
+            None,
+            vec![],
+        )
+        /*
         if let Some(state) = self.state_cache.lock().get_by_state_root(*state_root) {
             return Ok(Some(state));
         }
@@ -1353,6 +1564,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
                 Ok(None)
             }
         })?)
+        */
     }
 
     /// Load a post-finalization state from the hot database.
@@ -2947,12 +3159,17 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
             StorageStrategy::ReplayFrom(..)
         ) {
             // Store slot -> state_root and state_root -> slot mappings.
+            debug!(
+                store.log,
+                "Storing cold state summary";
+                "slot" => slot,
+            );
             store.store_cold_state_summary(&state_root, slot, &mut cold_db_ops)?;
         } else {
             let state: BeaconState<E> = store
                 .get_hot_state(&state_root)?
                 .ok_or(HotColdDBError::MissingStateToFreeze(state_root))?;
-
+            assert_eq!(state.slot(), slot);
             store.store_cold_state(&state_root, &state, &mut cold_db_ops)?;
         }
 

@@ -10,9 +10,10 @@
 //! values (identified by some key), allowing additional threads to simply wait for already ongoing
 //! computations instead of needlessly also running that computation. Refer to [`PromiseCache`] for
 //! usage instructions.
+pub use oneshot_broadcast::Sender;
 use oneshot_broadcast::{oneshot, Receiver};
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 use std::hash::Hash;
 
 /// Caches computation of a value `V` identified by a key `K`.
@@ -22,7 +23,7 @@ where
     K: Hash + Eq + Clone,
     V: Clone,
 {
-    cache: Mutex<HashMap<K, Receiver<Result<V, ()>>>>,
+    cache: Mutex<HashMap<K, Receiver<V>>>,
 }
 
 /// Returned by [`PromiseCache::get_or_compute`] when a computation fails.
@@ -35,6 +36,15 @@ pub enum PromiseCacheError<E> {
     Panic,
 }
 
+pub enum Promise<V: Clone> {
+    /// A finished computation was cached.
+    Ready(V),
+    /// Another thread is computing the value so the caller should await that computation.
+    Wait(Receiver<V>),
+    /// No other threads are computing this value, so the caller should compute it.
+    Compute(Sender<V>),
+}
+
 impl<K, V> PromiseCache<K, V>
 where
     K: Hash + Eq + Clone,
@@ -44,6 +54,43 @@ where
         Self {
             cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn get_or_create_promise(&self, key: K) -> Promise<V> {
+        let mut cache = self.cache.lock();
+        match cache.entry(key) {
+            Entry::Occupied(mut entry) => {
+                let recv = entry.get();
+                match recv.try_recv() {
+                    Ok(None) => {
+                        // An on-going calculation exists and isn't finished. Wait for it.
+                        Promise::Wait(recv.clone())
+                    }
+                    Ok(Some(value)) => {
+                        // An on-going calculation has already completed. Return the value and
+                        // flush the spent receiver from the cache.
+                        entry.remove();
+                        Promise::Ready(value)
+                    }
+                    Err(_) => {
+                        // Previous caller failed, we will succeed where they failed.
+                        let (sender, recv) = oneshot();
+                        entry.insert(recv);
+                        Promise::Compute(sender)
+                    }
+                }
+            }
+            Entry::Vacant(entry) => {
+                let (sender, recv) = oneshot();
+                entry.insert(recv);
+                Promise::Compute(sender)
+            }
+        }
+    }
+
+    pub fn resolve_promise(&self, key: &K, value: V, promise: Sender<V>) {
+        promise.send(value);
+        self.cache.lock().remove(key);
     }
 
     /// Compute a value for the specified key or wait for an already ongoing computation.
@@ -73,18 +120,20 @@ where
             Some(item) => {
                 let item = item.clone();
                 drop(cache);
-                item.recv()
-                    .map_err(|_| PromiseCacheError::Panic)
-                    .and_then(|res| res.map_err(|_| PromiseCacheError::Error(None)))
+                item.recv().map_err(|_| PromiseCacheError::Panic)
             }
             None => {
                 let (sender, receiver) = oneshot();
                 cache.insert(key.clone(), receiver);
                 drop(cache);
-                let result = computation();
-                sender.send(result.as_ref().cloned().map_err(|_| ()));
-                self.cache.lock().remove(key);
-                result.map_err(|e| PromiseCacheError::Error(Some(e)))
+                match computation() {
+                    Ok(value) => {
+                        sender.send(value.clone());
+                        self.cache.lock().remove(key);
+                        Ok(value)
+                    }
+                    Err(e) => Err(PromiseCacheError::Error(Some(e))),
+                }
             }
         }
     }
