@@ -451,6 +451,7 @@ pub fn get_hot_state_and_apply<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>
     mut promises_to_resolve: Vec<promise_cache::Sender<BeaconState<E>>>,
 ) -> Result<Option<BeaconState<E>>, Error> {
     // Check state cache.
+    let split = store.split.read_recursive();
     let mut cached_state: Option<BeaconState<E>> =
         store.state_cache.lock().get_by_state_root(state_root);
     let mut promise = None;
@@ -474,7 +475,7 @@ pub fn get_hot_state_and_apply<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>
 
     // If the state is the finalized state, load it from disk. This should only be necessary
     // once during start-up, after which point the finalized state will be cached.
-    if cached_state.is_none() && state_root == store.get_split_info().state_root {
+    if cached_state.is_none() && state_root == split.state_root {
         let (split_state, _) = store.load_hot_state_full(&state_root)?;
         cached_state = Some(split_state);
     }
@@ -552,8 +553,20 @@ pub fn get_hot_state_and_apply<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>
 
         state_root_iter.push((state_root, state_summary.slot));
 
+        // Ensure the latest block for this state is loaded. If it has been deleted, then the state
+        // is considered deleted too and will be cleaned up in a future finalization migration.
+        if latest_block.is_none() && state_summary.latest_block_root != split.block_root {
+            if let Some(block) = store.get_hot_blinded_block(&state_summary.latest_block_root)? {
+                latest_block = Some(block);
+            } else {
+                return Ok(None);
+            }
+        }
+
         // If the state is a diff state, load the diff and apply it to the diff base state.
-        let base_state_root = if !state_summary.diff_base_state_root.is_zero() {
+        let base_state_root = if !state_summary.diff_base_state_root.is_zero()
+            && state_summary.diff_base_slot >= split.slot
+        {
             let diff = store.load_hot_state_diff(state_root)?;
             diffs_to_apply.push((state_summary.diff_base_slot, state_summary.slot, diff));
             latest_block = None;
@@ -561,15 +574,6 @@ pub fn get_hot_state_and_apply<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>
         }
         // Otherwise if there is no diff, iterate back until the most recently applied block.
         else {
-            if latest_block.is_none()
-                && state_summary.latest_block_root != store.get_split_info().block_root
-            {
-                latest_block = Some(
-                    store
-                        .get_hot_blinded_block(&state_summary.latest_block_root)?
-                        .ok_or(Error::BlockNotFound(state_summary.latest_block_root))?,
-                );
-            }
             latest_block = if let Some(block) = latest_block {
                 if block.slot() == state_summary.slot {
                     // Stage this block for application.
