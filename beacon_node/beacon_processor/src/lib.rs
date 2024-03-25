@@ -944,9 +944,9 @@ impl<E: EthSpec> BeaconProcessor<E> {
                     // We don't check the `work.drop_during_sync` here. We assume that if it made
                     // it into the queue at any point then we should process it.
                     None if can_spawn => {
-                        // Check for chain segments first, they're the most efficient way to get
-                        // blocks into the system.
-                        if let Some(item) = chain_segment_queue.pop() {
+                        if let Some(item) = status_queue.pop() {
+                            self.spawn_worker(item, idle_tx);
+                        } else if let Some(item) = chain_segment_queue.pop() {
                             self.spawn_worker(item, idle_tx);
                         // Check sync blocks before gossip blocks, since we've already explicitly
                         // requested these blocks.
@@ -1099,11 +1099,6 @@ impl<E: EthSpec> BeaconProcessor<E> {
                         } else if let Some(item) = unknown_block_aggregate_queue.pop() {
                             self.spawn_worker(item, idle_tx);
                         } else if let Some(item) = unknown_block_attestation_queue.pop() {
-                            self.spawn_worker(item, idle_tx);
-                        // Check RPC methods next. Status messages are needed for sync so
-                        // prioritize them over syncing requests from other peers (BlocksByRange
-                        // and BlocksByRoot)
-                        } else if let Some(item) = status_queue.pop() {
                             self.spawn_worker(item, idle_tx);
                         } else if let Some(item) = bbrange_queue.pop() {
                             self.spawn_worker(item, idle_tx);

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use task_executor::TaskExecutor;
 use tokio_stream::StreamExt;
 use types::blob_sidecar::BlobIdentifier;
-use types::{Epoch, EthSpec, ForkName, Hash256, Slot};
+use types::{EthSpec, ForkName, Hash256, Slot};
 
 impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     /* Auxiliary functions */
@@ -67,7 +67,6 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         remote: &StatusMessage,
     ) -> Result<Option<String>, BeaconChainError> {
         let local = self.chain.status_message();
-        let start_slot = |epoch: Epoch| epoch.start_slot(T::EthSpec::slots_per_epoch());
 
         let irrelevant_reason = if local.fork_digest != remote.fork_digest {
             // The node is on a different network/fork
@@ -90,10 +89,12 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         } else if remote.finalized_epoch <= local.finalized_epoch
             && remote.finalized_root != Hash256::zero()
             && local.finalized_root != Hash256::zero()
-            && self
-                .chain
-                .block_root_at_slot(start_slot(remote.finalized_epoch), WhenSlotSkipped::Prev)
-                .map(|root_opt| root_opt != Some(remote.finalized_root))?
+        /* FIXME(sproul): killed temporarily
+        && self
+            .chain
+            .block_root_at_slot(start_slot(remote.finalized_epoch), WhenSlotSkipped::Prev)
+            .map(|root_opt| root_opt != Some(remote.finalized_root))?
+        */
         {
             // The remote's finalized epoch is less than or equal to ours, but the block root is
             // different to the one in our chain. Therefore, the node is on a different chain and we
