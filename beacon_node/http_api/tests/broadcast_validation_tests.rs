@@ -657,6 +657,8 @@ pub async fn equivocation_consensus_late_equivocation() {
 
     let channel = tokio::sync::mpsc::unbounded_channel();
 
+    // tester.harness.chain.
+
     let publication_result = publish_block(
         None,
         ProvenancedBlock::local(gossip_block_contents_b.unwrap()),

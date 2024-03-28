@@ -684,18 +684,6 @@ pub trait IntoGossipVerifiedBlock<T: BeaconChainTypes>: Sized {
     fn inner_block(&self) -> &SignedBeaconBlock<T::EthSpec>;
 }
 
-impl<T: BeaconChainTypes> IntoGossipVerifiedBlock<T> for GossipVerifiedBlock<T> {
-    fn into_gossip_verified_block(
-        self,
-        _chain: &BeaconChain<T>,
-    ) -> Result<GossipVerifiedBlock<T>, BlockError<T::EthSpec>> {
-        Ok(self)
-    }
-    fn inner_block(&self) -> &SignedBeaconBlock<T::EthSpec> {
-        self.block.as_block()
-    }
-}
-
 impl<T: BeaconChainTypes> IntoGossipVerifiedBlock<T> for Arc<SignedBeaconBlock<T::EthSpec>> {
     fn into_gossip_verified_block(
         self,
