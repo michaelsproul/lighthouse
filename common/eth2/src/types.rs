@@ -1802,36 +1802,39 @@ impl<T: EthSpec> PublishBlockRequest<T> {
 /// Converting from a `SignedBlindedBeaconBlock` into a full `SignedBlockContents`.
 pub fn into_full_block_and_blobs<T: EthSpec>(
     blinded_block: SignedBlindedBeaconBlock<T>,
-    maybe_full_payload_contents: Option<FullPayloadContents<T>>,
-) -> Result<(Arc<SignedBeaconBlock<T>>, Option<(Vec<Blob<T>>, Vec<KzgProof)>)>, String> {
+    maybe_full_payload_contents: FullPayloadContents<T>,
+) -> Result<(Arc<SignedBeaconBlock<T>>, Vec<(Blob<T>, KzgProof)>), String> {
     match maybe_full_payload_contents {
-        None => {
-            let signed_block = blinded_block
-                .try_into_full_block(None)
-                .ok_or("Failed to build full block with payload".to_string())?;
-
-            Ok(PublishBlockRequest::new(Arc::new(signed_block), None))
-        }
         // This variant implies a pre-deneb block
-        Some(FullPayloadContents::Payload(execution_payload)) => {
+        FullPayloadContents::Payload(execution_payload) => {
             let signed_block = blinded_block
                 .try_into_full_block(Some(execution_payload))
                 .ok_or("Failed to build full block with payload".to_string())?;
-            Ok(PublishBlockRequest::new(Arc::new(signed_block), None))
+            Ok((Arc::new(signed_block), vec![]))
         }
         // This variant implies a post-deneb block
-        Some(FullPayloadContents::PayloadAndBlobs(payload_and_blobs)) => {
+        FullPayloadContents::PayloadAndBlobs(payload_and_blobs) => {
+            let ExecutionPayloadAndBlobs {
+                execution_payload,
+                blobs_bundle,
+            } = payload_and_blobs;
             let signed_block = blinded_block
-                .try_into_full_block(Some(payload_and_blobs.execution_payload))
+                .try_into_full_block(Some(execution_payload))
                 .ok_or("Failed to build full block with payload".to_string())?;
 
-            Ok(PublishBlockRequest::new(
-                Arc::new(signed_block),
-                Some((
-                    payload_and_blobs.blobs_bundle.proofs,
-                    payload_and_blobs.blobs_bundle.blobs,
-                )),
-            ))
+            let BlobsBundle {
+                commitments: _,
+                proofs,
+                blobs,
+            } = blobs_bundle;
+            let blob_contents = proofs
+                .to_vec()
+                .into_iter()
+                .zip(blobs.to_vec().into_iter())
+                .map(|(proof, blob)| (blob, proof))
+                .collect::<Vec<_>>();
+
+            Ok((Arc::new(signed_block), blob_contents))
         }
     }
 }

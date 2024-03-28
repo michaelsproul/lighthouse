@@ -23,7 +23,7 @@ use tree_hash::TreeHash;
 use types::{
     AbstractExecPayload, BeaconBlockRef, Blob, BlobSidecar, ExecPayload, ExecutionBlockHash,
     ForkName, FullPayload, FullPayloadMerge, Hash256, KzgProof, SignedBeaconBlock,
-    SignedBlindedBeaconBlock, Slot,
+    SignedBlindedBeaconBlock, Slot, VariableList,
 };
 use warp::http::StatusCode;
 use warp::{reply::Response, Rejection, Reply};
@@ -497,14 +497,17 @@ pub async fn reconstruct_block<T: BeaconChainTypes>(
     match full_payload_opt {
         // A block without a payload is pre-merge and we consider it locally
         // built.
-        None => into_full_block_and_blobs(block, None).map(ProvenancedBlock::local),
+        None => block
+            .try_into_full_block(None)
+            .ok_or("Failed to build full block with payload".to_string())
+            .map(|full_block| ProvenancedBlock::local(Arc::new(full_block), vec![])),
         Some(ProvenancedPayload::Local(full_payload_contents)) => {
-            into_full_block_and_blobs(block, Some(full_payload_contents))
-                .map(ProvenancedBlock::local)
+            into_full_block_and_blobs(block, full_payload_contents)
+                .map(|(block, blobs)| ProvenancedBlock::local(block, blobs))
         }
         Some(ProvenancedPayload::Builder(full_payload_contents)) => {
-            into_full_block_and_blobs(block, Some(full_payload_contents))
-                .map(ProvenancedBlock::builder)
+            into_full_block_and_blobs(block, full_payload_contents)
+                .map(|(block, blobs)| ProvenancedBlock::builder(block, blobs))
         }
     }
     .map_err(|e| {
