@@ -75,8 +75,7 @@ pub use beacon_fork_choice_store::{BeaconForkChoiceStore, Error as ForkChoiceSto
 pub use block_verification::{
     get_block_root, BlockError, ExecutionPayloadError, ExecutionPendingBlock, GossipVerifiedBlock,
     IntoBlobSidecar, IntoExecutionPendingBlock, IntoGossipVerifiedBlock,
-    IntoGossipVerifiedBlockContents, PayloadVerificationOutcome, PayloadVerificationStatus,
-    YetAnotherBlockType,
+    PayloadVerificationOutcome, PayloadVerificationStatus, YetAnotherBlockType,
 };
 pub use block_verification_types::AvailabilityPendingExecutedBlock;
 pub use block_verification_types::ExecutedBlock;

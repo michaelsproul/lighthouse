@@ -68,7 +68,7 @@ use crate::{
     metrics, BeaconChain, BeaconChainError, BeaconChainTypes,
 };
 use derivative::Derivative;
-use eth2::types::{EventKind, PublishBlockRequest};
+use eth2::types::EventKind;
 use execution_layer::PayloadStatus;
 pub use fork_choice::{AttestationFromBlock, PayloadVerificationStatus};
 use kzg::KzgProof;
@@ -754,22 +754,6 @@ pub type YetAnotherBlockType<T> = (
     Arc<SignedBeaconBlock<<T as BeaconChainTypes>::EthSpec>>,
     Vec<(Blob<<T as BeaconChainTypes>::EthSpec>, KzgProof)>,
 );
-
-pub trait IntoGossipVerifiedBlockContents<T: BeaconChainTypes> {
-    fn parts(self) -> YetAnotherBlockType<T>;
-}
-
-impl<T: BeaconChainTypes> IntoGossipVerifiedBlockContents<T> for YetAnotherBlockType<T> {
-    fn parts(self) -> YetAnotherBlockType<T> {
-        (self.0, self.1)
-    }
-}
-
-impl<T: BeaconChainTypes> IntoGossipVerifiedBlockContents<T> for PublishBlockRequest<T::EthSpec> {
-    fn parts(self) -> YetAnotherBlockType<T> {
-        todo!()
-    }
-}
 
 impl<T: BeaconChainTypes> GossipVerifiedBlock<T> {
     /// Instantiates `Self`, a wrapper that indicates the given `block` is safe to be re-gossiped

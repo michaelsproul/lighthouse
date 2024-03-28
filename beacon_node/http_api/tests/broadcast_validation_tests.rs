@@ -1,6 +1,6 @@
 use beacon_chain::{
     test_utils::{AttestationStrategy, BlockStrategy},
-    GossipVerifiedBlock, IntoGossipVerifiedBlockContents,
+    GossipVerifiedBlock,
 };
 use eth2::reqwest::StatusCode;
 use eth2::types::{BroadcastValidation, PublishBlockRequest};
