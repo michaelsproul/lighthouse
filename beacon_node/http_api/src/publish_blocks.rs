@@ -5,7 +5,7 @@ use beacon_chain::block_verification_types::AsBlock;
 use beacon_chain::validator_monitor::{get_block_delay_ms, timestamp_now};
 use beacon_chain::{
     AvailabilityProcessingStatus, BeaconChain, BeaconChainError, BeaconChainTypes, BlockError,
-    IntoBlobSidecar, IntoGossipVerifiedBlock, NotifyExecutionLayer, YetAnotherBlockType,
+    IntoGossipVerifiedBlock, NotifyExecutionLayer, YetAnotherBlockType,
 };
 use eth2::types::{BlobsBundle, BroadcastValidation, PublishBlockRequest, SignedBlockContents};
 use eth2::types::{ExecutionPayloadAndBlobs, FullPayloadContents};
@@ -137,8 +137,11 @@ pub async fn publish_block<T: BeaconChainTypes>(
     let mut blob_sidecars = unverified_blobs
         .into_iter()
         .enumerate()
-        .map(|(i, unverified_blob)| {
-            IntoBlobSidecar::<T>::into_blob_sidecar(unverified_blob, i, &block)
+        .map(|(i, (unverified_blob, proof))| {
+            //TODO(sean) restore metric
+            // let _timer = metrics::start_timer(&metrics::BLOB_SIDECAR_INCLUSION_PROOF_COMPUTATION);
+            let blob_sidecar = BlobSidecar::new(i, unverified_blob, &block, proof).map(Arc::new);
+            blob_sidecar
                 .map_err(|e| {
                     error!(
                         log,

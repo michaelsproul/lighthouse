@@ -97,10 +97,9 @@ use store::{Error as DBError, HotStateSummary, KeyValueStore, StoreOp};
 use task_executor::JoinHandle;
 use tree_hash::TreeHash;
 use types::{
-    blob_sidecar::BlobSidecarError, BeaconBlockRef, BeaconState, BeaconStateError, Blob,
-    BlobSidecar, ChainSpec, CloneConfig, Epoch, EthSpec, ExecPayload, ExecutionBlockHash, Hash256,
-    InconsistentFork, PublicKey, PublicKeyBytes, RelativeEpoch, SignedBeaconBlock,
-    SignedBeaconBlockHeader, Slot,
+    BeaconBlockRef, BeaconState, BeaconStateError, Blob, ChainSpec, CloneConfig, Epoch, EthSpec,
+    ExecPayload, ExecutionBlockHash, Hash256, InconsistentFork, PublicKey, PublicKeyBytes,
+    RelativeEpoch, SignedBeaconBlock, SignedBeaconBlockHeader, Slot,
 };
 
 pub const POS_PANDA_BANNER: &str = r#"
@@ -694,25 +693,6 @@ impl<T: BeaconChainTypes> IntoGossipVerifiedBlock<T> for Arc<SignedBeaconBlock<T
 
     fn inner_block(&self) -> &SignedBeaconBlock<T::EthSpec> {
         self.as_ref()
-    }
-}
-
-pub trait IntoBlobSidecar<T: BeaconChainTypes>: Sized {
-    fn into_blob_sidecar(
-        self,
-        blob_index: usize,
-        block: &SignedBeaconBlock<T::EthSpec>,
-    ) -> Result<Arc<BlobSidecar<T::EthSpec>>, BlobSidecarError>;
-}
-
-impl<T: BeaconChainTypes> IntoBlobSidecar<T> for (Blob<T::EthSpec>, KzgProof) {
-    fn into_blob_sidecar(
-        self,
-        blob_index: usize,
-        block: &SignedBeaconBlock<T::EthSpec>,
-    ) -> Result<Arc<BlobSidecar<T::EthSpec>>, BlobSidecarError> {
-        let _timer = metrics::start_timer(&metrics::BLOB_SIDECAR_INCLUSION_PROOF_COMPUTATION);
-        BlobSidecar::new(blob_index, self.0, block, self.1).map(Arc::new)
     }
 }
 
