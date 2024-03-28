@@ -5,7 +5,7 @@ use beacon_chain::block_verification_types::AsBlock;
 use beacon_chain::validator_monitor::{get_block_delay_ms, timestamp_now};
 use beacon_chain::{
     AvailabilityProcessingStatus, BeaconChain, BeaconChainError, BeaconChainTypes, BlockError,
-    IntoGossipVerifiedBlock, NotifyExecutionLayer, YetAnotherBlockType,
+    GossipVerifiedBlock, NotifyExecutionLayer, YetAnotherBlockType,
 };
 use eth2::types::{BlobsBundle, BroadcastValidation, PublishBlockRequest, SignedBlockContents};
 use eth2::types::{ExecutionPayloadAndBlobs, FullPayloadContents};
@@ -160,7 +160,7 @@ pub async fn publish_block<T: BeaconChainTypes>(
         .collect::<Result<Vec<_>, Rejection>>()?;
 
     // Gossip verify the block and blobs separately.
-    let gossip_verified_block_result = unverified_block.into_gossip_verified_block(&chain);
+    let gossip_verified_block_result = GossipVerifiedBlock::new(unverified_block, &chain);
     let gossip_verified_blobs = blob_sidecars
         .iter_mut()
         .enumerate()
