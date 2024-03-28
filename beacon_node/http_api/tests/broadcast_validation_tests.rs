@@ -362,8 +362,7 @@ pub async fn consensus_partial_pass_only_consensus() {
     assert_eq!(block_b.state_root(), state_after_b.tree_hash_root());
     assert_ne!(block_a.state_root(), block_b.state_root());
 
-    let gossip_block_contents_b = PublishBlockRequest::new(block_b, blobs_b)
-        .into_gossip_verified_block(&tester.harness.chain);
+    let gossip_block_contents_b = PublishBlockRequest::new(block_b, blobs_b).parts();
     assert!(gossip_block_contents_b.is_ok());
     let gossip_block_a = GossipVerifiedBlock::new(block_a.clone().into(), &tester.harness.chain);
     assert!(gossip_block_a.is_err());
@@ -651,11 +650,9 @@ pub async fn equivocation_consensus_late_equivocation() {
     assert_eq!(block_b.state_root(), state_after_b.tree_hash_root());
     assert_ne!(block_a.state_root(), block_b.state_root());
 
-    let gossip_block_contents_b = PublishBlockRequest::new(block_b, blobs_b)
-        .into_gossip_verified_block(&tester.harness.chain);
+    let gossip_block_contents_b = PublishBlockRequest::new(block_b, blobs_b).parts();
     assert!(gossip_block_contents_b.is_ok());
-    let gossip_block_contents_a = PublishBlockRequest::new(block_a, blobs_a)
-        .into_gossip_verified_block(&tester.harness.chain);
+    let gossip_block_contents_a = PublishBlockRequest::new(block_a, blobs_a).parts();
     assert!(gossip_block_contents_a.is_err());
 
     let channel = tokio::sync::mpsc::unbounded_channel();

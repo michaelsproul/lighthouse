@@ -48,7 +48,7 @@
 // returned alongside.
 #![allow(clippy::result_large_err)]
 
-use crate::blob_verification::{GossipBlobError, GossipVerifiedBlob};
+use crate::blob_verification::GossipBlobError;
 use crate::block_verification_types::{AsBlock, BlockImportData, RpcBlock};
 use crate::data_availability_checker::{AvailabilityCheckError, MaybeAvailableBlock};
 use crate::eth1_finalization_cache::Eth1FinalizationData;
@@ -68,7 +68,7 @@ use crate::{
     metrics, BeaconChain, BeaconChainError, BeaconChainTypes,
 };
 use derivative::Derivative;
-use eth2::types::EventKind;
+use eth2::types::{EventKind, PublishBlockRequest};
 use execution_layer::PayloadStatus;
 pub use fork_choice::{AttestationFromBlock, PayloadVerificationStatus};
 use kzg::KzgProof;
@@ -728,32 +728,6 @@ impl<T: BeaconChainTypes> IntoBlobSidecar<T> for (Blob<T::EthSpec>, KzgProof) {
     }
 }
 
-pub trait IntoGossipVerifiedBlob<T: BeaconChainTypes>: Sized {
-    fn into_gossip_verified_blob(
-        self,
-        chain: &BeaconChain<T>,
-    ) -> Result<GossipVerifiedBlob<T>, GossipBlobError<T::EthSpec>>;
-}
-
-impl<T: BeaconChainTypes> IntoGossipVerifiedBlob<T> for GossipVerifiedBlob<T> {
-    fn into_gossip_verified_blob(
-        self,
-        _chain: &BeaconChain<T>,
-    ) -> Result<GossipVerifiedBlob<T>, GossipBlobError<T::EthSpec>> {
-        Ok(self)
-    }
-}
-
-impl<T: BeaconChainTypes> IntoGossipVerifiedBlob<T> for (Arc<BlobSidecar<T::EthSpec>>, usize) {
-    fn into_gossip_verified_blob(
-        self,
-        chain: &BeaconChain<T>,
-    ) -> Result<GossipVerifiedBlob<T>, GossipBlobError<T::EthSpec>> {
-        let (blob, blob_index) = self;
-        GossipVerifiedBlob::new(blob, blob_index as u64, chain)
-    }
-}
-
 /// Implemented on types that can be converted into a `ExecutionPendingBlock`.
 ///
 /// Used to allow functions to accept blocks at various stages of verification.
@@ -784,9 +758,29 @@ pub trait IntoExecutionPendingBlock<T: BeaconChainTypes>: Sized {
         chain: &Arc<BeaconChain<T>>,
         notify_execution_layer: NotifyExecutionLayer,
     ) -> Result<ExecutionPendingBlock<T>, BlockSlashInfo<BlockError<T::EthSpec>>>;
-
     fn block(&self) -> &SignedBeaconBlock<T::EthSpec>;
     fn block_cloned(&self) -> Arc<SignedBeaconBlock<T::EthSpec>>;
+}
+
+pub type YetAnotherBlockType<T> = (
+    Arc<SignedBeaconBlock<<T as BeaconChainTypes>::EthSpec>>,
+    Vec<(Blob<<T as BeaconChainTypes>::EthSpec>, KzgProof)>,
+);
+
+pub trait IntoGossipVerifiedBlockContents<T: BeaconChainTypes> {
+    fn parts(self) -> YetAnotherBlockType<T>;
+}
+
+impl<T: BeaconChainTypes> IntoGossipVerifiedBlockContents<T> for YetAnotherBlockType<T> {
+    fn parts(self) -> YetAnotherBlockType<T> {
+        (self.0, self.1)
+    }
+}
+
+impl<T: BeaconChainTypes> IntoGossipVerifiedBlockContents<T> for PublishBlockRequest<T::EthSpec> {
+    fn parts(self) -> YetAnotherBlockType<T> {
+        todo!()
+    }
 }
 
 impl<T: BeaconChainTypes> GossipVerifiedBlock<T> {

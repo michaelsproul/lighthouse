@@ -1,14 +1,15 @@
 use crate::metrics;
 
-use beacon_chain::blob_verification::GossipBlobError;
+use beacon_chain::blob_verification::{GossipBlobError, GossipVerifiedBlob};
 use beacon_chain::block_verification_types::AsBlock;
 use beacon_chain::validator_monitor::{get_block_delay_ms, timestamp_now};
 use beacon_chain::{
     AvailabilityProcessingStatus, BeaconChain, BeaconChainError, BeaconChainTypes, BlockError,
-    IntoBlobSidecar, IntoGossipVerifiedBlob, IntoGossipVerifiedBlock, NotifyExecutionLayer,
+    IntoBlobSidecar, IntoGossipVerifiedBlock, IntoGossipVerifiedBlockContents,
+    NotifyExecutionLayer, YetAnotherBlockType,
 };
-use eth2::types::FullPayloadContents;
-use eth2::types::{into_full_block_and_blobs, BroadcastValidation};
+use eth2::types::{BlobsBundle, BroadcastValidation};
+use eth2::types::{ExecutionPayloadAndBlobs, FullPayloadContents};
 use execution_layer::ProvenancedPayload;
 use lighthouse_network::PubsubMessage;
 use network::NetworkMessage;
@@ -21,45 +22,35 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use tree_hash::TreeHash;
 use types::{
-    AbstractExecPayload, BeaconBlockRef, Blob, BlobSidecar, ExecPayload, ExecutionBlockHash,
-    ForkName, FullPayload, FullPayloadMerge, Hash256, KzgProof, SignedBeaconBlock,
-    SignedBlindedBeaconBlock, Slot, VariableList,
+    AbstractExecPayload, BeaconBlockRef, Blob, BlobSidecar, EthSpec, ExecPayload,
+    ExecutionBlockHash, ForkName, FullPayload, FullPayloadMerge, Hash256, KzgProof,
+    SignedBeaconBlock, SignedBlindedBeaconBlock,
 };
 use warp::http::StatusCode;
 use warp::{reply::Response, Rejection, Reply};
 
-pub enum ProvenancedBlock<
-    T: BeaconChainTypes,
-    Block: IntoGossipVerifiedBlock<T>,
-    Blob: IntoBlobSidecar<T>,
-> {
+pub enum ProvenancedBlock<T: BeaconChainTypes, P: IntoGossipVerifiedBlockContents<T>> {
     /// The payload was built using a local EE.
-    Local(Block, Vec<Blob>, PhantomData<T>),
+    Local(P, PhantomData<T>),
     /// The payload was build using a remote builder (e.g., via a mev-boost
     /// compatible relay).
-    Builder(Block, Vec<Blob>, PhantomData<T>),
+    Builder(P, PhantomData<T>),
 }
 
-impl<T: BeaconChainTypes, Block: IntoGossipVerifiedBlock<T>, Blob: IntoBlobSidecar<T>>
-    ProvenancedBlock<T, Block, Blob>
-{
-    pub fn local(block: Block, blobs: Vec<Blob>) -> Self {
-        Self::Local(block, blobs, PhantomData)
+impl<T: BeaconChainTypes, P: IntoGossipVerifiedBlockContents<T>> ProvenancedBlock<T, P> {
+    pub fn local(contents: P) -> Self {
+        Self::Local(contents, PhantomData)
     }
 
-    pub fn builder(block: Block, blobs: Vec<Blob>) -> Self {
-        Self::Builder(block, blobs, PhantomData)
+    pub fn builder(contents: P) -> Self {
+        Self::Builder(contents, PhantomData)
     }
 }
 
 /// Handles a request from the HTTP API for full blocks.
-pub async fn publish_block<
-    T: BeaconChainTypes,
-    Block: IntoGossipVerifiedBlock<T>,
-    Blob: IntoBlobSidecar<T>,
->(
+pub async fn publish_block<T: BeaconChainTypes, P: IntoGossipVerifiedBlockContents<T>>(
     block_root: Option<Hash256>,
-    provenanced_block: ProvenancedBlock<T, Block, Blob>,
+    provenanced_block: ProvenancedBlock<T, P>,
     chain: Arc<BeaconChain<T>>,
     network_tx: &UnboundedSender<NetworkMessage<T::EthSpec>>,
     log: Logger,
@@ -69,11 +60,11 @@ pub async fn publish_block<
 ) -> Result<Response, Rejection> {
     let seen_timestamp = timestamp_now();
 
-    let (unverified_block, unverified_blobs, is_locally_built_block) = match provenanced_block {
-        ProvenancedBlock::Local(block, blobs, _) => (block, blobs, true),
-        ProvenancedBlock::Builder(block, blobs, _) => (block, blobs, false),
+    let ((unverified_block, unverified_blobs), is_locally_built_block) = match provenanced_block {
+        ProvenancedBlock::Local(contents, _) => (contents.parts(), true),
+        ProvenancedBlock::Builder(contents, _) => (contents.parts(), false),
     };
-    let block = Arc::new(unverified_block.inner_block().clone());
+    let block = Arc::new(IntoGossipVerifiedBlock::<T>::inner_block(&unverified_block).clone());
     let delay = get_block_delay_ms(seen_timestamp, block.message(), &chain.slot_clock);
     debug!(log, "Signed block received in HTTP API"; "slot" => block.slot());
 
@@ -131,8 +122,7 @@ pub async fn publish_block<
         .into_iter()
         .enumerate()
         .map(|(i, unverified_blob)| {
-            unverified_blob
-                .into_blob_sidecar(i, &block)
+            IntoBlobSidecar::<T>::into_blob_sidecar(unverified_blob, i, &block)
                 .map_err(|e| {
                     error!(
                         log,
@@ -156,7 +146,10 @@ pub async fn publish_block<
         .iter_mut()
         .enumerate()
         .map(|(i, (blob_sidecar, should_publish))| {
-            match (blob_sidecar.clone(), i).into_gossip_verified_blob(&chain) {
+            let gossip_verified_blob =
+                GossipVerifiedBlob::new(blob_sidecar.clone(), i as u64, &chain);
+
+            match gossip_verified_blob {
                 Ok(blob) => Ok(Some(blob)),
                 Err(GossipBlobError::RepeatBlob { proposer, .. }) => {
                     // Log the error but do not abort publication, we may need to publish the block
@@ -235,23 +228,21 @@ pub async fn publish_block<
         Ok(())
     };
 
-    for opt_blob in gossip_verified_blobs {
-        if let Some(blob) = opt_blob {
-            // Importing the blobs could trigger block import and network publication in the case
-            // where the block was already seen on gossip.
-            if let Err(e) = Box::pin(chain.process_gossip_blob(blob, &publish_fn)).await {
-                let msg = format!("Invalid blob: {e}");
-                return if let BroadcastValidation::Gossip = validation_level {
-                    Err(warp_utils::reject::broadcast_without_import(msg))
-                } else {
-                    error!(
-                        log,
-                        "Invalid blob provided to HTTP API";
-                        "reason" => &msg
-                    );
-                    Err(warp_utils::reject::custom_bad_request(msg))
-                };
-            }
+    for blob in gossip_verified_blobs.into_iter().flatten() {
+        // Importing the blobs could trigger block import and network publication in the case
+        // where the block was already seen on gossip.
+        if let Err(e) = Box::pin(chain.process_gossip_blob(blob, &publish_fn)).await {
+            let msg = format!("Invalid blob: {e}");
+            return if let BroadcastValidation::Gossip = validation_level {
+                Err(warp_utils::reject::broadcast_without_import(msg))
+            } else {
+                error!(
+                    log,
+                    "Invalid blob provided to HTTP API";
+                    "reason" => &msg
+                );
+                Err(warp_utils::reject::custom_bad_request(msg))
+            };
         }
     }
 
@@ -429,7 +420,13 @@ pub async fn reconstruct_block<T: BeaconChainTypes>(
     block: Arc<SignedBlindedBeaconBlock<T::EthSpec>>,
     log: Logger,
 ) -> Result<
-    ProvenancedBlock<T, Arc<SignedBeaconBlock<T::EthSpec>>, (Blob<T::EthSpec>, KzgProof)>,
+    ProvenancedBlock<
+        T,
+        (
+            Arc<SignedBeaconBlock<T::EthSpec>>,
+            Vec<(Blob<T::EthSpec>, KzgProof)>,
+        ),
+    >,
     Rejection,
 > {
     let full_payload_opt = if let Ok(payload_header) = block.message().body().execution_payload() {
@@ -439,9 +436,11 @@ pub async fn reconstruct_block<T: BeaconChainTypes>(
 
         // If the execution block hash is zero, use an empty payload.
         let full_payload_contents = if payload_header.block_hash() == ExecutionBlockHash::zero() {
-            let fork_name = chain
-                .spec
-                .fork_name_at_epoch(block.slot().epoch(T::EthSpec::slots_per_epoch()));
+            let fork_name = chain.spec.fork_name_at_epoch(
+                block
+                    .slot()
+                    .epoch(<<T as BeaconChainTypes>::EthSpec as EthSpec>::slots_per_epoch()),
+            );
             if fork_name == ForkName::Merge {
                 let payload: FullPayload<T::EthSpec> = FullPayloadMerge::default().into();
                 ProvenancedPayload::Local(FullPayloadContents::Payload(payload.into()))
@@ -500,14 +499,14 @@ pub async fn reconstruct_block<T: BeaconChainTypes>(
         None => block
             .try_into_full_block(None)
             .ok_or("Failed to build full block with payload".to_string())
-            .map(|full_block| ProvenancedBlock::local(Arc::new(full_block), vec![])),
+            .map(|full_block| ProvenancedBlock::local((Arc::new(full_block), vec![]))),
         Some(ProvenancedPayload::Local(full_payload_contents)) => {
-            into_full_block_and_blobs(block, full_payload_contents)
-                .map(|(block, blobs)| ProvenancedBlock::local(block, blobs))
+            into_full_block_and_blobs::<T>(block, full_payload_contents)
+                .map(ProvenancedBlock::local)
         }
         Some(ProvenancedPayload::Builder(full_payload_contents)) => {
-            into_full_block_and_blobs(block, full_payload_contents)
-                .map(|(block, blobs)| ProvenancedBlock::builder(block, blobs))
+            into_full_block_and_blobs::<T>(block, full_payload_contents)
+                .map(ProvenancedBlock::builder)
         }
     }
     .map_err(|e| {
@@ -563,12 +562,6 @@ fn late_block_logging<T: BeaconChainTypes, P: AbstractExecPayload<T::EthSpec>>(
     }
 }
 
-struct SlashInfo {
-    slot: Slot,
-    proposer_index: u64,
-    block_root: Hash256,
-}
-
 /// Check if any of the blobs or the block are slashable. Returns `BlockError::Slashable` if so.
 fn check_slashable<T: BeaconChainTypes>(
     chain_clone: &BeaconChain<T>,
@@ -608,4 +601,43 @@ fn check_slashable<T: BeaconChainTypes>(
         return Err(BlockError::Slashable);
     }
     Ok(())
+}
+
+/// Converting from a `SignedBlindedBeaconBlock` into a full `SignedBlockContents`.
+pub fn into_full_block_and_blobs<T: BeaconChainTypes>(
+    blinded_block: SignedBlindedBeaconBlock<T::EthSpec>,
+    maybe_full_payload_contents: FullPayloadContents<T::EthSpec>,
+) -> Result<YetAnotherBlockType<T>, String> {
+    match maybe_full_payload_contents {
+        // This variant implies a pre-deneb block
+        FullPayloadContents::Payload(execution_payload) => {
+            let signed_block = blinded_block
+                .try_into_full_block(Some(execution_payload))
+                .ok_or("Failed to build full block with payload".to_string())?;
+            Ok((Arc::new(signed_block), vec![]))
+        }
+        // This variant implies a post-deneb block
+        FullPayloadContents::PayloadAndBlobs(payload_and_blobs) => {
+            let ExecutionPayloadAndBlobs {
+                execution_payload,
+                blobs_bundle,
+            } = payload_and_blobs;
+            let signed_block = blinded_block
+                .try_into_full_block(Some(execution_payload))
+                .ok_or("Failed to build full block with payload".to_string())?;
+
+            let BlobsBundle {
+                commitments: _,
+                proofs,
+                blobs,
+            } = blobs_bundle;
+            let blob_contents = proofs
+                .into_iter()
+                .zip(blobs)
+                .map(|(proof, blob)| (blob, proof))
+                .collect::<Vec<_>>();
+
+            Ok((Arc::new(signed_block), blob_contents))
+        }
+    }
 }
