@@ -86,8 +86,8 @@ pub async fn publish_block<T: BeaconChainTypes>(
 
     /* actually publish a block */
     let publish_block = move |block: Arc<SignedBeaconBlock<T::EthSpec>>,
-                              publish_block: bool,
-                              blob_sidecars: Vec<(Arc<BlobSidecar<T::EthSpec>>, bool)>,
+                              should_publish: bool,
+                              blob_sidecars: Vec<Arc<BlobSidecar<T::EthSpec>>>,
                               sender,
                               log,
                               seen_timestamp|
@@ -108,18 +108,13 @@ pub async fn publish_block<T: BeaconChainTypes>(
                     .map_err(|_| BlockError::BeaconChainError(BeaconChainError::UnableToPublish))?;
             }
             SignedBeaconBlock::Deneb(_) => {
-                let mut pubsub_messages = if publish_block {
+                let mut pubsub_messages = if should_publish {
                     vec![PubsubMessage::BeaconBlock(block)]
                 } else {
                     vec![]
                 };
-                for (blob_index, (blob, should_publish)) in blob_sidecars.into_iter().enumerate() {
-                    if should_publish {
-                        pubsub_messages.push(PubsubMessage::BlobSidecar(Box::new((
-                            blob_index as u64,
-                            blob,
-                        ))));
-                    }
+                for blob in blob_sidecars.into_iter() {
+                    pubsub_messages.push(PubsubMessage::BlobSidecar(Box::new((blob.index, blob))));
                 }
                 crate::publish_pubsub_messages(&sender, pubsub_messages)
                     .map_err(|_| BlockError::BeaconChainError(BeaconChainError::UnableToPublish))?;
@@ -141,21 +136,16 @@ pub async fn publish_block<T: BeaconChainTypes>(
             //TODO(sean) restore metric
             // let _timer = metrics::start_timer(&metrics::BLOB_SIDECAR_INCLUSION_PROOF_COMPUTATION);
             let blob_sidecar = BlobSidecar::new(i, unverified_blob, &block, proof).map(Arc::new);
-            blob_sidecar
-                .map_err(|e| {
-                    error!(
-                        log,
-                        "Invalid blob - not publishing block";
-                        "error" => ?e,
-                        "blob_index" => i,
-                        "slot" => slot,
-                    );
-                    warp_utils::reject::custom_bad_request(format!("{e:?}"))
-                })
-                .map(|blob| {
-                    let should_publish = true;
-                    (blob, should_publish)
-                })
+            blob_sidecar.map_err(|e| {
+                error!(
+                    log,
+                    "Invalid blob - not publishing block";
+                    "error" => ?e,
+                    "blob_index" => i,
+                    "slot" => slot,
+                );
+                warp_utils::reject::custom_bad_request(format!("{e:?}"))
+            })
         })
         .collect::<Result<Vec<_>, Rejection>>()?;
 
@@ -163,10 +153,9 @@ pub async fn publish_block<T: BeaconChainTypes>(
     let gossip_verified_block_result = GossipVerifiedBlock::new(unverified_block, &chain);
     let gossip_verified_blobs = blob_sidecars
         .iter_mut()
-        .enumerate()
-        .map(|(i, (blob_sidecar, should_publish))| {
+        .map(|blob_sidecar| {
             let gossip_verified_blob =
-                GossipVerifiedBlob::new(blob_sidecar.clone(), i as u64, &chain);
+                GossipVerifiedBlob::new(blob_sidecar.clone(), blob_sidecar.index as u64, &chain);
 
             match gossip_verified_blob {
                 Ok(blob) => Ok(Some(blob)),
@@ -177,19 +166,17 @@ pub async fn publish_block<T: BeaconChainTypes>(
                     debug!(
                         log,
                         "Blob for publication already known";
-                        "blob_index" => i,
+                        "blob_index" => blob_sidecar.index,
                         "slot" => slot,
                         "proposer" => proposer,
                     );
-                    // Do not publish.
-                    *should_publish = false;
                     Ok(None)
                 }
                 Err(e) => {
                     error!(
                         log,
                         "Blob for publication is gossip-invalid";
-                        "blob_index" => i,
+                        "blob_index" => blob_sidecar.index,
                         "slot" => slot,
                         "error" => ?e,
                     );
@@ -198,6 +185,12 @@ pub async fn publish_block<T: BeaconChainTypes>(
             }
         })
         .collect::<Result<Vec<_>, Rejection>>()?;
+
+    let publishable_blobs = gossip_verified_blobs
+        .iter()
+        .flatten()
+        .map(|b| b.clone_blob())
+        .collect::<Vec<_>>();
 
     let block_root = block_root.unwrap_or_else(|| {
         gossip_verified_block_result.as_ref().map_or_else(
@@ -211,7 +204,7 @@ pub async fn publish_block<T: BeaconChainTypes>(
         publish_block(
             block.clone(),
             should_publish_block,
-            blob_sidecars.clone(),
+            publishable_blobs.clone(),
             sender_clone.clone(),
             log.clone(),
             seen_timestamp,
@@ -226,7 +219,7 @@ pub async fn publish_block<T: BeaconChainTypes>(
             BroadcastValidation::Consensus => publish_block(
                 block.clone(),
                 should_publish_block,
-                blob_sidecars.clone(),
+                publishable_blobs.clone(),
                 sender_clone.clone(),
                 log.clone(),
                 seen_timestamp,
@@ -236,7 +229,7 @@ pub async fn publish_block<T: BeaconChainTypes>(
                 publish_block(
                     block.clone(),
                     should_publish_block,
-                    blob_sidecars.clone(),
+                    publishable_blobs.clone(),
                     sender_clone.clone(),
                     log.clone(),
                     seen_timestamp,
