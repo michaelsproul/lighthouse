@@ -232,7 +232,7 @@ pub async fn publish_block<T: BeaconChainTypes>(
                 seen_timestamp,
             )?,
             BroadcastValidation::ConsensusAndEquivocation => {
-                check_slashable(&chain, &blob_sidecars, block_root, &block, &log)?;
+                check_slashable(&chain, block_root, &block, &log)?;
                 publish_block(
                     block.clone(),
                     should_publish_block,
@@ -308,13 +308,7 @@ pub async fn publish_block<T: BeaconChainTypes>(
                 seen_timestamp,
             )?,
             BroadcastValidation::ConsensusAndEquivocation => {
-                check_slashable(
-                    &chain_clone,
-                    &blob_sidecars,
-                    block_root,
-                    &block_clone,
-                    &log_clone,
-                )?;
+                check_slashable(&chain_clone, block_root, &block_clone, &log_clone)?;
                 publish_block(
                     block_clone,
                     should_publish_block,
@@ -575,26 +569,11 @@ fn late_block_logging<T: BeaconChainTypes, P: AbstractExecPayload<T::EthSpec>>(
 /// Check if any of the blobs or the block are slashable. Returns `BlockError::Slashable` if so.
 fn check_slashable<T: BeaconChainTypes>(
     chain_clone: &BeaconChain<T>,
-    blobs: &[(Arc<BlobSidecar<T::EthSpec>>, bool)],
     block_root: Hash256,
     block_clone: &SignedBeaconBlock<T::EthSpec, FullPayload<T::EthSpec>>,
     log_clone: &Logger,
 ) -> Result<(), BlockError<T::EthSpec>> {
     let slashable_cache = chain_clone.observed_slashable.read();
-    blobs.iter().try_for_each(|(blob, _should_publish)| {
-        if slashable_cache
-            .is_slashable(blob.slot(), blob.block_proposer_index(), blob.block_root())
-            .map_err(|e| BlockError::BeaconChainError(e.into()))?
-        {
-            warn!(
-                log_clone,
-                "Not publishing equivocating blob";
-                "slot" => block_clone.slot()
-            );
-            return Err(BlockError::Slashable);
-        }
-        Ok(())
-    })?;
     if slashable_cache
         .is_slashable(
             block_clone.slot(),
