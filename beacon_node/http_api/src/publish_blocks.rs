@@ -293,40 +293,11 @@ pub async fn publish_block<T: BeaconChainTypes>(
         }
     };
 
-    let chain_clone = chain.clone();
-    let block_clone = block.clone();
-    let log_clone = log.clone();
-    let movable_publish_fn = move || {
-        match validation_level {
-            BroadcastValidation::Gossip => (),
-            BroadcastValidation::Consensus => publish_block(
-                block_clone,
-                should_publish_block,
-                blob_sidecars.clone(),
-                sender_clone,
-                log_clone,
-                seen_timestamp,
-            )?,
-            BroadcastValidation::ConsensusAndEquivocation => {
-                check_slashable(&chain_clone, block_root, &block_clone, &log_clone)?;
-                publish_block(
-                    block_clone,
-                    should_publish_block,
-                    blob_sidecars.clone(),
-                    sender_clone,
-                    log_clone,
-                    seen_timestamp,
-                )?;
-            }
-        };
-        published.store(true, Ordering::SeqCst);
-        Ok(())
-    };
     match Box::pin(chain.process_block(
         block_root,
         gossip_verified_block,
         NotifyExecutionLayer::Yes,
-        movable_publish_fn,
+        publish_fn,
     ))
     .await
     {
