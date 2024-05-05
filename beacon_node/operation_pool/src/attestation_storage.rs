@@ -89,7 +89,7 @@ impl<E: EthSpec> SplitAttestation<E> {
                     index: data.index,
                     committee_bits: attn.committee_bits,
                 })
-            },
+            }
         };
 
         Self {
@@ -204,7 +204,6 @@ impl<E: EthSpec> CompactIndexedAttestationBase<E> {
         self.signature.add_assign_aggregate(&other.signature);
     }
 }
-
 
 impl<E: EthSpec> CompactIndexedAttestationElectra<E> {
     pub fn signers_disjoint_from(&self, other: &Self) -> bool {

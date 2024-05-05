@@ -273,10 +273,14 @@ mod ssz_static {
 
     #[test]
     fn attester_slashing() {
-        SszStaticHandler::<AttesterSlashingBase<MinimalEthSpec>, MinimalEthSpec>::pre_electra().run();
-        SszStaticHandler::<AttesterSlashingBase<MainnetEthSpec>, MainnetEthSpec>::pre_electra().run();
-        SszStaticHandler::<AttesterSlashingElectra<MinimalEthSpec>, MinimalEthSpec>::electra_only().run();
-        SszStaticHandler::<AttesterSlashingElectra<MainnetEthSpec>, MainnetEthSpec>::electra_only().run();
+        SszStaticHandler::<AttesterSlashingBase<MinimalEthSpec>, MinimalEthSpec>::pre_electra()
+            .run();
+        SszStaticHandler::<AttesterSlashingBase<MainnetEthSpec>, MainnetEthSpec>::pre_electra()
+            .run();
+        SszStaticHandler::<AttesterSlashingElectra<MinimalEthSpec>, MinimalEthSpec>::electra_only()
+            .run();
+        SszStaticHandler::<AttesterSlashingElectra<MainnetEthSpec>, MainnetEthSpec>::electra_only()
+            .run();
     }
 
     // Altair and later
