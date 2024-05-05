@@ -42,6 +42,8 @@ type_name_generic!(AggregateAndProof);
 type_name_generic!(Attestation);
 type_name!(AttestationData);
 type_name_generic!(AttesterSlashing);
+type_name_generic!(AttesterSlashingBase, "AttesterSlashing");
+type_name_generic!(AttesterSlashingElectra, "AttesterSlashing");
 type_name_generic!(BeaconBlock);
 type_name_generic!(BeaconBlockBody);
 type_name_generic!(BeaconBlockBodyBase, "BeaconBlockBody");
