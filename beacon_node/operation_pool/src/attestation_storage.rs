@@ -43,7 +43,7 @@ pub struct SplitAttestation<E: EthSpec> {
 }
 
 #[derive(Debug, Clone)]
-pub struct AttestationRef<'a, E: EthSpec> {
+pub struct CompactAttestationRef<'a, E: EthSpec> {
     pub checkpoint: &'a CheckpointKey,
     pub data: &'a CompactAttestationData,
     pub indexed: &'a CompactIndexedAttestation<E>,
@@ -81,8 +81,15 @@ impl<E: EthSpec> SplitAttestation<E> {
                     index: data.index,
                 })
             }
-            // TODO(electra) implement electra variant
-            Attestation::Electra(_) => todo!(),
+            Attestation::Electra(attn) => {
+                CompactIndexedAttestation::Electra(CompactIndexedAttestationElectra {
+                    attesting_indices,
+                    aggregation_bits: attn.aggregation_bits,
+                    signature: attestation.signature().clone(),
+                    index: data.index,
+                    committee_bits: attn.committee_bits,
+                })
+            },
         };
 
         Self {
@@ -92,8 +99,8 @@ impl<E: EthSpec> SplitAttestation<E> {
         }
     }
 
-    pub fn as_ref(&self) -> AttestationRef<E> {
-        AttestationRef {
+    pub fn as_ref(&self) -> CompactAttestationRef<E> {
+        CompactAttestationRef {
             checkpoint: &self.checkpoint,
             data: &self.data,
             indexed: &self.indexed,
@@ -101,7 +108,7 @@ impl<E: EthSpec> SplitAttestation<E> {
     }
 }
 
-impl<'a, E: EthSpec> AttestationRef<'a, E> {
+impl<'a, E: EthSpec> CompactAttestationRef<'a, E> {
     pub fn attestation_data(&self) -> AttestationData {
         AttestationData {
             slot: self.data.slot,
@@ -198,6 +205,38 @@ impl<E: EthSpec> CompactIndexedAttestationBase<E> {
     }
 }
 
+
+impl<E: EthSpec> CompactIndexedAttestationElectra<E> {
+    pub fn signers_disjoint_from(&self, other: &Self) -> bool {
+        if self
+            .committee_bits
+            .intersection(&other.committee_bits)
+            .is_zero()
+        {
+            if self
+                .aggregation_bits
+                .intersection(&other.aggregation_bits)
+                .is_zero()
+            {
+                return true;
+            } else {
+                for (index, committee_bit) in self.committee_bits.iter().enumerate() {
+                    if committee_bit {
+                        if let Ok(aggregation_bit) = self.aggregation_bits.get(index) {
+                            if let Ok(other_aggregation_bit) = other.aggregation_bits.get(index) {
+                                if aggregation_bit == other_aggregation_bit {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
 impl<E: EthSpec> AttestationMap<E> {
     pub fn insert(&mut self, attestation: Attestation<E>, attesting_indices: Vec<u64>) {
         let SplitAttestation {
@@ -231,7 +270,7 @@ impl<E: EthSpec> AttestationMap<E> {
     pub fn get_attestations<'a>(
         &'a self,
         checkpoint_key: &'a CheckpointKey,
-    ) -> impl Iterator<Item = AttestationRef<'a, E>> + 'a {
+    ) -> impl Iterator<Item = CompactAttestationRef<'a, E>> + 'a {
         self.checkpoint_map
             .get(checkpoint_key)
             .into_iter()
@@ -239,7 +278,7 @@ impl<E: EthSpec> AttestationMap<E> {
     }
 
     /// Iterate all attestations in the map.
-    pub fn iter(&self) -> impl Iterator<Item = AttestationRef<E>> {
+    pub fn iter(&self) -> impl Iterator<Item = CompactAttestationRef<E>> {
         self.checkpoint_map
             .iter()
             .flat_map(|(checkpoint_key, attestation_map)| attestation_map.iter(checkpoint_key))
@@ -270,9 +309,9 @@ impl<E: EthSpec> AttestationDataMap<E> {
     pub fn iter<'a>(
         &'a self,
         checkpoint_key: &'a CheckpointKey,
-    ) -> impl Iterator<Item = AttestationRef<'a, E>> + 'a {
+    ) -> impl Iterator<Item = CompactAttestationRef<'a, E>> + 'a {
         self.attestations.iter().flat_map(|(data, vec_indexed)| {
-            vec_indexed.iter().map(|indexed| AttestationRef {
+            vec_indexed.iter().map(|indexed| CompactAttestationRef {
                 checkpoint: checkpoint_key,
                 data,
                 indexed,

@@ -11,7 +11,7 @@ mod sync_aggregate_id;
 
 pub use crate::bls_to_execution_changes::ReceivedPreCapella;
 pub use attestation::{earliest_attestation_validators, AttMaxCover};
-pub use attestation_storage::{AttestationRef, SplitAttestation};
+pub use attestation_storage::{CompactAttestationRef, SplitAttestation};
 pub use max_cover::MaxCover;
 pub use persistence::{
     PersistedOperationPool, PersistedOperationPoolV12, PersistedOperationPoolV14,
@@ -228,7 +228,7 @@ impl<E: EthSpec> OperationPool<E> {
         state: &'a BeaconState<E>,
         reward_cache: &'a RewardCache,
         total_active_balance: u64,
-        validity_filter: impl FnMut(&AttestationRef<'a, E>) -> bool + Send,
+        validity_filter: impl FnMut(&CompactAttestationRef<'a, E>) -> bool + Send,
         spec: &'a ChainSpec,
     ) -> impl Iterator<Item = AttMaxCover<'a, E>> + Send {
         all_attestations
@@ -252,8 +252,8 @@ impl<E: EthSpec> OperationPool<E> {
     pub fn get_attestations(
         &self,
         state: &BeaconState<E>,
-        prev_epoch_validity_filter: impl for<'a> FnMut(&AttestationRef<'a, E>) -> bool + Send,
-        curr_epoch_validity_filter: impl for<'a> FnMut(&AttestationRef<'a, E>) -> bool + Send,
+        prev_epoch_validity_filter: impl for<'a> FnMut(&CompactAttestationRef<'a, E>) -> bool + Send,
+        curr_epoch_validity_filter: impl for<'a> FnMut(&CompactAttestationRef<'a, E>) -> bool + Send,
         spec: &ChainSpec,
     ) -> Result<Vec<Attestation<E>>, OpPoolError> {
         if !matches!(state, BeaconState::Base(_)) {

@@ -224,9 +224,32 @@ impl<'a, E: EthSpec> AttestationRef<'a, E> {
 impl<E: EthSpec> AttestationElectra<E> {
     /// Are the aggregation bitfields of these attestations disjoint?
     pub fn signers_disjoint_from(&self, other: &Self) -> bool {
-        self.aggregation_bits
+        if self
+        .committee_bits
+        .intersection(&other.committee_bits)
+        .is_zero()
+    {
+        if self
+            .aggregation_bits
             .intersection(&other.aggregation_bits)
             .is_zero()
+        {
+            return true;
+        } else {
+            for (index, committee_bit) in self.committee_bits.iter().enumerate() {
+                if committee_bit {
+                    if let Ok(aggregation_bit) = self.aggregation_bits.get(index) {
+                        if let Ok(other_aggregation_bit) = other.aggregation_bits.get(index) {
+                            if aggregation_bit == other_aggregation_bit {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    true
     }
 
     pub fn committee_index(&self) -> u64 {
@@ -247,7 +270,9 @@ impl<E: EthSpec> AttestationElectra<E> {
     pub fn aggregate(&mut self, other: &Self) {
         debug_assert_eq!(self.data, other.data);
         debug_assert!(self.signers_disjoint_from(other));
+        // TODO(electra) add debug asset to check that committee bits are disjoint
         self.aggregation_bits = self.aggregation_bits.union(&other.aggregation_bits);
+        self.committee_bits = self.committee_bits.union(&other.committee_bits);
         self.signature.add_assign_aggregate(&other.signature);
     }
 
@@ -363,6 +388,18 @@ impl<E: EthSpec> AttestationBase<E> {
 
             Ok(())
         }
+    }
+
+
+    pub fn extend_aggregation_bits(&self) -> Result<BitList<E::MaxValidatorsPerCommitteePerSlot>, ssz_types::Error>{
+        let mut extended_aggregation_bits: BitList<E::MaxValidatorsPerCommitteePerSlot> =
+            BitList::with_capacity(self.aggregation_bits.len())?;
+
+        for (i, bit) in self.aggregation_bits.iter().enumerate() {
+            extended_aggregation_bits
+                .set(i, bit)?;
+        }
+        Ok(extended_aggregation_bits)
     }
 }
 
