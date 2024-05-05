@@ -294,6 +294,7 @@ pub trait AsReference {
     where
         Self: 'a;
 
+    #[allow(dead_code)]
     fn as_reference(&self) -> Self::Reference<'_>;
 }
 
