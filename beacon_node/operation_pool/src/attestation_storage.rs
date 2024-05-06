@@ -164,9 +164,10 @@ impl<E: EthSpec> CompactIndexedAttestation<E> {
             (CompactIndexedAttestation::Base(this), CompactIndexedAttestation::Base(other)) => {
                 this.signers_disjoint_from(other)
             }
-            (CompactIndexedAttestation::Electra(_), CompactIndexedAttestation::Electra(_)) => {
-                todo!()
-            }
+            (
+                CompactIndexedAttestation::Electra(this),
+                CompactIndexedAttestation::Electra(other),
+            ) => this.signers_disjoint_from(other),
             // TODO(electra) is a mix of electra and base compact indexed attestations an edge case we need to deal with?
             _ => false,
         }
@@ -177,9 +178,10 @@ impl<E: EthSpec> CompactIndexedAttestation<E> {
             (CompactIndexedAttestation::Base(this), CompactIndexedAttestation::Base(other)) => {
                 this.aggregate(other)
             }
-            (CompactIndexedAttestation::Electra(_), CompactIndexedAttestation::Electra(_)) => {
-                todo!()
-            }
+            (
+                CompactIndexedAttestation::Electra(this),
+                CompactIndexedAttestation::Electra(other),
+            ) => this.aggregate(other),
             // TODO(electra) is a mix of electra and base compact indexed attestations an edge case we need to deal with?
             _ => (),
         }
@@ -233,6 +235,18 @@ impl<E: EthSpec> CompactIndexedAttestationElectra<E> {
             }
         }
         true
+    }
+
+    // TODO(electra) make this spec compliant
+    pub fn aggregate(&mut self, other: &Self) {
+        self.attesting_indices = self
+            .attesting_indices
+            .drain(..)
+            .merge(other.attesting_indices.iter().copied())
+            .dedup()
+            .collect();
+        self.aggregation_bits = self.aggregation_bits.union(&other.aggregation_bits);
+        self.signature.add_assign_aggregate(&other.signature);
     }
 }
 

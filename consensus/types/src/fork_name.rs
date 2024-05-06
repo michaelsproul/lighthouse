@@ -33,9 +33,7 @@ impl ForkName {
 
     pub fn latest() -> ForkName {
         // This unwrap is safe as long as we have 1+ forks. It is tested below.
-        // TODO(electra) tests are hanging because we cant finalize on the latest fork
-        // *ForkName::list_all().last().unwrap()
-        ForkName::Deneb
+        *ForkName::list_all().last().unwrap()
     }
 
     /// Set the activation slots in the given `ChainSpec` so that the fork named by `self`
