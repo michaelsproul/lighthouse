@@ -87,15 +87,25 @@ impl Validator {
     }
 
     /// Returns `true` if the validator is eligible to be activated.
-    ///
-    /// Spec v0.12.1
     pub fn is_eligible_for_activation<E: EthSpec>(
         &self,
         state: &BeaconState<E>,
         spec: &ChainSpec,
     ) -> bool {
+        self.is_eligible_for_activation_with_finalized_checkpoint(
+            state.finalized_checkpoint(),
+            spec,
+        )
+    }
+
+    /// Returns `true` if the validator is eligible to be activated.
+    pub fn is_eligible_for_activation_with_finalized_checkpoint(
+        &self,
+        finalized_checkpoint: &Checkpoint,
+        spec: &ChainSpec,
+    ) -> bool {
         // Placement in queue is finalized
-        self.activation_eligibility_epoch <= state.finalized_checkpoint().epoch
+        self.activation_eligibility_epoch <= finalized_checkpoint.epoch
         // Has not yet been activated
         && self.activation_epoch == spec.far_future_epoch
     }

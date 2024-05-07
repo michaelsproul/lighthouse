@@ -459,6 +459,37 @@ fn process_single_registry_update(
     validator: &mut Cow<Validator>,
     validator_info: &ValidatorInfo,
     exit_cache: &mut ExitCache,
+    activation_queues: Option<(&BTreeSet<usize>, &mut ActivationQueue)>,
+    state_ctxt: &StateContext,
+    spec: &ChainSpec,
+) -> Result<(), Error> {
+    if state_ctxt.fork_name < ForkName::Electra {
+        let (activation_queue, next_epoch_activation_queue) =
+            activation_queues.ok_or(Error::SinglePassMissingActivationQueue)?;
+        process_single_registry_update_pre_electra(
+            validator,
+            validator_info,
+            exit_cache,
+            activation_queue,
+            next_epoch_activation_queue,
+            state_ctxt,
+            spec,
+        )
+    } else {
+        process_single_registry_update_post_electra(
+            validator,
+            validator_info,
+            exit_cache,
+            state_ctxt,
+            spec,
+        )
+    }
+}
+
+fn process_single_registry_update_pre_electra(
+    validator: &mut Cow<Validator>,
+    validator_info: &ValidatorInfo,
+    exit_cache: &mut ExitCache,
     activation_queue: &BTreeSet<usize>,
     next_epoch_activation_queue: &mut ActivationQueue,
     state_ctxt: &StateContext,
@@ -472,6 +503,41 @@ fn process_single_registry_update(
 
     if validator.is_active_at(current_epoch) && validator.effective_balance <= spec.ejection_balance
     {
+        initiate_validator_exit(validator, exit_cache, state_ctxt, spec)?;
+    }
+
+    if activation_queue.contains(&validator_info.index) {
+        validator.make_mut()?.activation_epoch =
+            spec.compute_activation_exit_epoch(current_epoch)?;
+    }
+
+    // Caching: add to speculative activation queue for next epoch.
+    next_epoch_activation_queue.add_if_could_be_eligible_for_activation(
+        validator_info.index,
+        validator,
+        state_ctxt.next_epoch,
+        spec,
+    );
+
+    Ok(())
+}
+
+fn process_single_registry_update_post_electra(
+    validator: &mut Cow<Validator>,
+    validator_info: &ValidatorInfo,
+    exit_cache: &mut ExitCache,
+    state_ctxt: &StateContext,
+    spec: &ChainSpec,
+) -> Result<(), Error> {
+    let current_epoch = state_ctxt.current_epoch;
+
+    if validator.is_eligible_for_activation_queue(spec, state_ctxt.fork_name) {
+        validator.make_mut()?.activation_eligibility_epoch = current_epoch.safe_add(1)?;
+    }
+
+    if validator.is_active_at(current_epoch) && validator.effective_balance <= spec.ejection_balance
+    {
+        // TODO(electra): make sure initiate_validator_exit is updated
         initiate_validator_exit(validator, exit_cache, state_ctxt, spec)?;
     }
 
