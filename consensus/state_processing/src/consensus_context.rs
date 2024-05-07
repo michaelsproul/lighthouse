@@ -188,7 +188,7 @@ impl<E: EthSpec> ConsensusContext<E> {
                     Entry::Vacant(vacant) => {
                         let indexed_attestation =
                             attesting_indices_electra::get_indexed_attestation_from_state(
-                                &state, attn,
+                                state, attn,
                             )?;
                         Ok(vacant.insert(indexed_attestation))
                     }

@@ -1,5 +1,4 @@
 use crate::AttestationStats;
-use itertools::Itertools;
 use std::collections::HashMap;
 use types::{
     attestation::{AttestationBase, AttestationElectra},
@@ -158,98 +157,6 @@ impl CheckpointKey {
     }
 }
 
-impl<E: EthSpec> CompactIndexedAttestation<E> {
-    pub fn signers_disjoint_from(&self, other: &Self) -> bool {
-        match (self, other) {
-            (CompactIndexedAttestation::Base(this), CompactIndexedAttestation::Base(other)) => {
-                this.signers_disjoint_from(other)
-            }
-            (
-                CompactIndexedAttestation::Electra(this),
-                CompactIndexedAttestation::Electra(other),
-            ) => this.signers_disjoint_from(other),
-            // TODO(electra) is a mix of electra and base compact indexed attestations an edge case we need to deal with?
-            _ => false,
-        }
-    }
-
-    pub fn aggregate(&mut self, other: &Self) {
-        match (self, other) {
-            (CompactIndexedAttestation::Base(this), CompactIndexedAttestation::Base(other)) => {
-                this.aggregate(other)
-            }
-            (
-                CompactIndexedAttestation::Electra(this),
-                CompactIndexedAttestation::Electra(other),
-            ) => this.aggregate(other),
-            // TODO(electra) is a mix of electra and base compact indexed attestations an edge case we need to deal with?
-            _ => (),
-        }
-    }
-}
-
-impl<E: EthSpec> CompactIndexedAttestationBase<E> {
-    pub fn signers_disjoint_from(&self, other: &Self) -> bool {
-        self.aggregation_bits
-            .intersection(&other.aggregation_bits)
-            .is_zero()
-    }
-
-    pub fn aggregate(&mut self, other: &Self) {
-        self.attesting_indices = self
-            .attesting_indices
-            .drain(..)
-            .merge(other.attesting_indices.iter().copied())
-            .dedup()
-            .collect();
-        self.aggregation_bits = self.aggregation_bits.union(&other.aggregation_bits);
-        self.signature.add_assign_aggregate(&other.signature);
-    }
-}
-
-impl<E: EthSpec> CompactIndexedAttestationElectra<E> {
-    pub fn signers_disjoint_from(&self, other: &Self) -> bool {
-        if self
-            .committee_bits
-            .intersection(&other.committee_bits)
-            .is_zero()
-        {
-            if self
-                .aggregation_bits
-                .intersection(&other.aggregation_bits)
-                .is_zero()
-            {
-                return true;
-            } else {
-                for (index, committee_bit) in self.committee_bits.iter().enumerate() {
-                    if committee_bit {
-                        if let Ok(aggregation_bit) = self.aggregation_bits.get(index) {
-                            if let Ok(other_aggregation_bit) = other.aggregation_bits.get(index) {
-                                if aggregation_bit == other_aggregation_bit {
-                                    return false;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        true
-    }
-
-    // TODO(electra) make this spec compliant
-    pub fn aggregate(&mut self, other: &Self) {
-        self.attesting_indices = self
-            .attesting_indices
-            .drain(..)
-            .merge(other.attesting_indices.iter().copied())
-            .dedup()
-            .collect();
-        self.aggregation_bits = self.aggregation_bits.union(&other.aggregation_bits);
-        self.signature.add_assign_aggregate(&other.signature);
-    }
-}
-
 impl<E: EthSpec> AttestationMap<E> {
     pub fn insert(&mut self, attestation: Attestation<E>, attesting_indices: Vec<u64>) {
         let SplitAttestation {
@@ -261,22 +168,7 @@ impl<E: EthSpec> AttestationMap<E> {
         let attestation_map = self.checkpoint_map.entry(checkpoint).or_default();
         let attestations = attestation_map.attestations.entry(data).or_default();
 
-        // Greedily aggregate the attestation with all existing attestations.
-        // NOTE: this is sub-optimal and in future we will remove this in favour of max-clique
-        // aggregation.
-        let mut aggregated = false;
-        for existing_attestation in attestations.iter_mut() {
-            if existing_attestation.signers_disjoint_from(&indexed) {
-                existing_attestation.aggregate(&indexed);
-                aggregated = true;
-            } else if *existing_attestation == indexed {
-                aggregated = true;
-            }
-        }
-
-        if !aggregated {
-            attestations.push(indexed);
-        }
+        attestations.push(indexed);
     }
 
     /// Iterate all attestations matching the given `checkpoint_key`.
