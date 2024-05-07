@@ -57,6 +57,7 @@ pub enum Error {
         state_root: Hash256,
         slot: Slot,
     },
+    InvariantError(String),
 }
 
 pub trait HandleUnavailable<T> {

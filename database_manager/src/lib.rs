@@ -154,6 +154,13 @@ pub fn prune_states_app<'a, 'b>() -> App<'a, 'b> {
         .about("Prune all beacon states from the freezer database")
 }
 
+pub fn check_invariants_app<'a, 'b>() -> App<'a, 'b> {
+    App::new("check-invariants")
+        .alias("check_invariants")
+        .setting(clap::AppSettings::ColoredHelp)
+        .about("Check database invariants")
+}
+
 pub fn cli_app<'a, 'b>() -> App<'a, 'b> {
     App::new(CMD)
         .visible_aliases(&["db"])
@@ -202,6 +209,7 @@ pub fn cli_app<'a, 'b>() -> App<'a, 'b> {
         .subcommand(prune_payloads_app())
         .subcommand(prune_blobs_app())
         .subcommand(prune_states_app())
+        .subcommand(check_invariants_app())
 }
 
 fn parse_client_config<E: EthSpec>(
@@ -644,6 +652,30 @@ pub fn prune_states<E: EthSpec>(
     Ok(())
 }
 
+pub fn check_invariants<E: EthSpec>(
+    client_config: ClientConfig,
+    runtime_context: &RuntimeContext<E>,
+    log: Logger,
+) -> Result<(), Error> {
+    let spec = &runtime_context.eth2_config.spec;
+    let hot_path = client_config.get_db_path();
+    let cold_path = client_config.get_freezer_db_path();
+    let blobs_path = client_config.get_blobs_db_path();
+
+    let db = HotColdDB::<E, LevelDB<E>, LevelDB<E>>::open(
+        &hot_path,
+        &cold_path,
+        &blobs_path,
+        |_, _, _| Ok(()),
+        client_config.store,
+        spec.clone(),
+        log.clone(),
+    )?;
+
+    db.invariant_hot_block_state_summaries()?;
+    Ok(())
+}
+
 /// Run the database manager, returning an error string if the operation did not succeed.
 pub fn run<E: EthSpec>(cli_args: &ArgMatches<'_>, env: Environment<E>) -> Result<(), String> {
     let client_config = parse_client_config(cli_args, &env)?;
@@ -694,6 +726,9 @@ pub fn run<E: EthSpec>(cli_args: &ArgMatches<'_>, env: Environment<E>) -> Result
             let prune_config = parse_prune_states_config(cli_args)?;
 
             prune_states(client_config, prune_config, genesis_state, &context, log)
+        }
+        ("check-invariants", Some(_)) => {
+            check_invariants(client_config, &context, log).map_err(format_err)
         }
         _ => Err("Unknown subcommand, for help `lighthouse database_manager --help`".into()),
     }

@@ -20,6 +20,7 @@ mod forwards_iter;
 mod garbage_collection;
 pub mod hot_cold_store;
 mod impls;
+pub mod invariant;
 mod leveldb_store;
 mod memory_store;
 pub mod metadata;
