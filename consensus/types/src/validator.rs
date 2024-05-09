@@ -1,6 +1,6 @@
 use crate::{
-    test_utils::TestRandom, Address, BeaconState, ChainSpec, Epoch, EthSpec, ForkName, Hash256,
-    PublicKeyBytes,
+    test_utils::TestRandom, Address, BeaconState, ChainSpec, Checkpoint, Epoch, EthSpec, ForkName,
+    Hash256, PublicKeyBytes,
 };
 use serde::{Deserialize, Serialize};
 use ssz_derive::{Decode, Encode};
@@ -93,7 +93,7 @@ impl Validator {
         spec: &ChainSpec,
     ) -> bool {
         self.is_eligible_for_activation_with_finalized_checkpoint(
-            state.finalized_checkpoint(),
+            &state.finalized_checkpoint(),
             spec,
         )
     }

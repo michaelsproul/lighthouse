@@ -6,15 +6,16 @@ use crate::{
 use itertools::izip;
 use safe_arith::{SafeArith, SafeArithIter};
 use std::cmp::{max, min};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use types::{
     consts::altair::{
         NUM_FLAG_INDICES, PARTICIPATION_FLAG_WEIGHTS, TIMELY_HEAD_FLAG_INDEX,
         TIMELY_TARGET_FLAG_INDEX, WEIGHT_DENOMINATOR,
     },
     milhouse::Cow,
-    ActivationQueue, BeaconState, BeaconStateError, ChainSpec, Epoch, EthSpec, ExitCache, ForkName,
-    ParticipationFlags, ProgressiveBalancesCache, RelativeEpoch, Unsigned, Validator,
+    ActivationQueue, BeaconState, BeaconStateError, ChainSpec, Checkpoint, Epoch, EthSpec,
+    ExitCache, ForkName, List, ParticipationFlags, ProgressiveBalancesCache, RelativeEpoch,
+    Unsigned, Validator,
 };
 
 pub struct SinglePassConfig {
@@ -22,6 +23,7 @@ pub struct SinglePassConfig {
     pub rewards_and_penalties: bool,
     pub registry_updates: bool,
     pub slashings: bool,
+    pub pending_balance_deposits: bool,
     pub effective_balance_updates: bool,
 }
 
@@ -38,6 +40,7 @@ impl SinglePassConfig {
             rewards_and_penalties: true,
             registry_updates: true,
             slashings: true,
+            pending_balance_deposits: true,
             effective_balance_updates: true,
         }
     }
@@ -48,6 +51,7 @@ impl SinglePassConfig {
             rewards_and_penalties: false,
             registry_updates: false,
             slashings: false,
+            pending_balance_deposits: false,
             effective_balance_updates: false,
         }
     }
@@ -57,6 +61,7 @@ impl SinglePassConfig {
 struct StateContext {
     current_epoch: Epoch,
     next_epoch: Epoch,
+    finalized_checkpoint: Checkpoint,
     is_in_inactivity_leak: bool,
     total_active_balance: u64,
     churn_limit: u64,
@@ -105,6 +110,54 @@ impl ValidatorInfo {
     }
 }
 
+struct PendingBalanceDepositsContext {
+    /// The value to set `next_deposit_index` to *after* processing completes.
+    new_next_deposit_index: u64,
+    /// The value to set `deposit_balance_to_consume` to *after* processing completes.
+    new_deposit_balance_to_consume: u64,
+    /// Total balance increases for each validator due to pending balance deposits.
+    validator_deposits_to_process: HashMap<usize, u64>,
+}
+
+impl PendingBalanceDepositsContext {
+    fn new<E: EthSpec>(state: &BeaconState<E>, spec: &ChainSpec) -> Result<Self, Error> {
+        let available_for_processing = state
+            .deposit_balance_to_consume()?
+            .safe_add(state.get_activation_exit_churn_limit(spec)?)?;
+        let mut processed_amount = 0;
+        let mut next_deposit_index = 0;
+        let mut validator_deposits_to_process = HashMap::new();
+
+        let pending_balance_deposits = state.pending_balance_deposits()?;
+
+        for deposit in pending_balance_deposits.iter() {
+            if processed_amount.safe_add(deposit.amount)? > available_for_processing {
+                break;
+            }
+            validator_deposits_to_process
+                .entry(deposit.index as usize)
+                .or_insert(0)
+                .safe_add_assign(deposit.amount)?;
+
+            processed_amount.safe_add_assign(deposit.amount)?;
+            next_deposit_index.safe_add_assign(1)?;
+        }
+
+        let new_deposit_balance_to_consume =
+            if next_deposit_index == pending_balance_deposits.len() as u64 {
+                0
+            } else {
+                available_for_processing.safe_sub(processed_amount)?
+            };
+
+        Ok(Self {
+            new_next_deposit_index: next_deposit_index,
+            new_deposit_balance_to_consume,
+            validator_deposits_to_process,
+        })
+    }
+}
+
 pub fn process_epoch_single_pass<E: EthSpec>(
     state: &mut BeaconState<E>,
     spec: &ChainSpec,
@@ -129,6 +182,7 @@ pub fn process_epoch_single_pass<E: EthSpec>(
     let state_ctxt = &StateContext {
         current_epoch,
         next_epoch,
+        finalized_checkpoint,
         is_in_inactivity_leak,
         total_active_balance,
         churn_limit,
@@ -138,6 +192,13 @@ pub fn process_epoch_single_pass<E: EthSpec>(
     // Contexts that require immutable access to `state`.
     let slashings_ctxt = &SlashingsContext::new(state, state_ctxt, spec)?;
     let mut next_epoch_cache = PreEpochCache::new_for_next_epoch(state)?;
+
+    let pending_balance_deposits_ctxt =
+        if fork_name >= ForkName::Electra && conf.pending_balance_deposits {
+            Some(PendingBalanceDepositsContext::new(state, spec)?)
+        } else {
+            None
+        };
 
     // Split the state into several disjoint mutable borrows.
     let (
@@ -165,12 +226,19 @@ pub fn process_epoch_single_pass<E: EthSpec>(
 
     // Compute shared values required for different parts of epoch processing.
     let rewards_ctxt = &RewardsAndPenaltiesContext::new(progressive_balances, state_ctxt, spec)?;
-    let activation_queue = &epoch_cache
-        .activation_queue()?
-        .get_validators_eligible_for_activation(
-            finalized_checkpoint.epoch,
-            activation_churn_limit as usize,
-        );
+
+    let mut activation_queues = if fork_name < ForkName::Electra {
+        let activation_queue = epoch_cache
+            .activation_queue()?
+            .get_validators_eligible_for_activation(
+                finalized_checkpoint.epoch,
+                activation_churn_limit as usize,
+            );
+        let next_epoch_activation_queue = ActivationQueue::default();
+        Some((activation_queue, next_epoch_activation_queue))
+    } else {
+        None
+    };
     let effective_balances_ctxt = &EffectiveBalancesContext::new(spec)?;
 
     // Iterate over the validators and related fields in one pass.
@@ -180,7 +248,6 @@ pub fn process_epoch_single_pass<E: EthSpec>(
 
     // Values computed for the next epoch transition.
     let mut next_epoch_total_active_balance = 0;
-    let mut next_epoch_activation_queue = ActivationQueue::default();
 
     for (index, &previous_epoch_participation, &current_epoch_participation) in izip!(
         0..num_validators,
@@ -246,12 +313,14 @@ pub fn process_epoch_single_pass<E: EthSpec>(
 
         // `process_registry_updates`
         if conf.registry_updates {
+            let activation_queue_refs = activation_queues
+                .as_mut()
+                .map(|(current_queue, next_queue)| (&*current_queue, next_queue));
             process_single_registry_update(
                 &mut validator,
                 validator_info,
                 exit_cache,
-                activation_queue,
-                &mut next_epoch_activation_queue,
+                activation_queue_refs,
                 state_ctxt,
                 spec,
             )?;
@@ -260,6 +329,15 @@ pub fn process_epoch_single_pass<E: EthSpec>(
         // `process_slashings`
         if conf.slashings {
             process_single_slashing(&mut balance, &validator, slashings_ctxt, state_ctxt, spec)?;
+        }
+
+        // `process_pending_balance_deposits`
+        if let Some(pending_balance_deposits_ctxt) = &pending_balance_deposits_ctxt {
+            process_pending_balance_deposits_for_validator(
+                &mut balance,
+                validator_info,
+                pending_balance_deposits_ctxt,
+            )?;
         }
 
         // `process_effective_balance_updates`
@@ -280,11 +358,24 @@ pub fn process_epoch_single_pass<E: EthSpec>(
 
     if conf.effective_balance_updates {
         state.set_total_active_balance(next_epoch, next_epoch_total_active_balance, spec);
+        let next_epoch_activation_queue =
+            activation_queues.map_or_else(ActivationQueue::default, |(_, queue)| queue);
         *state.epoch_cache_mut() = next_epoch_cache.into_epoch_cache(
             next_epoch_total_active_balance,
             next_epoch_activation_queue,
             spec,
         )?;
+    }
+
+    if let Some(ctxt) = pending_balance_deposits_ctxt {
+        let new_pending_balance_deposits = List::try_from_iter(
+            state
+                .pending_balance_deposits()?
+                .iter_from(ctxt.new_next_deposit_index as usize)?
+                .cloned(),
+        )?;
+        *state.pending_balance_deposits_mut()? = new_pending_balance_deposits;
+        *state.deposit_balance_to_consume_mut()? = ctxt.new_deposit_balance_to_consume;
     }
 
     Ok(summary)
@@ -476,13 +567,7 @@ fn process_single_registry_update(
             spec,
         )
     } else {
-        process_single_registry_update_post_electra(
-            validator,
-            validator_info,
-            exit_cache,
-            state_ctxt,
-            spec,
-        )
+        process_single_registry_update_post_electra(validator, exit_cache, state_ctxt, spec)
     }
 }
 
@@ -524,7 +609,6 @@ fn process_single_registry_update_pre_electra(
 
 fn process_single_registry_update_post_electra(
     validator: &mut Cow<Validator>,
-    validator_info: &ValidatorInfo,
     exit_cache: &mut ExitCache,
     state_ctxt: &StateContext,
     spec: &ChainSpec,
@@ -541,18 +625,13 @@ fn process_single_registry_update_post_electra(
         initiate_validator_exit(validator, exit_cache, state_ctxt, spec)?;
     }
 
-    if activation_queue.contains(&validator_info.index) {
+    if validator.is_eligible_for_activation_with_finalized_checkpoint(
+        &state_ctxt.finalized_checkpoint,
+        spec,
+    ) {
         validator.make_mut()?.activation_epoch =
             spec.compute_activation_exit_epoch(current_epoch)?;
     }
-
-    // Caching: add to speculative activation queue for next epoch.
-    next_epoch_activation_queue.add_if_could_be_eligible_for_activation(
-        validator_info.index,
-        validator,
-        state_ctxt.next_epoch,
-        spec,
-    );
 
     Ok(())
 }
@@ -630,6 +709,20 @@ fn process_single_slashing(
             .safe_mul(increment)?;
 
         *balance.make_mut()? = balance.saturating_sub(penalty);
+    }
+    Ok(())
+}
+
+fn process_pending_balance_deposits_for_validator(
+    balance: &mut Cow<u64>,
+    validator_info: &ValidatorInfo,
+    pending_balance_deposits_ctxt: &PendingBalanceDepositsContext,
+) -> Result<(), Error> {
+    if let Some(deposit_amount) = pending_balance_deposits_ctxt
+        .validator_deposits_to_process
+        .get(&validator_info.index)
+    {
+        balance.make_mut()?.safe_add_assign(*deposit_amount)?;
     }
     Ok(())
 }
