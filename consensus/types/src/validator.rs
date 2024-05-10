@@ -256,6 +256,11 @@ impl Validator {
             spec.min_activation_balance
         }
     }
+
+    pub fn get_active_balance(&self, validator_balance: u64, spec: &ChainSpec) -> u64 {
+        let max_effective_balance = self.get_validator_max_effective_balance(spec);
+        std::cmp::min(validator_balance, max_effective_balance)
+    }
 }
 
 impl Default for Validator {
