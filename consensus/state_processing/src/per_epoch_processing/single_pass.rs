@@ -849,6 +849,7 @@ impl EffectiveBalancesContext {
     }
 }
 
+/// This function abstracts over phase0 and Electra effective balance processing.
 #[allow(clippy::too_many_arguments)]
 fn process_single_effective_balance_update(
     validator_index: usize,
@@ -861,6 +862,10 @@ fn process_single_effective_balance_update(
     state_ctxt: &StateContext,
     spec: &ChainSpec,
 ) -> Result<(), Error> {
+    // Use the higher effective balance limit if post-Electra and compounding withdrawal credentials
+    // are set.
+    let effective_balance_limit = validator.get_validator_max_effective_balance(spec);
+
     let old_effective_balance = validator.effective_balance;
     let new_effective_balance = if balance.safe_add(eb_ctxt.downward_threshold)?
         < validator.effective_balance
@@ -871,7 +876,7 @@ fn process_single_effective_balance_update(
     {
         min(
             balance.safe_sub(balance.safe_rem(spec.effective_balance_increment)?)?,
-            spec.max_effective_balance,
+            effective_balance_limit,
         )
     } else {
         validator.effective_balance
