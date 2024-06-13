@@ -401,6 +401,13 @@ fn process_slash_info<T: BeaconChainTypes>(
             }
             SignatureNotCheckedIndexed(indexed, err) => (indexed, true, err),
             SignatureInvalid(e) => return e,
+            // We can safely ignore attestations that are subsets of other attestations. For the
+            // subset condition to trip it must be that we have already processed the superset
+            // attestation in the slasher. If A is a subset of B with identical attestation data,
+            // then any attestation slashable against A is also slashable against B, and any
+            // slashings that could be detected would already have been detected by the processing
+            // of B.
+            SignatureValid(_, e @ Error::AttestationSupersetKnown(..)) => return e,
             SignatureValid(indexed, err) => (indexed, false, err),
         };
 
