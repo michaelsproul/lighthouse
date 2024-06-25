@@ -225,6 +225,7 @@ lazy_static! {
         "Time spent applying an attestation to the block inclusion pool"
     );
 
+
     /*
      * Attestation Processing
      */
@@ -1175,6 +1176,27 @@ lazy_static! {
     pub static ref LIGHT_CLIENT_SERVER_CACHE_PREV_BLOCK_CACHE_MISS: Result<IntCounter> = try_create_int_counter(
         "beacon_light_client_server_cache_prev_block_cache_miss",
         "Count of prev block cache misses",
+    );
+
+    pub static ref ATTESTATION_PROCESSING_SUCCESSFUL_SLASHER_TIME: Result<Histogram> = try_create_histogram(
+        "beacon_attestation_processing_successful_slasher_time",
+        "Time to apply good attestation to slasher"
+    );
+    pub static ref ATTESTATION_PROCESSING_FAILED_SLASHER_TIME: Result<Histogram> = try_create_histogram(
+        "beacon_attestation_processing_failed_slasher_time",
+        "Time to apply failed attestation to slasher"
+    );
+    pub static ref ATTESTATION_PROCESSING_READ_OBSERVED_TIME: Result<Histogram> = try_create_histogram(
+        "beacon_attestation_processing_read_observed_time",
+        "Time to read observed cache"
+    );
+    pub static ref ATTESTATION_PROCESSING_WRITE_OBSERVED_TIME: Result<Histogram> = try_create_histogram(
+        "beacon_attestation_processing_write_observed_time",
+        "Time to write observed cache"
+    );
+    pub static ref ATTESTATION_PROCESSING_OBTAIN_INDEXED_ATTESTATION_TIME: Result<Histogram> = try_create_histogram(
+        "beacon_attestation_processing_obtain_indexed_time",
+        "Time to obtain indexed attestation"
     );
 }
 

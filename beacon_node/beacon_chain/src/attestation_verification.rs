@@ -379,6 +379,7 @@ fn process_slash_info<T: BeaconChainTypes>(
     use AttestationSlashInfo::*;
 
     if let Some(slasher) = chain.slasher.as_ref() {
+        let _timer = metrics::start_timer(&metrics::ATTESTATION_PROCESSING_FAILED_SLASHER_TIME);
         let (indexed_attestation, check_signature, err) = match slash_info {
             SignatureNotChecked(attestation, err) => {
                 if let Error::UnknownHeadBlock { .. } = err {
@@ -787,6 +788,7 @@ impl<'a, T: BeaconChainTypes> IndexedUnaggregatedAttestation<'a, T> {
          * The attestation is the first valid attestation received for the participating validator
          * for the slot, attestation.data.slot.
          */
+        let timer = metrics::start_timer(&metrics::ATTESTATION_PROCESSING_READ_OBSERVED_TIME);
         if chain
             .observed_gossip_attesters
             .read()
@@ -798,6 +800,7 @@ impl<'a, T: BeaconChainTypes> IndexedUnaggregatedAttestation<'a, T> {
                 epoch: attestation.data.target.epoch,
             });
         }
+        drop(timer);
 
         Ok((validator_index, expected_subnet_id))
     }
@@ -815,6 +818,9 @@ impl<'a, T: BeaconChainTypes> IndexedUnaggregatedAttestation<'a, T> {
         Self::verify_slashable(attestation, subnet_id, chain)
             .map(|verified_unaggregated| {
                 if let Some(slasher) = chain.slasher.as_ref() {
+                    let _timer = metrics::start_timer(
+                        &metrics::ATTESTATION_PROCESSING_SUCCESSFUL_SLASHER_TIME,
+                    );
                     slasher.accept_attestation(verified_unaggregated.indexed_attestation.clone());
                 }
                 verified_unaggregated
@@ -834,6 +840,8 @@ impl<'a, T: BeaconChainTypes> IndexedUnaggregatedAttestation<'a, T> {
             return Err(SignatureNotChecked(attestation, e));
         }
 
+        let timer =
+            metrics::start_timer(&metrics::ATTESTATION_PROCESSING_OBTAIN_INDEXED_ATTESTATION_TIME);
         let (indexed_attestation, committees_per_slot) =
             match obtain_indexed_attestation_and_committees_per_slot(chain, attestation) {
                 Ok(x) => x,
@@ -841,6 +849,7 @@ impl<'a, T: BeaconChainTypes> IndexedUnaggregatedAttestation<'a, T> {
                     return Err(SignatureNotChecked(attestation, e));
                 }
             };
+        drop(timer);
 
         let (validator_index, expected_subnet_id) = match Self::verify_middle_checks(
             attestation,
@@ -883,6 +892,7 @@ impl<'a, T: BeaconChainTypes> VerifiedUnaggregatedAttestation<'a, T> {
         // It's important to double check that the attestation still hasn't been observed, since
         // there can be a race-condition if we receive two attestations at the same time and
         // process them in different threads.
+        let _timer = metrics::start_timer(&metrics::ATTESTATION_PROCESSING_WRITE_OBSERVED_TIME);
         if chain
             .observed_gossip_attesters
             .write()
@@ -903,8 +913,12 @@ impl<'a, T: BeaconChainTypes> VerifiedUnaggregatedAttestation<'a, T> {
         subnet_id: Option<SubnetId>,
         chain: &BeaconChain<T>,
     ) -> Result<Self, Error> {
-        let indexed =
-            IndexedUnaggregatedAttestation::verify(unaggregated_attestation, subnet_id, chain)?;
+        let indexed = IndexedUnaggregatedAttestation::verify_slashable(
+            unaggregated_attestation,
+            subnet_id,
+            chain,
+        )
+        .map_err(|slash_info| process_slash_info(slash_info, chain))?;
         Self::from_indexed(indexed, chain, CheckAttestationSignature::Yes)
     }
 
