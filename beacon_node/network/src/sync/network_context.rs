@@ -177,6 +177,46 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         }
     }
 
+    /// Returns all ids that were requested to the given peer_id
+    pub fn peer_disconnected(&mut self, peer_id: &PeerId) -> Vec<SyncRequestId> {
+        let failed_range_ids =
+            self.range_blocks_and_blobs_requests
+                .iter()
+                .filter_map(|(id, request)| {
+                    if request.1.peer_id == *peer_id {
+                        Some(SyncRequestId::RangeBlockAndBlobs { id: *id })
+                    } else {
+                        None
+                    }
+                });
+
+        let failed_block_ids = self
+            .blocks_by_root_requests
+            .iter()
+            .filter_map(|(id, request)| {
+                if request.peer_id == *peer_id {
+                    Some(SyncRequestId::SingleBlock { id: *id })
+                } else {
+                    None
+                }
+            });
+        let failed_blob_ids = self
+            .blobs_by_root_requests
+            .iter()
+            .filter_map(|(id, request)| {
+                if request.peer_id == *peer_id {
+                    Some(SyncRequestId::SingleBlob { id: *id })
+                } else {
+                    None
+                }
+            });
+
+        failed_range_ids
+            .chain(failed_block_ids)
+            .chain(failed_blob_ids)
+            .collect()
+    }
+
     pub fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {
         &self.network_beacon_processor.network_globals
     }
@@ -272,8 +312,13 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         sender_id: RangeRequestId,
     ) -> Result<Id, RpcRequestSendError> {
         let id = self.blocks_by_range_request(peer_id, batch_type, request)?;
-        self.range_blocks_and_blobs_requests
-            .insert(id, (sender_id, BlocksAndBlobsRequestInfo::new(batch_type)));
+        self.range_blocks_and_blobs_requests.insert(
+            id,
+            (
+                sender_id,
+                BlocksAndBlobsRequestInfo::new(batch_type, peer_id),
+            ),
+        );
         Ok(id)
     }
 
@@ -375,7 +420,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .map_err(|_| RpcRequestSendError::NetworkSendError)?;
 
         self.blocks_by_root_requests
-            .insert(id, ActiveBlocksByRootRequest::new(request));
+            .insert(id, ActiveBlocksByRootRequest::new(request, peer_id));
 
         Ok(LookupRequestResult::RequestSent(req_id))
     }
@@ -453,7 +498,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .map_err(|_| RpcRequestSendError::NetworkSendError)?;
 
         self.blobs_by_root_requests
-            .insert(id, ActiveBlobsByRootRequest::new(request));
+            .insert(id, ActiveBlobsByRootRequest::new(request, peer_id));
 
         Ok(LookupRequestResult::RequestSent(req_id))
     }
