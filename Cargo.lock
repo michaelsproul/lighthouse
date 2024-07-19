@@ -888,6 +888,7 @@ dependencies = [
 name = "beacon_processor"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "fnv",
  "futures",
  "itertools",

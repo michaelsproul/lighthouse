@@ -141,9 +141,15 @@ impl BeaconProcessorQueueLengths {
             };
         let active_validator_count =
             (ACTIVE_VALIDATOR_COUNT_OVERPROVISION_PERCENT * active_validator_count) / 100;
-        let slots_per_epoch = E::slots_per_epoch() as usize;
 
-        Ok(Self {
+        Ok(Self::from_active_validator_count::<E>(
+            active_validator_count,
+        ))
+    }
+
+    pub fn from_active_validator_count<E: EthSpec>(active_validator_count: usize) -> Self {
+        let slots_per_epoch = E::slots_per_epoch() as usize;
+        Self {
             aggregate_queue: 4096,
             unknown_block_aggregate_queue: 1024,
             // Capacity for a full slot's worth of attestations if subscribed to all subnets
@@ -176,7 +182,7 @@ impl BeaconProcessorQueueLengths {
             lc_finality_update_queue: 512,
             api_request_p0_queue: 1024,
             api_request_p1_queue: 1024,
-        })
+        }
     }
 }
 
