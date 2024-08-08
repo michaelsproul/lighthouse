@@ -230,7 +230,7 @@ fn compute_start_slot_at_epoch<E: EthSpec>(epoch: Epoch) -> Slot {
 
 /// Used for queuing attestations from the current slot. Only contains the minimum necessary
 /// information about the attestation.
-#[derive(Clone, PartialEq, Encode, Decode)]
+#[derive(Clone, PartialEq, Encode, Decode, Debug)]
 pub struct QueuedAttestation {
     slot: Slot,
     attesting_indices: Vec<u64>,
@@ -240,6 +240,7 @@ pub struct QueuedAttestation {
 
 impl<'a, E: EthSpec> From<IndexedAttestationRef<'a, E>> for QueuedAttestation {
     fn from(a: IndexedAttestationRef<'a, E>) -> Self {
+        assert!(a.data().slot < 16_000_000);
         Self {
             slot: a.data().slot,
             attesting_indices: a.attesting_indices_to_vec(),
@@ -255,6 +256,9 @@ fn dequeue_attestations(
     current_slot: Slot,
     queued_attestations: &mut Vec<QueuedAttestation>,
 ) -> Vec<QueuedAttestation> {
+    let corrupt_attestation = queued_attestations.iter().find(|q| q.slot >= 16_000_000);
+    assert_eq!(corrupt_attestation, None);
+
     let remaining = queued_attestations.split_off(
         queued_attestations
             .iter()
@@ -262,7 +266,13 @@ fn dequeue_attestations(
             .unwrap_or(queued_attestations.len()),
     );
 
-    std::mem::replace(queued_attestations, remaining)
+    let corrupt_attestation = remaining.iter().find(|q| q.slot >= 16_000_000);
+    assert_eq!(corrupt_attestation, None);
+
+    let result = std::mem::replace(queued_attestations, remaining);
+    let corrupt_attestation = queued_attestations.iter().find(|q| q.slot >= 16_000_000);
+    assert_eq!(corrupt_attestation, None);
+    result
 }
 
 /// Denotes whether an attestation we are processing was received from a block or from gossip.

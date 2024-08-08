@@ -60,6 +60,7 @@ impl_common!(Epoch);
 
 impl Slot {
     pub const fn new(slot: u64) -> Slot {
+        assert!(slot < 16_000_000 || slot == u64::MAX);
         Slot(slot)
     }
 
