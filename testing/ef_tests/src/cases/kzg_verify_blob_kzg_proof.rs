@@ -7,11 +7,21 @@ use serde::Deserialize;
 use std::marker::PhantomData;
 use types::Blob;
 
-pub fn get_kzg() -> Result<Kzg, Error> {
-    let trusted_setup: TrustedSetup = serde_json::from_reader(TRUSTED_SETUP_BYTES)
-        .map_err(|e| Error::InternalError(format!("Failed to initialize kzg: {:?}", e)))?;
-    Kzg::new_from_trusted_setup(trusted_setup)
-        .map_err(|e| Error::InternalError(format!("Failed to initialize kzg: {:?}", e)))
+use lazy_static::lazy_static;
+use std::sync::Arc;
+
+lazy_static! {
+    pub static ref KZG: Arc<Kzg> = {
+        let trusted_setup: TrustedSetup = serde_json::from_reader(TRUSTED_SETUP_BYTES)
+            .map_err(|e| format!("Unable to read trusted setup file: {}", e))
+            .expect("should have trusted setup");
+        let kzg = Kzg::new_from_trusted_setup(trusted_setup).expect("should create kzg");
+        Arc::new(kzg)
+    };
+}
+
+pub fn get_kzg() -> Result<Arc<Kzg>, Error> {
+    Ok(Arc::clone(&KZG))
 }
 
 pub fn parse_cells_and_proofs(
