@@ -15,7 +15,8 @@ lazy_static! {
         let trusted_setup: TrustedSetup = serde_json::from_reader(TRUSTED_SETUP_BYTES)
             .map_err(|e| format!("Unable to read trusted setup file: {}", e))
             .expect("should have trusted setup");
-        let kzg = Kzg::new_from_trusted_setup(trusted_setup).expect("should create kzg");
+        let kzg =
+            Kzg::new_from_trusted_setup_das_enabled(trusted_setup).expect("should create kzg");
         Arc::new(kzg)
     };
 }
