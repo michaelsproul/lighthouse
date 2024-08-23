@@ -5,21 +5,16 @@ use eth2_network_config::TRUSTED_SETUP_BYTES;
 use kzg::{Cell, Error as KzgError, Kzg, KzgCommitment, KzgProof, TrustedSetup};
 use serde::Deserialize;
 use std::marker::PhantomData;
+use std::sync::{Arc, LazyLock};
 use types::Blob;
 
-use lazy_static::lazy_static;
-use std::sync::Arc;
-
-lazy_static! {
-    pub static ref KZG: Arc<Kzg> = {
-        let trusted_setup: TrustedSetup = serde_json::from_reader(TRUSTED_SETUP_BYTES)
-            .map_err(|e| format!("Unable to read trusted setup file: {}", e))
-            .expect("should have trusted setup");
-        let kzg =
-            Kzg::new_from_trusted_setup_das_enabled(trusted_setup).expect("should create kzg");
-        Arc::new(kzg)
-    };
-}
+pub static KZG: LazyLock<Arc<Kzg>> = LazyLock::new(|| {
+    let trusted_setup: TrustedSetup = serde_json::from_reader(TRUSTED_SETUP_BYTES)
+        .map_err(|e| format!("Unable to read trusted setup file: {}", e))
+        .expect("should have trusted setup");
+    let kzg = Kzg::new_from_trusted_setup_das_enabled(trusted_setup).expect("should create kzg");
+    Arc::new(kzg)
+});
 
 pub fn get_kzg() -> Result<Arc<Kzg>, Error> {
     Ok(Arc::clone(&KZG))
