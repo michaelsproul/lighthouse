@@ -11,8 +11,8 @@ use std::sync::Arc;
 use store::DBColumn;
 use store::KeyValueStore;
 use types::light_client_update::{
-    FinalizedRootProofLen, NextSyncCommitteeProofLen, FINALIZED_ROOT_INDEX,
-    NEXT_SYNC_COMMITTEE_INDEX,
+    FinalizedRootProofLen, NextSyncCommitteeBranch, NextSyncCommitteeProofLen,
+    FINALIZED_ROOT_INDEX, NEXT_SYNC_COMMITTEE_INDEX,
 };
 use types::non_zero_usize::new_non_zero_usize;
 use types::{
@@ -348,9 +348,7 @@ impl<T: BeaconChainTypes> Default for LightClientServerCache<T> {
     }
 }
 
-type FinalityBranch = FixedVector<Hash256, FinalizedRootProofLen>;
-type NextSyncCommitteeBranch = FixedVector<Hash256, NextSyncCommitteeProofLen>;
-
+// TODO(electra): this needs an update to become Electra capable
 #[derive(Clone)]
 struct LightClientCachedData<E: EthSpec> {
     finality_branch: FinalityBranch,

@@ -24,19 +24,26 @@ pub const CURRENT_SYNC_COMMITTEE_INDEX: usize = 54;
 pub const NEXT_SYNC_COMMITTEE_INDEX: usize = 55;
 pub const EXECUTION_PAYLOAD_INDEX: usize = 25;
 
+pub const FINALIZED_ROOT_GINDEX_ELECTRA: usize = 169;
+pub const CURRENT_SYNC_COMMITTEE_GINDEX_ELECTRA: usize = 86;
+pub const NEXT_SYNC_COMMITTEE_GINDEX_ELECTRA: usize = 87;
+
 pub type FinalizedRootProofLen = U6;
 pub type CurrentSyncCommitteeProofLen = U5;
 pub type ExecutionPayloadProofLen = U4;
 
 pub type NextSyncCommitteeProofLen = U5;
+pub type NextSyncCommitteeProofLenElectra = U6;
 
 pub const FINALIZED_ROOT_PROOF_LEN: usize = 6;
 pub const CURRENT_SYNC_COMMITTEE_PROOF_LEN: usize = 5;
 pub const NEXT_SYNC_COMMITTEE_PROOF_LEN: usize = 5;
+pub const NEXT_SYNC_COMMITTEE_PROOF_LEN_ELECTRA: usize = 6;
 pub const EXECUTION_PAYLOAD_PROOF_LEN: usize = 4;
 
 type FinalityBranch = FixedVector<Hash256, FinalizedRootProofLen>;
 type NextSyncCommitteeBranch = FixedVector<Hash256, NextSyncCommitteeProofLen>;
+type NextSyncCommitteeBranchElectra = FixedVector<Hash256, NextSyncCommitteeProofLenElectra>;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Error {
@@ -120,7 +127,10 @@ pub struct LightClientUpdate<E: EthSpec> {
     /// The `SyncCommittee` used in the next period.
     pub next_sync_committee: Arc<SyncCommittee<E>>,
     /// Merkle proof for next sync committee
+    #[superstruct(only(Altair, Capella, Deneb))]
     pub next_sync_committee_branch: NextSyncCommitteeBranch,
+    #[superstruct(only(Electra))]
+    pub next_sync_committee_branch: NextSyncCommitteeBranchElectra,
     /// The last `BeaconBlockHeader` from the last attested finalized block (end of epoch).
     #[superstruct(only(Altair), partial_getter(rename = "finalized_header_altair"))]
     pub finalized_header: LightClientHeaderAltair<E>,
