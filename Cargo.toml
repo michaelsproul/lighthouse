@@ -249,3 +249,5 @@ incremental = false
 
 [patch.crates-io]
 quick-protobuf = { git = "https://github.com/sigp/quick-protobuf.git", rev = "681f413312404ab6e51f0b46f39b0075c6f4ebfd" }
+tree_hash = { git = "https://github.com/sigp/tree_hash", branch = "self-by-value" }
+tree_hash_derive = { git = "https://github.com/sigp/tree_hash", branch = "self-by-value" }

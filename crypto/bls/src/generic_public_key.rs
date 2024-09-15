@@ -124,7 +124,7 @@ impl<Pub: TPublicKey> Decode for GenericPublicKey<Pub> {
     impl_ssz_decode!(PUBLIC_KEY_BYTES_LEN);
 }
 
-impl<Pub: TPublicKey> TreeHash for GenericPublicKey<Pub> {
+impl<Pub: TPublicKey> TreeHash for &GenericPublicKey<Pub> {
     impl_tree_hash!(PUBLIC_KEY_BYTES_LEN);
 }
 

@@ -148,7 +148,7 @@ impl<Pub> Decode for GenericPublicKeyBytes<Pub> {
     impl_ssz_decode!(PUBLIC_KEY_BYTES_LEN);
 }
 
-impl<Pub> TreeHash for GenericPublicKeyBytes<Pub> {
+impl<Pub> TreeHash for &GenericPublicKeyBytes<Pub> {
     impl_tree_hash!(PUBLIC_KEY_BYTES_LEN);
 }
 

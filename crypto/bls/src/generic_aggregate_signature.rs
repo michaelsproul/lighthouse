@@ -257,7 +257,7 @@ where
     impl_ssz_decode!(SIGNATURE_BYTES_LEN);
 }
 
-impl<Pub, AggPub, Sig, AggSig> TreeHash for GenericAggregateSignature<Pub, AggPub, Sig, AggSig>
+impl<Pub, AggPub, Sig, AggSig> TreeHash for &GenericAggregateSignature<Pub, AggPub, Sig, AggSig>
 where
     Sig: TSignature<Pub>,
     AggSig: TAggregateSignature<Pub, AggPub, Sig>,

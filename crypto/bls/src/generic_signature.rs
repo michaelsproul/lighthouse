@@ -154,7 +154,7 @@ impl<PublicKey, T: TSignature<PublicKey>> Decode for GenericSignature<PublicKey,
     impl_ssz_decode!(SIGNATURE_BYTES_LEN);
 }
 
-impl<PublicKey, T: TSignature<PublicKey>> TreeHash for GenericSignature<PublicKey, T> {
+impl<PublicKey, T: TSignature<PublicKey>> TreeHash for &GenericSignature<PublicKey, T> {
     impl_tree_hash!(SIGNATURE_BYTES_LEN);
 }
 

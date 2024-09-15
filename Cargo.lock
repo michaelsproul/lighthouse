@@ -8879,8 +8879,7 @@ dependencies = [
 [[package]]
 name = "tree_hash"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "373495c23db675a5192de8b610395e1bec324d596f9e6111192ce903dc11403a"
+source = "git+https://github.com/sigp/tree_hash?branch=self-by-value#37e96ae3bfa4aac897e9d8eb971a7301fb75b7e6"
 dependencies = [
  "alloy-primitives",
  "ethereum_hashing",
@@ -8890,8 +8889,7 @@ dependencies = [
 [[package]]
 name = "tree_hash_derive"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0857056ca4eb5de8c417309be42bcff6017b47e86fbaddde609b4633f66061e"
+source = "git+https://github.com/sigp/tree_hash?branch=self-by-value#37e96ae3bfa4aac897e9d8eb971a7301fb75b7e6"
 dependencies = [
  "darling 0.20.10",
  "proc-macro2",

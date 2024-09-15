@@ -126,7 +126,7 @@ impl<Pub, Sig> Decode for GenericSignatureBytes<Pub, Sig> {
     impl_ssz_decode!(SIGNATURE_BYTES_LEN);
 }
 
-impl<Pub, Sig> TreeHash for GenericSignatureBytes<Pub, Sig> {
+impl<Pub, Sig> TreeHash for &GenericSignatureBytes<Pub, Sig> {
     impl_tree_hash!(SIGNATURE_BYTES_LEN);
 }
 
