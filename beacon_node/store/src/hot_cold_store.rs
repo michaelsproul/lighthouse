@@ -2126,9 +2126,10 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
 
     /// Load the anchor info from disk.
     fn load_anchor_info(hot_db: &Hot) -> Result<AnchorInfo, Error> {
+        // FIXME(sproul): temp change to fix my archive node
         Ok(hot_db
             .get(&ANCHOR_INFO_KEY)?
-            .unwrap_or(ANCHOR_UNINITIALIZED))
+            .unwrap_or(ANCHOR_FOR_ARCHIVE_NODE))
     }
 
     /// Store the given `anchor_info` to disk.

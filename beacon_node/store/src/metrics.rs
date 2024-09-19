@@ -269,6 +269,20 @@ pub static STORE_BEACON_HDIFF_BUFFER_CACHE_MISS: LazyLock<Result<IntCounter>> =
             "Total count of hdiff buffer cache miss",
         )
     });
+pub static STORE_BEACON_HDIFF_BUFFER_INTO_STATE_TIME: LazyLock<Result<Histogram>> =
+    LazyLock::new(|| {
+        try_create_histogram(
+            "store_beacon_hdiff_buffer_into_state_seconds",
+            "Time taken to recreate a BeaconState from an hdiff buffer",
+        )
+    });
+pub static STORE_BEACON_HDIFF_BUFFER_FROM_STATE_TIME: LazyLock<Result<Histogram>> =
+    LazyLock::new(|| {
+        try_create_histogram(
+            "store_beacon_hdiff_buffer_from_state_seconds",
+            "Time taken to create an hdiff buffer from a BeaconState",
+        )
+    });
 pub static STORE_BEACON_REPLAYED_BLOCKS: LazyLock<Result<IntCounter>> = LazyLock::new(|| {
     try_create_int_counter(
         "store_beacon_replayed_blocks_total",
