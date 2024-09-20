@@ -151,6 +151,18 @@ pub static BEACON_STATE_WRITE_BYTES: LazyLock<Result<IntCounter>> = LazyLock::ne
         "Total number of beacon state bytes written to the DB",
     )
 });
+pub static BEACON_HDIFF_READ_TIMES: LazyLock<Result<Histogram>> = LazyLock::new(|| {
+    try_create_histogram(
+        "store_hdiff_read_seconds",
+        "Time required to read the hierarchical diff bytes from the database",
+    )
+});
+pub static BEACON_HDIFF_DECODE_TIMES: LazyLock<Result<Histogram>> = LazyLock::new(|| {
+    try_create_histogram(
+        "store_hdiff_decode_seconds",
+        "Time required to decode hierarchical diff bytes",
+    )
+});
 /*
  * Beacon Block
  */
