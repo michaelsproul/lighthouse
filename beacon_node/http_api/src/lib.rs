@@ -2694,12 +2694,14 @@ pub fn serve<T: BeaconChainTypes>(
         .and(warp::header::optional::<api_types::Accept>("accept"))
         .and(task_spawner_filter.clone())
         .and(chain_filter.clone())
+        .and(log_filter.clone())
         .then(
             |endpoint_version: EndpointVersion,
              state_id: StateId,
              accept_header: Option<api_types::Accept>,
              task_spawner: TaskSpawner<T::EthSpec>,
-             chain: Arc<BeaconChain<T>>| {
+             chain: Arc<BeaconChain<T>>,
+             log| {
                 task_spawner.blocking_response_task(Priority::P1, move || match accept_header {
                     Some(api_types::Accept::Ssz) => {
                         // We can ignore the optimistic status for the "fork" since it's a
@@ -2709,6 +2711,18 @@ pub fn serve<T: BeaconChainTypes>(
                         let fork_name = state
                             .fork_name(&chain.spec)
                             .map_err(inconsistent_fork_rejection)?;
+                        let epoch_cache_decision_block_root = state.proposer_shuffling_decision_root(Hash256::ZERO).unwrap();
+                        debug!(
+                            log,
+                            "State from API cache status";
+                            "total_balance" => state.get_total_active_balance_at_epoch(state.current_epoch()).is_ok(),
+                            "committe_cache" => state.committee_cache_is_initialized(types::RelativeEpoch::Current),
+                            "progressive_balances" => state.progressive_balances_cache().is_initialized_at(state.current_epoch()),
+                            "pubkey_cache" => state.pubkey_cache().len() == state.validators().len(),
+                            "exit_cache" => state.exit_cache().check_initialized().is_ok(),
+                            "slashings_cache" => state.slashings_cache_is_initialized(),
+                            "epoch_cache" => state.epoch_cache().check_validity(state.current_epoch(), epoch_cache_decision_block_root).is_ok()
+                        );
                         let timer = metrics::start_timer(&metrics::HTTP_API_STATE_SSZ_ENCODE_TIMES);
                         let response_bytes = state.as_ssz_bytes();
                         drop(timer);
