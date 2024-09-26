@@ -268,6 +268,10 @@ impl<E: EthSpec> HotColdDB<E, LevelDB<E>, LevelDB<E>> {
             _phantom: PhantomData,
         };
 
+        // FIXME(sproul): temporary
+        let anchor_info = db.anchor_info.read().clone();
+        db.compare_and_set_anchor_info_with_write(anchor_info.clone(), anchor_info)?;
+
         // Load the config from disk but don't error on a failed read because the config itself may
         // need migrating.
         let _ = db.load_config();
@@ -2134,7 +2138,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     fn load_anchor_info(hot_db: &Hot) -> Result<AnchorInfo, Error> {
         Ok(hot_db
             .get(&ANCHOR_INFO_KEY)?
-            .unwrap_or(ANCHOR_UNINITIALIZED))
+            .unwrap_or(ANCHOR_FOR_ARCHIVE_NODE))
     }
 
     /// Store the given `anchor_info` to disk.
