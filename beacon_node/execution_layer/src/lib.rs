@@ -1865,6 +1865,11 @@ impl<E: EthSpec> ExecutionLayer<E> {
         let capabilities = self.get_engine_capabilities(None).await?;
 
         if capabilities.get_blobs_v1 {
+            debug!(
+                self.inner.log,
+                "Making engine_getBlobsV1 request";
+                "num_blobs" => query.len()
+            );
             self.engine()
                 .request(|engine| async move {
                     timed_future(metrics::GET_BLOBS, engine.api.get_blobs(query))
@@ -1875,6 +1880,11 @@ impl<E: EthSpec> ExecutionLayer<E> {
                 .map_err(Box::new)
                 .map_err(Error::EngineError)
         } else {
+            debug!(
+                self.inner.log,
+                "Execution node does not support getBlobsV1";
+                "capabilities" => ?capabilities
+            );
             Ok(vec![None; query.len()])
         }
     }
