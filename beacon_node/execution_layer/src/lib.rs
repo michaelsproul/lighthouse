@@ -1866,7 +1866,11 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
         if capabilities.get_blobs_v1 {
             self.engine()
-                .request(|engine| async move { engine.api.get_blobs(query).await })
+                .request(|engine| async move {
+                    timed_future(metrics::GET_BLOBS, engine.api.get_blobs(query))
+                        .await
+                        .0
+                })
                 .await
                 .map_err(Box::new)
                 .map_err(Error::EngineError)
