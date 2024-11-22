@@ -149,8 +149,7 @@ libsecp256k1 = "0.7"
 log = "0.4"
 lru = "0.12"
 maplit = "1"
-# milhouse = "0.3"
-milhouse  = { git = "https://github.com/sigp/milhouse", branch = "mem-usage" }
+milhouse = "0.3"
 num_cpus = "1"
 parking_lot = "0.12"
 paste = "1"
@@ -275,4 +274,3 @@ incremental = false
 
 [patch.crates-io]
 quick-protobuf = { git = "https://github.com/sigp/quick-protobuf.git", rev = "681f413312404ab6e51f0b46f39b0075c6f4ebfd" }
-metastruct = { git = "https://github.com/sigp/metastruct", branch = "lifetime-tweaks" }

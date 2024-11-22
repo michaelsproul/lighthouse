@@ -4631,7 +4631,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4979f22fdb869068da03c9f7528f8297c6fd2606bc3a4affe42e6a823fdb8da4"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -5434,7 +5434,8 @@ dependencies = [
 [[package]]
 name = "metastruct"
 version = "0.1.2"
-source = "git+https://github.com/sigp/metastruct?branch=lifetime-tweaks#1c289a576855f466a5584d4c53ec5103fd53d79a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f00a5ba4a0f3453c31c397b214e1675d95b697c33763aa58add57ea833424384"
 dependencies = [
  "metastruct_macro",
 ]
@@ -5442,7 +5443,8 @@ dependencies = [
 [[package]]
 name = "metastruct_macro"
 version = "0.1.2"
-source = "git+https://github.com/sigp/metastruct?branch=lifetime-tweaks#1c289a576855f466a5584d4c53ec5103fd53d79a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c3a991d4536c933306e52f0e8ab303757185ec13a09d1f3e1cbde5a0d8410bf"
 dependencies = [
  "darling 0.13.4",
  "itertools 0.10.5",
@@ -5483,7 +5485,8 @@ dependencies = [
 [[package]]
 name = "milhouse"
 version = "0.3.0"
-source = "git+https://github.com/sigp/milhouse?branch=mem-usage#7b4278555ea59e78e90915942ce79fed9ddfbf39"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f68e33f98199224d1073f7c1468ea6abfea30736306fb79c7181a881e97ea32f"
 dependencies = [
  "alloy-primitives",
  "arbitrary",
@@ -9815,7 +9818,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
