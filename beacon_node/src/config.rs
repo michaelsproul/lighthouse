@@ -918,18 +918,20 @@ pub fn get_config<E: EthSpec>(
             .map_err(|e| format!("Failed to read invalid-block-roots file {}", e))?;
         let invalid_block_roots: HashSet<Hash256> = contents
             .split(',')
-            .filter_map(|s| match Hash256::from_str(s.trim()) {
-                Ok(block_root) => Some(block_root),
-                Err(e) => {
-                    warn!(
-                        log,
-                        "Unable to parse invalid block root";
-                        "block_root" => s,
-                        "error" => ?e,
-                    );
-                    None
-                }
-            })
+            .filter_map(
+                |s| match Hash256::from_str(s.strip_prefix("0x").unwrap_or(s).trim()) {
+                    Ok(block_root) => Some(block_root),
+                    Err(e) => {
+                        warn!(
+                            log,
+                            "Unable to parse invalid block root";
+                            "block_root" => s,
+                            "error" => ?e,
+                        );
+                        None
+                    }
+                },
+            )
             .collect();
         client_config.chain.invalid_block_roots = invalid_block_roots;
     }
