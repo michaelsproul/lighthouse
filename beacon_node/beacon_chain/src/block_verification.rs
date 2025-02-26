@@ -1352,9 +1352,7 @@ impl<T: BeaconChainTypes> ExecutionPendingBlock<T> {
                 false
             }
         };
-        if chain.config.invalid_block_roots.contains(&block_root)
-            || invalid_holesky_block
-        {
+        if chain.config.invalid_block_roots.contains(&block_root) || invalid_holesky_block {
             return Err(BlockError::KnownInvalidExecutionPayload(block_root));
         }
 
