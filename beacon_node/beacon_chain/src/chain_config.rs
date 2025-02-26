@@ -1,7 +1,7 @@
 pub use proto_array::{DisallowedReOrgOffsets, ReOrgThreshold};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use types::{Checkpoint, Epoch};
+use std::{collections::HashSet, time::Duration};
+use types::{Checkpoint, Epoch, Hash256};
 
 pub const DEFAULT_RE_ORG_HEAD_THRESHOLD: ReOrgThreshold = ReOrgThreshold(20);
 pub const DEFAULT_RE_ORG_PARENT_THRESHOLD: ReOrgThreshold = ReOrgThreshold(160);
@@ -96,6 +96,7 @@ pub struct ChainConfig {
     pub blob_publication_batch_interval: Duration,
     pub disable_attesting: bool,
     pub sync_tolerance_epochs: u64,
+    pub invalid_block_roots: HashSet<Hash256>,
 }
 
 impl Default for ChainConfig {
@@ -133,6 +134,7 @@ impl Default for ChainConfig {
             blob_publication_batch_interval: Duration::from_millis(300),
             disable_attesting: false,
             sync_tolerance_epochs: 16,
+            invalid_block_roots: HashSet::new(),
         }
     }
 }

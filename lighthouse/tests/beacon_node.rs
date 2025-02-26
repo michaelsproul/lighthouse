@@ -2759,3 +2759,19 @@ fn beacon_node_backend_override() {
             assert_eq!(config.store.backend, BeaconNodeBackend::LevelDb);
         });
 }
+
+#[test]
+fn invalid_block_root_flag() {
+    let dir = TempDir::new().expect("Unable to create temporary directory");
+    let mut file =
+        File::create(dir.path().join("invalid-block-roots")).expect("Unable to create file");
+    file.write_all(b"2db899881ed8546476d0b92c6aa9110bea9a4cd0dbeb5519eb0ea69575f1f359, 2lb899881ed8546476d0b92c6aa9110bea9a4cd0dbeb5519eb0ea69575f1f359")
+        .expect("Unable to write to file");
+    CommandLineTest::new()
+        .flag(
+            "invalid-block-roots",
+            dir.path().join("invalid-block-roots").as_os_str().to_str(),
+        )
+        .run_with_zero_port()
+        .with_config(|config| assert!(config.chain.invalid_block_roots.len() == 2))
+}
