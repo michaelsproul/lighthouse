@@ -58,6 +58,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use types::milhouse::mem::MemoryTracker;
 use types::{BeaconState, EthSpec, Hash256};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -129,21 +130,80 @@ pub fn run<E: EthSpec>(
     };
 
     for i in 0..runs {
-        let mut state = state.clone();
+        let mut post_state_mut = state.clone();
 
         let start = Instant::now();
 
+        let mut memory_tracker = MemoryTracker::default();
+
+        let pre_balances = memory_tracker.track_item(state.balances());
+        let pre_validators = memory_tracker.track_item(state.validators());
+        let pre_inactivity_scores = memory_tracker.track_item(state.inactivity_scores().unwrap());
+
         if partial {
-            partial_state_advance(&mut state, Some(state_root), target_slot, spec)
+            partial_state_advance(&mut post_state_mut, Some(state_root), target_slot, spec)
                 .map_err(|e| format!("Unable to perform partial advance: {:?}", e))?;
         } else {
-            complete_state_advance(&mut state, Some(state_root), target_slot, spec)
+            complete_state_advance(&mut post_state_mut, Some(state_root), target_slot, spec)
                 .map_err(|e| format!("Unable to perform complete advance: {:?}", e))?;
         }
 
+        post_state_mut.update_tree_hash_cache().unwrap();
+
+        // Sneaky intra-rebases.
+        post_state_mut.balances_mut().intra_rebase().unwrap();
+
+        let rebase_time = std::time::Instant::now();
+        post_state_mut
+            .inactivity_scores_mut()
+            .unwrap()
+            .intra_rebase()
+            .unwrap();
+        info!(
+            "Inactivity score intra-rebase time: {}ms",
+            rebase_time.elapsed().as_millis()
+        );
+
+        let post_balances = memory_tracker.track_item(post_state_mut.balances());
+        let post_validators = memory_tracker.track_item(post_state_mut.validators());
+        let post_inactivity_scores =
+            memory_tracker.track_item(post_state_mut.inactivity_scores().unwrap());
+
+        info!(
+            "Post-state balances size (total/diff): {}-{} B/{} B",
+            pre_balances.total_size, post_balances.total_size, post_balances.differential_size
+        );
+        info!(
+            "Post-state validators size: {}-{} B/{} B",
+            pre_validators.total_size,
+            post_validators.total_size,
+            post_validators.differential_size
+        );
+        info!(
+            "Post-state inactivity_scores size: {}-{} B/{} B",
+            pre_inactivity_scores.total_size,
+            post_inactivity_scores.total_size,
+            post_inactivity_scores.differential_size
+        );
+
+        /*
+        let mut consecutive_scores = post_state_mut
+            .balances()
+            .to_vec()
+            .chunk_by(|x, y| x == y)
+            .map(|scores| (scores[0], scores.len()))
+            .collect::<Vec<_>>();
+
+        consecutive_scores.sort_by_key(|(_, count)| usize::MAX - count);
+
+        for (score, count) in consecutive_scores {
+            info!("Inactivity score {}: {} entries", score, count);
+        }
+        */
+
         let duration = Instant::now().duration_since(start);
         info!("Run {}: {:?}", i, duration);
-        post_state = Some(state);
+        post_state = Some(post_state_mut);
     }
 
     if let (Some(post_state), Some(output_path)) = (post_state, output_path) {

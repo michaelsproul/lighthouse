@@ -156,7 +156,8 @@ libsecp256k1 = "0.7"
 log = "0.4"
 lru = "0.12"
 maplit = "1"
-milhouse  = { git = "https://github.com/sigp/milhouse", branch = "mem-usage" }
+# milhouse  = { git = "https://github.com/sigp/milhouse", branch = "mem-usage" }
+milhouse = { path = "../milhouse" }
 mockito = "1.5.0"
 num_cpus = "1"
 parking_lot = "0.12"
