@@ -129,6 +129,14 @@ pub fn run<E: EthSpec>(
             .map_err(|e| format!("Unable to build THC: {:?}", e))?
     };
 
+    // Intra-rebase pre state. In most cases we will be diffing off states from that cache that
+    // have already been intra-rebased.
+    state
+        .inactivity_scores_mut()
+        .unwrap()
+        .intra_rebase()
+        .unwrap();
+
     for i in 0..runs {
         let mut post_state_mut = state.clone();
 
