@@ -156,8 +156,9 @@ const EARLY_ATTESTER_CACHE_HISTORIC_SLOTS: u64 = 4;
 const MAX_PER_SLOT_FORK_CHOICE_DISTANCE: u64 = 256;
 
 /// Invalid block root to be banned from processing and importing on Holesky network.
+/// FIXME(sproul): this is hacked to actually be the first block on the valid chain after the split
 static INVALID_HOLESKY_BLOCK_ROOT: LazyLock<Hash256> = LazyLock::new(|| {
-    Hash256::from_str("2db899881ed8546476d0b92c6aa9110bea9a4cd0dbeb5519eb0ea69575f1f359")
+    Hash256::from_str("8ce1c41b23acbfa2748fac0725157785ae53c7200d959b22172ce8ae355a4540")
         .expect("valid block root")
 });
 
