@@ -551,33 +551,40 @@ impl<E: EthSpec> Eth1ChainBackend<E> for CachingEth1Backend<E> {
         eth1_data_vote: &Eth1Data,
         _spec: &ChainSpec,
     ) -> Result<Vec<Deposit>, Error> {
-        let deposit_index = state.eth1_deposit_index();
-        let deposit_count = if let Some(new_eth1_data) = get_new_eth1_data(state, eth1_data_vote)? {
-            new_eth1_data.deposit_count
-        } else {
-            state.eth1_data().deposit_count
-        };
+        let state_eth1_deposit_index = state.eth1_deposit_index();
 
-        // [New in Electra:EIP6110]
-        let deposit_index_limit =
-            if let Ok(deposit_requests_start_index) = state.deposit_requests_start_index() {
-                std::cmp::min(deposit_count, deposit_requests_start_index)
+        // The value that `state.eth1_data.deposit_count` will take *after* applying our
+        // `eth1_data_vote` is applied.
+        let state_eth1_data_deposit_count =
+            if let Some(new_eth1_data) = get_new_eth1_data(state, eth1_data_vote)? {
+                new_eth1_data.deposit_count
             } else {
-                deposit_count
+                state.eth1_data().deposit_count
             };
 
-        match deposit_index.cmp(&deposit_index_limit) {
+        // [New in Electra:EIP6110]
+        let eth1_deposit_index_limit =
+            if let Ok(deposit_requests_start_index) = state.deposit_requests_start_index() {
+                std::cmp::min(state_eth1_data_deposit_count, deposit_requests_start_index)
+            } else {
+                state_eth1_data_deposit_count
+            };
+
+        match state_eth1_deposit_index.cmp(&eth1_deposit_index_limit) {
             Ordering::Greater => Err(Error::DepositIndexTooHigh),
             Ordering::Equal => Ok(vec![]),
             Ordering::Less => {
-                let next = deposit_index;
-                let last = std::cmp::min(deposit_index_limit, next + E::MaxDeposits::to_u64());
+                // Num deposits = `last - next`, i.e.
+                // `min(MAX_DEPOSITS, eth1_deposit_index_limit - state.eth1_deposit_index)`.
+                // The same as the spec.
+                let next = state_eth1_deposit_index;
+                let last = std::cmp::min(next + E::MaxDeposits::to_u64(), eth1_deposit_index_limit);
 
                 self.core
                     .deposits()
                     .read()
                     .cache
-                    .get_deposits(next, last, deposit_count)
+                    .get_deposits(next, last, state_eth1_data_deposit_count)
                     .map_err(|e| Error::BackendError(format!("Failed to get deposits: {:?}", e)))
                     .map(|(_deposit_root, deposits)| deposits)
             }
