@@ -117,7 +117,7 @@ pub const DEFAULT_REMAINING_DETECTION_EPOCHS: u64 = 1;
 /// initialises the doppelganger protection. For this reason, we abstract the validator store
 /// functions this service needs through the following trait
 pub trait DoppelgangerValidatorStore {
-    fn get_validator_index(&self, pubkey: &PublicKeyBytes) -> Option<u64>;
+    async fn get_validator_index(&self, pubkey: &PublicKeyBytes) -> Option<u64>;
 }
 
 /// Store the per-validator status of doppelganger checking.
@@ -299,7 +299,10 @@ impl DoppelgangerService {
         V: DoppelgangerValidatorStore + Send + Sync + 'static,
     {
         // Define the `get_index` function as one that uses the validator store.
-        let get_index = move |pubkey| validator_store.get_validator_index(&pubkey);
+        let get_index = move |pubkey| {
+            let inner_store = validator_store.clone();
+            async move { inner_store.clone().get_validator_index(&pubkey).await }
+        };
 
         // Define the `get_liveness` function as one that queries the beacon node API.
         let log = service.log.clone();
@@ -351,7 +354,7 @@ impl DoppelgangerService {
 
                     if let Some(slot) = slot_clock.now() {
                         if let Err(e) = service
-                            .detect_doppelgangers::<E, _, _, _, _>(
+                            .detect_doppelgangers::<E, _, _, _, _, _>(
                                 slot,
                                 &get_index,
                                 &get_liveness,
@@ -444,7 +447,7 @@ impl DoppelgangerService {
     /// This function is relatively complex when it comes to generic parameters. This is to allow
     /// for simple unit testing. Using these generics, we can test the `DoppelgangerService` without
     /// needing a BN API or a `ValidatorStore`.
-    async fn detect_doppelgangers<E, I, L, F, S>(
+    async fn detect_doppelgangers<E, I, L, F, G, S>(
         &self,
         request_slot: Slot,
         get_index: &I,
@@ -453,13 +456,14 @@ impl DoppelgangerService {
     ) -> Result<(), String>
     where
         E: EthSpec,
-        I: Fn(PublicKeyBytes) -> Option<u64>,
+        I: Fn(PublicKeyBytes) -> G,
         L: Fn(Epoch, Vec<u64>) -> F,
         F: Future<Output = LivenessResponses>,
+        G: Future<Output = Option<u64>>,
         S: FnMut(),
     {
         // Get all validators with active doppelganger protection.
-        let indices_map = self.compute_detection_indices_map(get_index);
+        let indices_map = self.compute_detection_indices_map(get_index).await;
 
         if indices_map.is_empty() {
             // Nothing to do.
@@ -486,9 +490,13 @@ impl DoppelgangerService {
     /// further doppelganger checks.
     ///
     /// Any validator with an unknown index will be omitted from these results.
-    fn compute_detection_indices_map<F>(&self, get_index: &F) -> HashMap<u64, PublicKeyBytes>
+    async fn compute_detection_indices_map<F, G>(
+        &self,
+        get_index: &F,
+    ) -> HashMap<u64, PublicKeyBytes>
     where
-        F: Fn(PublicKeyBytes) -> Option<u64>,
+        F: Fn(PublicKeyBytes) -> G,
+        G: Future<Output = Option<u64>>,
     {
         let detection_pubkeys = self
             .doppelganger_states
@@ -510,7 +518,7 @@ impl DoppelgangerService {
         // any other locks. That is why this is a separate loop to the one that generates
         // `detection_pubkeys`.
         for pubkey in detection_pubkeys {
-            if let Some(index) = get_index(pubkey) {
+            if let Some(index) = get_index(pubkey).await {
                 indices_map.insert(index, pubkey);
             }
         }

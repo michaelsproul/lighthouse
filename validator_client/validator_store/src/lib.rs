@@ -1,7 +1,7 @@
 use account_utils::validator_definitions::{PasswordStorage, ValidatorDefinition};
 use doppelganger_service::{DoppelgangerService, DoppelgangerStatus, DoppelgangerValidatorStore};
 use initialized_validators::InitializedValidators;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use signing_method::{Error as SigningError, SignableMessage, SigningContext, SigningMethod};
 use slashing_protection::{
@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 use task_executor::TaskExecutor;
+use tokio::sync::RwLock;
 use types::{
     attestation::Error as AttestationError, graffiti::GraffitiString, AbstractExecPayload, Address,
     AggregateAndProof, Attestation, BeaconBlock, BlindedPayload, ChainSpec, ContributionAndProof,
@@ -96,8 +97,8 @@ pub struct ValidatorStore<T, E: EthSpec> {
 }
 
 impl<T: SlotClock + 'static, E: EthSpec> DoppelgangerValidatorStore for ValidatorStore<T, E> {
-    fn get_validator_index(&self, pubkey: &PublicKeyBytes) -> Option<u64> {
-        self.validator_index(pubkey)
+    async fn get_validator_index(&self, pubkey: &PublicKeyBytes) -> Option<u64> {
+        self.validator_index(pubkey).await
     }
 }
 
@@ -140,9 +141,9 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore<T, E> {
     /// duplicate validators operating on the network at the same time.
     ///
     /// This function has no effect if doppelganger protection is disabled.
-    pub fn register_all_in_doppelganger_protection_if_enabled(&self) -> Result<(), String> {
+    pub async fn register_all_in_doppelganger_protection_if_enabled(&self) -> Result<(), String> {
         if let Some(doppelganger_service) = &self.doppelganger_service {
-            for pubkey in self.validators.read().iter_voting_pubkeys() {
+            for pubkey in self.validators.read().await.iter_voting_pubkeys() {
                 doppelganger_service.register_new_validator::<E, _>(*pubkey, &self.slot_clock)?
             }
         }
@@ -160,9 +161,10 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore<T, E> {
     }
 
     /// Indicates if the `voting_public_key` exists in self and is enabled.
-    pub fn has_validator(&self, voting_public_key: &PublicKeyBytes) -> bool {
+    pub async fn has_validator(&self, voting_public_key: &PublicKeyBytes) -> bool {
         self.validators
             .read()
+            .await
             .validator(voting_public_key)
             .is_some()
     }
@@ -206,8 +208,6 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore<T, E> {
     /// - Adding the validator definition to the YAML file, saving it to the filesystem.
     /// - Enabling the validator with the slashing protection database.
     /// - If `enable == true`, starting to perform duties for the validator.
-    // FIXME: ignore this clippy lint until the validator store is refactored to use async locks
-    #[allow(clippy::await_holding_lock)]
     pub async fn add_validator(
         &self,
         validator_def: ValidatorDefinition,
@@ -225,6 +225,7 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore<T, E> {
 
         self.validators
             .write()
+            .await
             .add_definition_replace_disabled(validator_def.clone())
             .await
             .map_err(|e| format!("Unable to add definition: {:?}", e))?;
@@ -235,9 +236,10 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore<T, E> {
     /// Returns `ProposalData` for the provided `pubkey` if it exists in `InitializedValidators`.
     /// `ProposalData` fields include defaulting logic described in `get_fee_recipient_defaulting`,
     /// `get_gas_limit_defaulting`, and `get_builder_proposals_defaulting`.
-    pub fn proposal_data(&self, pubkey: &PublicKeyBytes) -> Option<ProposalData> {
+    pub async fn proposal_data(&self, pubkey: &PublicKeyBytes) -> Option<ProposalData> {
         self.validators
             .read()
+            .await
             .validator(pubkey)
             .map(|validator| ProposalData {
                 validator_index: validator.get_index(),
@@ -255,8 +257,8 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore<T, E> {
     ///
     /// - Unknown.
     /// - Known, but with an unknown index.
-    pub fn validator_index(&self, pubkey: &PublicKeyBytes) -> Option<u64> {
-        self.validators.read().get_index(pubkey)
+    pub async fn validator_index(&self, pubkey: &PublicKeyBytes) -> Option<u64> {
+        self.validators.read().await.get_index(pubkey)
     }
 
     /// Returns all voting pubkeys for all enabled validators.
@@ -460,8 +462,8 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore<T, E> {
     /// 1. validator_definitions.yml
     /// 2. process level gas limit
     /// 3. `DEFAULT_GAS_LIMIT`
-    pub fn get_gas_limit(&self, validator_pubkey: &PublicKeyBytes) -> u64 {
-        self.get_gas_limit_defaulting(self.validators.read().gas_limit(validator_pubkey))
+    pub async fn get_gas_limit(&self, validator_pubkey: &PublicKeyBytes) -> u64 {
+        self.get_gas_limit_defaulting(self.validators.read().await.gas_limit(validator_pubkey))
     }
 
     fn get_gas_limit_defaulting(&self, gas_limit: Option<u64>) -> u64 {

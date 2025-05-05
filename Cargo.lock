@@ -9923,6 +9923,7 @@ dependencies = [
  "slog",
  "slot_clock",
  "task_executor",
+ "tokio",
  "types",
  "validator_metrics",
 ]
