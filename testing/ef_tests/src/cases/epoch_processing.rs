@@ -16,11 +16,11 @@ use state_processing::per_epoch_processing::single_pass::{
 use state_processing::per_epoch_processing::{
     altair, base,
     historical_roots_update::process_historical_roots_update,
-    process_registry_updates, process_registry_updates_slow, process_slashings,
+    process_epoch, process_registry_updates, process_registry_updates_slow, process_slashings,
     process_slashings_slow,
     resets::{process_eth1_data_reset, process_randao_mixes_reset, process_slashings_reset},
 };
-use state_processing::EpochProcessingError;
+use state_processing::{AllCaches, EpochProcessingError};
 use std::marker::PhantomData;
 use types::BeaconState;
 
@@ -35,8 +35,14 @@ pub struct Metadata {
 pub struct EpochProcessing<E: EthSpec, T: EpochTransition<E>> {
     pub path: PathBuf,
     pub metadata: Metadata,
+    /// State before individual epoch sub-transition.
     pub pre: BeaconState<E>,
+    /// State after individual epoch sub-transition.
     pub post: Option<BeaconState<E>>,
+    /// State before full epoch transition.
+    pub pre_epoch: Option<BeaconState<E>>,
+    /// State after full epoch transition.
+    pub post_epoch: Option<BeaconState<E>>,
     #[serde(skip_deserializing)]
     _phantom: PhantomData<T>,
 }
@@ -296,12 +302,26 @@ impl<E: EthSpec, T: EpochTransition<E>> LoadCase for EpochProcessing<E, T> {
         } else {
             None
         };
+        let pre_epoch_file = path.join("pre_epoch.ssz_snappy");
+        let pre_epoch = if pre_epoch_file.is_file() {
+            Some(ssz_decode_state(&path.join("pre_epoch.ssz_snappy"), spec)?)
+        } else {
+            None
+        };
+        let post_epoch_file = path.join("post_epoch.ssz_snappy");
+        let post_epoch = if post_epoch_file.is_file() {
+            Some(ssz_decode_state(&post_epoch_file, spec)?)
+        } else {
+            None
+        };
 
         Ok(Self {
             path: path.into(),
             metadata,
             pre,
             post,
+            pre_epoch,
+            post_epoch,
             _phantom: PhantomData,
         })
     }
@@ -359,6 +379,19 @@ impl<E: EthSpec, T: EpochTransition<E>> Case for EpochProcessing<E, T> {
 
         let mut result = T::run(&mut state, spec).map(|_| state);
 
-        compare_beacon_state_results_without_caches(&mut result, &mut expected)
+        compare_beacon_state_results_without_caches(&mut result, &mut expected)?;
+
+        // Run the full epoch transition version of the test for good measure.
+        // Not all tests seem to have pre-epoch states available, so we just skip these.
+        // In future we could error if the pre-epoch state is missing.
+        let Some(mut pre_epoch) = self.pre_epoch.clone() else {
+            return Ok(());
+        };
+        pre_epoch.build_all_caches(spec).unwrap();
+
+        let mut result_epoch = process_epoch(&mut pre_epoch, spec).map(|_| pre_epoch);
+        let mut expected_epoch = self.post_epoch.clone();
+
+        compare_beacon_state_results_without_caches(&mut result_epoch, &mut expected_epoch)
     }
 }
