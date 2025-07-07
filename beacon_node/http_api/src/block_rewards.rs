@@ -1,4 +1,6 @@
-use beacon_chain::{BeaconChain, BeaconChainError, BeaconChainTypes, WhenSlotSkipped};
+use beacon_chain::{
+    BeaconChain, BeaconChainError, BeaconChainTypes, StateSkipConfig, WhenSlotSkipped,
+};
 use eth2::lighthouse::{BlockReward, BlockRewardsQuery};
 use lru::LruCache;
 use state_processing::BlockReplayer;
@@ -37,17 +39,11 @@ pub fn get_block_rewards<T: BeaconChainTypes>(
         .load_blocks_to_replay(start_slot, end_slot, end_block_root)
         .map_err(|e| unhandled_error(BeaconChainError::from(e)))?;
 
-    let state_root = chain
-        .state_root_at_slot(prior_slot)
-        .map_err(unhandled_error)?
-        .ok_or_else(|| custom_bad_request(format!("prior state at slot {} unknown", prior_slot)))?;
-
-    // This branch is reached from the HTTP API. We assume the user wants
-    // to cache states so that future calls are faster.
     let mut state = chain
-        .get_state(&state_root, Some(prior_slot), true)
-        .and_then(|maybe_state| maybe_state.ok_or(BeaconChainError::MissingBeaconState(state_root)))
-        .map_err(unhandled_error)?;
+        .state_at_slot(prior_slot, StateSkipConfig::WithStateRoots)
+        .map_err(|e| {
+            custom_bad_request(format!("prior state at slot {prior_slot} unknown: {e:?}"))
+        })?;
 
     state
         .build_caches(&chain.spec)

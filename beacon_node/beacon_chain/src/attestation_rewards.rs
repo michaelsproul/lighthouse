@@ -1,4 +1,4 @@
-use crate::{BeaconChain, BeaconChainError, BeaconChainTypes};
+use crate::{BeaconChain, BeaconChainError, BeaconChainTypes, StateSkipConfig};
 use eth2::types::{
     IdealAttestationRewards, StandardAttestationRewards, TotalAttestationRewards, ValidatorId,
 };
@@ -46,16 +46,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
         // Get state
         let state_slot = (epoch + 1).end_slot(T::EthSpec::slots_per_epoch());
-
-        let state_root = self
-            .state_root_at_slot(state_slot)?
-            .ok_or(BeaconChainError::NoStateForSlot(state_slot))?;
-
-        // This branch is reached from the HTTP API. We assume the user wants
-        // to cache states so that future calls are faster.
-        let state = self
-            .get_state(&state_root, Some(state_slot), true)?
-            .ok_or(BeaconChainError::MissingBeaconState(state_root))?;
+        let state = self.state_at_slot(state_slot, StateSkipConfig::WithStateRoots)?;
 
         if state.fork_name_unchecked().altair_enabled() {
             self.compute_attestation_rewards_altair(state, validators)

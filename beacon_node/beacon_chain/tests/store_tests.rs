@@ -13,7 +13,8 @@ use beacon_chain::test_utils::{
 use beacon_chain::{
     data_availability_checker::MaybeAvailableBlock, historical_blocks::HistoricalBlockError,
     migrate::MigratorConfig, BeaconChain, BeaconChainError, BeaconChainTypes, BeaconSnapshot,
-    BlockError, ChainConfig, NotifyExecutionLayer, ServerSentEventHandler, WhenSlotSkipped,
+    BlockError, ChainConfig, NotifyExecutionLayer, ServerSentEventHandler, StateRootAtSlot,
+    WhenSlotSkipped,
 };
 use logging::create_test_tracing_subscriber;
 use maplit::hashset;
@@ -2340,6 +2341,7 @@ async fn weak_subjectivity_sync_test(
         .chain
         .state_root_at_slot(checkpoint_slot)
         .unwrap()
+        .to_state_root()
         .unwrap();
 
     let wss_block = harness
@@ -2512,9 +2514,12 @@ async fn weak_subjectivity_sync_test(
             None
         );
 
-        // Simulate querying the API for a historic state that is unknown. It should also return
-        // `None` rather than erroring.
-        assert_eq!(beacon_chain.state_root_at_slot(Slot::new(1)).unwrap(), None);
+        // Simulate querying the API for a historic state that is unknown. It should return an
+        // indication that the slot is pruned rather than erroring.
+        assert_eq!(
+            beacon_chain.state_root_at_slot(Slot::new(1)).unwrap(),
+            StateRootAtSlot::Pruned
+        );
 
         // Supply blocks backwards to reach genesis. Omit the genesis block to check genesis handling.
         let historical_blocks = chain_dump[..wss_block.slot().as_usize()]

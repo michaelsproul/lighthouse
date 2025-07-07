@@ -182,6 +182,30 @@ pub enum AvailabilityProcessingStatus {
     Imported(Hash256),
 }
 
+/// Result for `state_root_at_slot` requests.
+///
+/// Queries for state roots can sometimes be resolved immediately
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateRootAtSlot {
+    /// The slot lies within the range of slots for which state is stored.
+    Known(Hash256),
+    /// The slot lies in the future. This state root could be computed using a state advance by
+    /// calling a function like `state_root_at_slot`.
+    Future,
+    /// The slot lies outside the range of slots for which state is stored, and cannot be computed
+    /// by simply advancing a hot state. State reconstruction is required to reach it.
+    Pruned,
+}
+
+impl StateRootAtSlot {
+    pub fn to_state_root(self) -> Option<Hash256> {
+        match self {
+            StateRootAtSlot::Known(root) => Some(root),
+            StateRootAtSlot::Pruned | StateRootAtSlot::Future => None,
+        }
+    }
+}
+
 impl TryInto<SignedBeaconBlockHash> for AvailabilityProcessingStatus {
     type Error = ();
 
@@ -596,6 +620,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         let slot_is_finalized = state_slot <= finalized_slot;
         let canonical = self
             .state_root_at_slot(state_slot)?
+            .to_state_root()
             .is_some_and(|canonical_root| state_root == &canonical_root);
         Ok(FinalizationAndCanonicity {
             slot_is_finalized,
@@ -875,35 +900,41 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     /// ## Errors
     ///
     /// May return a database error.
-    pub fn state_root_at_slot(&self, request_slot: Slot) -> Result<Option<Hash256>, Error> {
+    pub fn state_root_at_slot(&self, request_slot: Slot) -> Result<StateRootAtSlot, Error> {
         if request_slot == self.spec.genesis_slot {
-            return Ok(Some(self.genesis_state_root));
+            return Ok(StateRootAtSlot::Known(self.genesis_state_root));
         } else if request_slot > self.slot()? {
-            return Ok(None);
+            return Ok(StateRootAtSlot::Future);
         }
 
         // Check limits w.r.t historic state bounds.
         let (historic_lower_limit, historic_upper_limit) = self.store.get_historic_state_limits();
         if request_slot > historic_lower_limit && request_slot < historic_upper_limit {
-            return Ok(None);
+            return Ok(StateRootAtSlot::Pruned);
         }
 
         // Try an optimized path of reading the root directly from the head state.
-        let fast_lookup: Option<Hash256> = self.with_head(|head| {
-            if head.beacon_block.slot() <= request_slot {
-                // Return the head state root if all slots between the request and the head are skipped.
-                Ok(Some(head.beacon_state_root()))
-            } else if let Ok(root) = head.beacon_state.get_state_root(request_slot) {
-                // Return the root if it's easily accessible from the head state.
-                Ok(Some(*root))
-            } else {
-                // Fast lookup is not possible.
-                Ok::<_, Error>(None)
+        let fast_lookup: Option<StateRootAtSlot> = self.with_head(|head| {
+            match head.beacon_state.slot().cmp(&request_slot) {
+                Ordering::Greater => {
+                    // Slot lies in the future, would need to be computed.
+                    Ok(Some(StateRootAtSlot::Future))
+                }
+                Ordering::Equal => Ok(Some(StateRootAtSlot::Known(head.beacon_state_root()))),
+                Ordering::Less => {
+                    if let Ok(root) = head.beacon_state.get_state_root(request_slot) {
+                        // Return the root if it's easily accessible from the head state.
+                        Ok(Some(StateRootAtSlot::Known(*root)))
+                    } else {
+                        // Fast lookup is not possible.
+                        Ok::<_, Error>(None)
+                    }
+                }
             }
         })?;
 
-        if let Some(root) = fast_lookup {
-            return Ok(Some(root));
+        if let Some(result) = fast_lookup {
+            return Ok(result);
         }
 
         process_results(
@@ -911,13 +942,13 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             |mut iter| {
                 if let Some((root, slot)) = iter.next() {
                     if slot == request_slot {
-                        Ok(Some(root))
+                        Ok(StateRootAtSlot::Known(root))
                     } else {
                         // Sanity check.
                         Err(Error::InconsistentForwardsIter { request_slot, slot })
                     }
                 } else {
-                    Ok(None)
+                    Ok(StateRootAtSlot::Pruned)
                 }
             },
         )?
@@ -1444,6 +1475,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         match slot.cmp(&head_state.slot()) {
             Ordering::Equal => Ok(head_state),
             Ordering::Greater => {
+                // TODO: try state_cache for an advanced version of this state
                 if slot > head_state.slot() + T::EthSpec::slots_per_epoch() {
                     warn!(
                         head_slot = %head_state.slot(),
