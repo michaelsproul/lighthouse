@@ -36,6 +36,8 @@ pub struct BlockDelays {
     pub all_blobs_observed: Option<Duration>,
     /// The time it took to complete consensus verification of the block.
     pub consensus_verification_time: Option<Duration>,
+    /// The time between observing the block and sending it to the execution layer.
+    pub started_execution: Option<Duration>,
     /// The time it took to complete execution verification of the block.
     pub execution_time: Option<Duration>,
     /// The delay from the start of the slot before the block became available
@@ -65,6 +67,9 @@ impl BlockDelays {
         let consensus_verification_time = times
             .consensus_verified
             .and_then(|consensus_verified| consensus_verified.checked_sub(times.observed?));
+        let started_execution = times
+            .started_execution
+            .and_then(|started_execution| started_execution.checked_sub(times.observed?));
         let execution_time = times
             .executed
             .and_then(|executed| executed.checked_sub(times.started_execution?));
@@ -88,6 +93,7 @@ impl BlockDelays {
             observed,
             all_blobs_observed,
             consensus_verification_time,
+            started_execution,
             execution_time,
             available: available_delay,
             attestable,

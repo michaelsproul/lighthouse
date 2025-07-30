@@ -1351,6 +1351,14 @@ pub static BEACON_BLOCK_DELAY_CONSENSUS_VERIFICATION_TIME: LazyLock<Result<IntGa
         )
     });
 
+pub static BEACON_BLOCK_DELAY_STARTED_EXECUTION_TIME: LazyLock<Result<IntGauge>> =
+    LazyLock::new(|| {
+        try_create_int_gauge(
+            "beacon_block_delay_started_execution_time",
+            "The delay between observing the block and sending newPayload to the execution layer.",
+        )
+    });
+
 pub static BEACON_BLOCK_DELAY_EXECUTION_TIME: LazyLock<Result<IntGauge>> = LazyLock::new(|| {
     try_create_int_gauge(
         "beacon_block_delay_execution_time",
