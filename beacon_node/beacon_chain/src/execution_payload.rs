@@ -19,8 +19,7 @@ use fork_choice::{InvalidationOperation, PayloadVerificationStatus};
 use proto_array::{Block as ProtoBlock, ExecutionStatus};
 use slot_clock::SlotClock;
 use state_processing::per_block_processing::{
-    compute_timestamp_at_slot, get_expected_withdrawals, is_execution_enabled,
-    is_merge_transition_complete, partially_verify_execution_payload,
+    compute_timestamp_at_slot, get_expected_withdrawals, is_merge_transition_complete,
 };
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -59,10 +58,11 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
     pub fn new(
         chain: Arc<BeaconChain<T>>,
         block: Arc<SignedBeaconBlock<T::EthSpec>>,
-        state: &BeaconState<T::EthSpec>,
         notify_execution_layer: NotifyExecutionLayer,
     ) -> Result<Self, BlockError> {
-        let payload_verification_status = if is_execution_enabled(state, block.message().body()) {
+        // FIXME(sproul): put back equivalent check for execution_enabled
+        const EXECUTION_ENABLED: bool = true;
+        let payload_verification_status = if EXECUTION_ENABLED {
             // Perform the initial stages of payload verification.
             //
             // We will duplicate these checks again during `per_block_processing`, however these
@@ -70,6 +70,7 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
             // the block as optimistically imported. This is particularly relevant in the case
             // where we do not send the block to the EL at all.
             let block_message = block.message();
+            /* FIXME(sproul): put this back? or nah
             partially_verify_execution_payload::<_, FullPayload<_>>(
                 state,
                 block.slot(),
@@ -77,6 +78,7 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
                 &chain.spec,
             )
             .map_err(BlockError::PerBlockProcessingError)?;
+            */
 
             match notify_execution_layer {
                 NotifyExecutionLayer::No if chain.config.optimistic_finalized_sync => {

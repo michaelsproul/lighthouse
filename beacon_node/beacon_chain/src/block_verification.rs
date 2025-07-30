@@ -54,8 +54,7 @@ use crate::block_verification_types::{AsBlock, BlockImportData, RpcBlock};
 use crate::data_availability_checker::{AvailabilityCheckError, MaybeAvailableBlock};
 use crate::data_column_verification::GossipDataColumnError;
 use crate::execution_payload::{
-    validate_execution_payload_for_gossip, validate_merge_block, AllowOptimisticImport,
-    NotifyExecutionLayer, PayloadNotifier,
+    validate_execution_payload_for_gossip, NotifyExecutionLayer, PayloadNotifier,
 };
 use crate::kzg_utils::blobs_to_data_column_sidecars;
 use crate::observed_block_producers::SeenBlock;
@@ -76,7 +75,7 @@ use safe_arith::ArithError;
 use slot_clock::SlotClock;
 use ssz::Encode;
 use ssz_derive::{Decode, Encode};
-use state_processing::per_block_processing::{errors::IntoWithIndex, is_merge_transition_block};
+use state_processing::per_block_processing::errors::IntoWithIndex;
 use state_processing::{
     block_signature_verifier::{BlockSignatureVerifier, Error as BlockSignatureVerifierError},
     per_block_processing, per_slot_processing,
@@ -660,6 +659,7 @@ pub fn signature_verify_chain_segment<T: BeaconChainTypes>(
                 block_root,
                 parent: None,
                 consensus_context,
+                signature_verified: true,
             }
         })
         .collect::<Vec<_>>();
@@ -703,6 +703,7 @@ pub struct SignatureVerifiedBlock<T: BeaconChainTypes> {
     block_root: Hash256,
     parent: Option<PreProcessingSnapshot<T::EthSpec>>,
     consensus_context: ConsensusContext<T::EthSpec>,
+    signature_verified: bool,
 }
 
 /// Used to await the result of executing payload with an EE.
@@ -1147,6 +1148,7 @@ impl<T: BeaconChainTypes> SignatureVerifiedBlock<T> {
                 block,
                 block_root,
                 parent: Some(parent),
+                signature_verified: true,
             })
         } else {
             // Re-verify the proposer signature in isolation to attribute fault
@@ -1187,46 +1189,19 @@ impl<T: BeaconChainTypes> SignatureVerifiedBlock<T> {
     /// the proposer signature.
     pub fn from_gossip_verified_block(
         from: GossipVerifiedBlock<T>,
-        chain: &BeaconChain<T>,
+        _chain: &BeaconChain<T>,
     ) -> Result<Self, BlockError> {
-        let (mut parent, block) = if let Some(parent) = from.parent {
-            (parent, from.block)
-        } else {
-            load_parent(from.block, chain)?
-        };
-
-        let state = cheap_state_advance_to_obtain_committees::<_, BlockError>(
-            &mut parent.pre_state,
-            parent.beacon_state_root,
-            block.slot(),
-            &chain.spec,
-        )?;
-
-        let pubkey_cache = get_validator_pubkey_cache(chain)?;
-
-        let mut signature_verifier = get_signature_verifier(&state, &pubkey_cache, &chain.spec);
-
-        // Gossip verification has already checked the proposer index. Use it to check the RANDAO
-        // signature.
-        let mut consensus_context = from.consensus_context;
-        signature_verifier
-            .include_all_signatures_except_proposal(block.as_ref(), &mut consensus_context)?;
-
-        if signature_verifier.verify().is_ok() {
-            Ok(Self {
-                block: MaybeAvailableBlock::AvailabilityPending {
-                    block_root: from.block_root,
-                    block,
-                },
+        // FIXME(sproul): this is a no-op now
+        Ok(Self {
+            block: MaybeAvailableBlock::AvailabilityPending {
                 block_root: from.block_root,
-                parent: Some(parent),
-                consensus_context,
-            })
-        } else {
-            Err(BlockError::InvalidSignature(
-                InvalidSignature::BlockBodySignatures,
-            ))
-        }
+                block: from.block,
+            },
+            block_root: from.block_root,
+            parent: None,
+            consensus_context: from.consensus_context,
+            signature_verified: false,
+        })
     }
 
     /// Same as `from_gossip_verified_block` but producing slashing-relevant data as well.
@@ -1257,18 +1232,13 @@ impl<T: BeaconChainTypes> IntoExecutionPendingBlock<T> for SignatureVerifiedBloc
         notify_execution_layer: NotifyExecutionLayer,
     ) -> Result<ExecutionPendingBlock<T>, BlockSlashInfo<BlockError>> {
         let header = self.block.signed_block_header();
-        let (parent, block) = if let Some(parent) = self.parent {
-            (parent, self.block)
-        } else {
-            load_parent(self.block, chain)
-                .map_err(|e| BlockSlashInfo::SignatureValid(header.clone(), e))?
-        };
 
         ExecutionPendingBlock::from_signature_verified_components(
-            block,
+            self.block,
             block_root,
-            parent,
+            self.parent,
             self.consensus_context,
+            self.signature_verified,
             chain,
             notify_execution_layer,
         )
@@ -1329,23 +1299,12 @@ impl<T: BeaconChainTypes> ExecutionPendingBlock<T> {
     pub fn from_signature_verified_components(
         block: MaybeAvailableBlock<T::EthSpec>,
         block_root: Hash256,
-        parent: PreProcessingSnapshot<T::EthSpec>,
+        parent: Option<PreProcessingSnapshot<T::EthSpec>>,
         mut consensus_context: ConsensusContext<T::EthSpec>,
+        signature_verified: bool,
         chain: &Arc<BeaconChain<T>>,
         notify_execution_layer: NotifyExecutionLayer,
     ) -> Result<Self, BlockError> {
-        chain
-            .observed_slashable
-            .write()
-            .observe_slashable(block.slot(), block.message().proposer_index(), block_root)
-            .map_err(|e| BlockError::BeaconChainError(Box::new(e.into())))?;
-
-        chain
-            .observed_block_producers
-            .write()
-            .observe_proposal(block_root, block.message())
-            .map_err(|e| BlockError::BeaconChainError(Box::new(e.into())))?;
-
         if let Some(parent) = chain
             .canonical_head
             .fork_choice_read_lock()
@@ -1383,31 +1342,11 @@ impl<T: BeaconChainTypes> ExecutionPendingBlock<T> {
         //
         // We do this as early as possible so that later parts of this function can run in parallel
         // with the payload verification.
-        let payload_notifier = PayloadNotifier::new(
-            chain.clone(),
-            block.block_cloned(),
-            &parent.pre_state,
-            notify_execution_layer,
-        )?;
-        let is_valid_merge_transition_block =
-            is_merge_transition_block(&parent.pre_state, block.message().body());
+        let payload_notifier =
+            PayloadNotifier::new(chain.clone(), block.block_cloned(), notify_execution_layer)?;
         let payload_verification_future = async move {
             let chain = payload_notifier.chain.clone();
             let block = payload_notifier.block.clone();
-
-            // If this block triggers the merge, check to ensure that it references valid execution
-            // blocks.
-            //
-            // The specification defines this check inside `on_block` in the fork-choice specification,
-            // however we perform the check here for two reasons:
-            //
-            // - There's no point in importing a block that will fail fork choice, so it's best to fail
-            //   early.
-            // - Doing the check here means we can keep our fork-choice implementation "pure". I.e., no
-            //   calls to remote servers.
-            if is_valid_merge_transition_block {
-                validate_merge_block(&chain, block.message(), AllowOptimisticImport::Yes).await?;
-            };
 
             // The specification declares that this should be run *inside* `per_block_processing`,
             // however we run it here to keep `per_block_processing` pure (i.e., no calls to external
@@ -1423,7 +1362,7 @@ impl<T: BeaconChainTypes> ExecutionPendingBlock<T> {
 
             Ok(PayloadVerificationOutcome {
                 payload_verification_status,
-                is_valid_merge_transition_block,
+                is_valid_merge_transition_block: false,
             })
         };
         // Spawn the payload verification future as a new task, but don't wait for it to complete.
@@ -1436,6 +1375,51 @@ impl<T: BeaconChainTypes> ExecutionPendingBlock<T> {
                 "execution_payload_verification",
             )
             .ok_or(BeaconChainError::RuntimeShutdown)?;
+
+        // Load block parent
+        // FIXME(sproul): clean this up.
+        let mut parent = if let Some(parent) = parent {
+            parent
+        } else {
+            load_parent(block.block_cloned(), chain)?.0
+        };
+
+        if !signature_verified {
+            let state = cheap_state_advance_to_obtain_committees::<_, BlockError>(
+                &mut parent.pre_state,
+                parent.beacon_state_root,
+                block.slot(),
+                &chain.spec,
+            )?;
+
+            let pubkey_cache = get_validator_pubkey_cache(chain)?;
+
+            let mut signature_verifier = get_signature_verifier(&state, &pubkey_cache, &chain.spec);
+
+            // Gossip verification has already checked the proposer index. Use it to check the RANDAO
+            // signature.
+            signature_verifier
+                .include_all_signatures_except_proposal(block.as_block(), &mut consensus_context)?;
+
+            if signature_verifier.verify().is_err() {
+                payload_verification_handle.abort();
+                return Err(BlockError::InvalidSignature(
+                    InvalidSignature::BlockBodySignatures,
+                ));
+            }
+        }
+
+        chain
+            .observed_slashable
+            .write()
+            .observe_slashable(block.slot(), block.message().proposer_index(), block_root)
+            .map_err(|e| BlockError::BeaconChainError(Box::new(e.into())))?;
+
+        chain
+            .observed_block_producers
+            .write()
+            .observe_proposal(block_root, block.message())
+            .map_err(|e| BlockError::BeaconChainError(Box::new(e.into())))?;
 
         /*
          * Advance the given `parent.beacon_state` to the slot of the given `block`.
