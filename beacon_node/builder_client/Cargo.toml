@@ -8,6 +8,7 @@ authors = ["Sean Anderson <sean@sigmaprime.io>"]
 eth2 = { workspace = true }
 ethereum_ssz = { workspace = true }
 lighthouse_version = { workspace = true }
+metrics = { workspace = true }
 reqwest = { workspace = true }
 sensitive_url = { workspace = true }
 serde = { workspace = true }

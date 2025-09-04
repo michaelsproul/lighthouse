@@ -21,6 +21,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+mod metrics;
+
 pub const DEFAULT_TIMEOUT_MILLIS: u64 = 15000;
 
 /// This timeout is in accordance with v0.2.0 of the [builder specs](https://github.com/flashbots/mev-boost/pull/20).
@@ -136,6 +138,7 @@ impl BuilderHttpClient {
 
         let Ok(Some(fork_name)) = self.fork_name_from_header(&headers) else {
             // if no fork version specified, attempt to fallback to JSON
+            let _timer = metrics::start_timer(&metrics::SIGNED_BUILDER_BID_DECODE_TIME);
             self.ssz_available.store(false, Ordering::SeqCst);
             return serde_json::from_slice(&response_bytes).map_err(Error::InvalidJson);
         };
@@ -155,7 +158,9 @@ impl BuilderHttpClient {
             }
             ContentType::Json => {
                 self.ssz_available.store(false, Ordering::SeqCst);
+                let _timer = metrics::start_timer(&metrics::SIGNED_BUILDER_BID_DECODE_TIME);
                 let mut de = serde_json::Deserializer::from_slice(&response_bytes);
+
                 let data =
                     T::context_deserialize(&mut de, fork_name).map_err(Error::InvalidJson)?;
 

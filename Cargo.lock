@@ -1234,6 +1234,7 @@ dependencies = [
  "eth2",
  "ethereum_ssz",
  "lighthouse_version",
+ "metrics",
  "reqwest 0.11.27",
  "sensitive_url",
  "serde",
