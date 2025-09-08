@@ -1,6 +1,7 @@
 mod apply_state_diff;
 mod block_root;
 mod check_deposit_data;
+mod compute_state_diff;
 mod generate_bootnode_enr;
 mod http_sync;
 mod indexed_attestations;
@@ -159,6 +160,46 @@ fn main() {
                         .action(ArgAction::Set)
                         .required(true)
                         .help("Path to write the resulting BeaconState as SSZ.")
+                        .display_order(0)
+                )
+                .arg(
+                    Arg::new("runs")
+                        .long("runs")
+                        .value_name("INTEGER")
+                        .action(ArgAction::Set)
+                        .default_value("1")
+                        .help("Number of repeat runs, useful for benchmarking.")
+                        .display_order(0)
+                )
+        )
+        .subcommand(
+            Command::new("compute-state-diff")
+                .about("Computes a hierarchical state diff between two beacon states")
+                .arg(
+                    Arg::new("source-state-path")
+                        .long("source-state-path")
+                        .value_name("PATH")
+                        .action(ArgAction::Set)
+                        .required(true)
+                        .help("Path to load the source BeaconState from as SSZ.")
+                        .display_order(0)
+                )
+                .arg(
+                    Arg::new("target-state-path")
+                        .long("target-state-path")
+                        .value_name("PATH")
+                        .action(ArgAction::Set)
+                        .required(true)
+                        .help("Path to load the target BeaconState from as SSZ.")
+                        .display_order(0)
+                )
+                .arg(
+                    Arg::new("output-path")
+                        .long("output-path")
+                        .value_name("PATH")
+                        .action(ArgAction::Set)
+                        .required(true)
+                        .help("Path to write the resulting HDiff as SSZ.")
                         .display_order(0)
                 )
                 .arg(
@@ -763,6 +804,11 @@ fn run<E: EthSpec>(env_builder: EnvironmentBuilder<E>, matches: &ArgMatches) -> 
             let network_config = get_network_config()?;
             apply_state_diff::run::<E>(env, network_config, matches)
                 .map_err(|e| format!("Failed to apply state diff: {}", e))
+        }
+        Some(("compute-state-diff", matches)) => {
+            let network_config = get_network_config()?;
+            compute_state_diff::run::<E>(env, network_config, matches)
+                .map_err(|e| format!("Failed to compute state diff: {}", e))
         }
         Some(("transition-blocks", matches)) => {
             let network_config = get_network_config()?;
