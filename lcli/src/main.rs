@@ -1,3 +1,4 @@
+mod apply_state_diff;
 mod block_root;
 mod check_deposit_data;
 mod generate_bootnode_enr;
@@ -127,6 +128,46 @@ fn main() {
                         .action(ArgAction::SetTrue)
                         .help_heading(FLAG_HEADER)
                         .help("If present, don't compute state roots when skipping forward.")
+                        .display_order(0)
+                )
+        )
+        .subcommand(
+            Command::new("apply-state-diff")
+                .about("Applies a hierarchical state diff to a base state and writes the result to disk")
+                .arg(
+                    Arg::new("base-state-path")
+                        .long("base-state-path")
+                        .value_name("PATH")
+                        .action(ArgAction::Set)
+                        .required(true)
+                        .help("Path to load the base BeaconState from as SSZ.")
+                        .display_order(0)
+                )
+                .arg(
+                    Arg::new("diff-path")
+                        .long("diff-path")
+                        .value_name("PATH")
+                        .action(ArgAction::Set)
+                        .required(true)
+                        .help("Path to load the HDiff from as SSZ.")
+                        .display_order(0)
+                )
+                .arg(
+                    Arg::new("output-path")
+                        .long("output-path")
+                        .value_name("PATH")
+                        .action(ArgAction::Set)
+                        .required(true)
+                        .help("Path to write the resulting BeaconState as SSZ.")
+                        .display_order(0)
+                )
+                .arg(
+                    Arg::new("runs")
+                        .long("runs")
+                        .value_name("INTEGER")
+                        .action(ArgAction::Set)
+                        .default_value("1")
+                        .help("Number of repeat runs, useful for benchmarking.")
                         .display_order(0)
                 )
         )
@@ -718,6 +759,11 @@ fn run<E: EthSpec>(env_builder: EnvironmentBuilder<E>, matches: &ArgMatches) -> 
     };
 
     match matches.subcommand() {
+        Some(("apply-state-diff", matches)) => {
+            let network_config = get_network_config()?;
+            apply_state_diff::run::<E>(env, network_config, matches)
+                .map_err(|e| format!("Failed to apply state diff: {}", e))
+        }
         Some(("transition-blocks", matches)) => {
             let network_config = get_network_config()?;
             transition_blocks::run::<E>(env, network_config, matches)
