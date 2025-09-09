@@ -4,14 +4,16 @@ use eth2_network_config::Eth2NetworkConfig;
 use ssz::{Decode, Encode};
 use std::fs::File;
 use std::io::Read;
-use store::{hdiff::HDiff, hdiff::HDiffBuffer, StoreConfig};
+use store::{StoreConfig, hdiff::HDiff, hdiff::HDiffBuffer};
+use tracing::info;
 use types::{BeaconState, EthSpec};
 
 pub fn run<E: EthSpec>(
     env: Environment<E>,
-    _network_config: Eth2NetworkConfig,
+    network_config: Eth2NetworkConfig,
     matches: &ArgMatches,
 ) -> Result<(), String> {
+    let spec = &network_config.chain_spec::<E>()?;
     let base_state_path = matches
         .get_one::<String>("base-state-path")
         .ok_or("base-state-path is required")?;
@@ -31,20 +33,20 @@ pub fn run<E: EthSpec>(
         .map_err(|e| format!("Invalid runs value: {}", e))?
         .unwrap_or(1);
 
-    println!("Loading base state from: {}", base_state_path);
-    let base_state = load_state_from_file::<E>(base_state_path, &env.eth2_config.spec)?;
+    info!("Loading base state from: {}", base_state_path);
+    let base_state = load_state_from_file::<E>(base_state_path, spec)?;
 
-    println!("Loading state diff from: {}", diff_path);
+    info!("Loading state diff from: {}", diff_path);
     let diff = load_diff_from_file(diff_path)?;
 
     let mut total_duration = std::time::Duration::ZERO;
 
     for run in 0..runs {
         let start = std::time::Instant::now();
-        
+
         // Convert base state to HDiffBuffer
         let mut buffer = HDiffBuffer::from_state(base_state.clone());
-        
+
         // Apply the diff
         let store_config = StoreConfig::default();
         diff.apply(&mut buffer, &store_config)
@@ -52,34 +54,34 @@ pub fn run<E: EthSpec>(
 
         // Convert buffer back to state
         let result_state = buffer
-            .as_state::<E>(&env.eth2_config.spec)
+            .as_state::<E>(spec)
             .map_err(|e| format!("Failed to convert buffer to state: {:?}", e))?;
 
         let duration = start.elapsed();
         total_duration += duration;
 
         if runs == 1 {
-            println!("Applied state diff in {:?}", duration);
+            info!("Applied state diff in {:?}", duration);
         } else {
-            println!("Run {}: Applied state diff in {:?}", run + 1, duration);
+            info!("Run {}: Applied state diff in {:?}", run + 1, duration);
         }
 
         // Only write output on the last run
         if run == runs - 1 {
-            println!("Writing result state to: {}", output_path);
+            info!("Writing result state to: {}", output_path);
             write_state_to_file(&result_state, output_path)?;
         }
     }
 
     if runs > 1 {
-        println!(
+        info!(
             "Average time over {} runs: {:?}",
             runs,
             total_duration / runs as u32
         );
     }
 
-    println!("State diff applied successfully!");
+    info!("State diff applied successfully!");
     Ok(())
 }
 

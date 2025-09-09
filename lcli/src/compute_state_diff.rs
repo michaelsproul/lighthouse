@@ -4,14 +4,15 @@ use eth2_network_config::Eth2NetworkConfig;
 use ssz::Encode;
 use std::fs::File;
 use std::io::Read;
-use store::{hdiff::HDiff, hdiff::HDiffBuffer, StoreConfig};
+use store::{StoreConfig, hdiff::HDiff, hdiff::HDiffBuffer};
 use types::{BeaconState, EthSpec};
 
 pub fn run<E: EthSpec>(
     env: Environment<E>,
-    _network_config: Eth2NetworkConfig,
+    network_config: Eth2NetworkConfig,
     matches: &ArgMatches,
 ) -> Result<(), String> {
+    let spec = &network_config.chain_spec::<E>()?;
     let source_state_path = matches
         .get_one::<String>("source-state-path")
         .ok_or("source-state-path is required")?;
@@ -32,21 +33,21 @@ pub fn run<E: EthSpec>(
         .unwrap_or(1);
 
     println!("Loading source state from: {}", source_state_path);
-    let source_state = load_state_from_file::<E>(source_state_path, &env.eth2_config.spec)?;
+    let source_state = load_state_from_file::<E>(source_state_path, spec)?;
 
     println!("Loading target state from: {}", target_state_path);
-    let target_state = load_state_from_file::<E>(target_state_path, &env.eth2_config.spec)?;
+    let target_state = load_state_from_file::<E>(target_state_path, spec)?;
 
     let mut total_duration = std::time::Duration::ZERO;
     let mut diff = None;
 
     for run in 0..runs {
         let start = std::time::Instant::now();
-        
+
         // Convert states to HDiffBuffers
         let source_buffer = HDiffBuffer::from_state(source_state.clone());
         let target_buffer = HDiffBuffer::from_state(target_state.clone());
-        
+
         // Compute the diff
         let store_config = StoreConfig::default();
         let computed_diff = HDiff::compute(&source_buffer, &target_buffer, &store_config)
