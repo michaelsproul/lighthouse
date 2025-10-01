@@ -1022,6 +1022,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     /// will be returned if the provided `state_root` doesn't match the state root of the
     /// frozen state at `slot`. Consequently, if a state from a non-canonical chain is desired, it's
     /// best to set `slot` to `None`, or call `load_hot_state` directly.
+    #[instrument(skip_all, fields(?state_root, ?slot), level = "debug")]
     pub fn get_state(
         &self,
         state_root: &Hash256,
@@ -1683,6 +1684,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     }
 
     /// Get a post-finalization state from the database or store.
+    #[instrument(skip_all, fields(?state_root), level = "debug")]
     pub fn get_hot_state(
         &self,
         state_root: &Hash256,
@@ -2156,6 +2158,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     /// Try to load a pre-finalization state from the freezer database.
     ///
     /// Return `None` if no state with `state_root` lies in the freezer.
+    #[instrument(skip_all, fields(?state_root), level = "debug")]
     pub fn load_cold_state(&self, state_root: &Hash256) -> Result<Option<BeaconState<E>>, Error> {
         match self.load_cold_state_slot(state_root)? {
             Some(slot) => self.load_cold_state_by_slot(slot).map(Some),
