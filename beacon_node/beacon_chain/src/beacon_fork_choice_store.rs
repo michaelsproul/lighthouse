@@ -44,7 +44,7 @@ impl From<ArithError> for Error {
 }
 
 /// The number of validator balance sets that are cached within `BalancesCache`.
-const MAX_BALANCE_CACHE_SIZE: usize = 4;
+const MAX_BALANCE_CACHE_SIZE: usize = 0;
 
 #[superstruct(
     variants(V8),
@@ -94,6 +94,10 @@ impl BalancesCache {
         // of a single epoch, so even if the block on the epoch boundary itself is skipped we can
         // still update its cache entry from any subsequent state in that epoch.
         if self.position(epoch_boundary_root, epoch).is_none() {
+            if MAX_BALANCE_CACHE_SIZE == 0 {
+                return Ok(());
+            }
+
             let item = CacheItem {
                 block_root: epoch_boundary_root,
                 epoch,
@@ -370,14 +374,31 @@ where
             self.justified_balances = JustifiedBalances::from_effective_balances(balances)?;
         } else {
             metrics::inc_counter(&metrics::BALANCES_CACHE_MISSES);
+            let justified_block = self
+                .store
+                .get_blinded_block(&self.justified_checkpoint.root)
+                .map_err(Error::FailedToReadBlock)?
+                .ok_or(Error::MissingBlock(self.justified_checkpoint.root))?
+                .deconstruct()
+                .0;
 
             // Justified state is reasonably useful to cache, it might be finalized soon.
-            let update_cache = true;
-            let state = self
+            /*
+            let max_slot = self
+                .justified_checkpoint
+                .epoch
+                .start_slot(E::slots_per_epoch());
+            */
+            let max_slot = justified_block.slot();
+            let (_, state) = self
                 .store
-                .get_hot_state(&self.justified_state_root, update_cache)
+                .get_advanced_hot_state(
+                    self.justified_checkpoint.root,
+                    max_slot,
+                    justified_block.state_root(),
+                )
                 .map_err(Error::FailedToReadState)?
-                .ok_or(Error::MissingState(self.justified_state_root))?;
+                .ok_or(Error::MissingState(justified_block.state_root()))?;
 
             self.justified_balances = JustifiedBalances::from_justified_state(&state)?;
         }
