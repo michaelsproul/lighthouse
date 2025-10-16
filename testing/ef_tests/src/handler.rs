@@ -677,6 +677,8 @@ impl<E: EthSpec + TypeName> Handler for ForkChoiceHandler<E> {
     }
 
     fn is_enabled_for_fork(&self, fork_name: ForkName) -> bool {
+        fork_name == ForkName::Electra
+        /*
         // We no longer run on_merge_block tests since removing merge support.
         if self.handler_name == "on_merge_block" {
             return false;
@@ -702,6 +704,7 @@ impl<E: EthSpec + TypeName> Handler for ForkChoiceHandler<E> {
         // These tests check block validity (which may include signatures) and there is no need to
         // run them with fake crypto.
         cfg!(not(feature = "fake_crypto"))
+        */
     }
 }
 
