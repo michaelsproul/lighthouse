@@ -83,6 +83,7 @@ pub mod config_and_preset;
 pub mod execution_block_header;
 pub mod execution_requests;
 pub mod fork_context;
+pub mod non_max;
 pub mod participation_flags;
 pub mod payload;
 pub mod preset;

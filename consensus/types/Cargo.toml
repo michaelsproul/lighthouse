@@ -46,6 +46,7 @@ maplit = { workspace = true }
 merkle_proof = { workspace = true }
 metastruct = "0.1.0"
 milhouse = { workspace = true }
+nonmax = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
 rand_xorshift = "0.4.0"

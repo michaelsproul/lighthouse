@@ -1,6 +1,7 @@
 use crate::application_domain::{APPLICATION_DOMAIN_BUILDER, ApplicationDomain};
 use crate::blob_sidecar::BlobIdentifier;
 use crate::data_column_sidecar::DataColumnsByRootIdentifier;
+use crate::non_max::NonMaxEpoch;
 use crate::*;
 use derivative::Derivative;
 use ethereum_hashing::hash;
@@ -150,7 +151,7 @@ pub struct ChainSpec {
     pub(crate) domain_contribution_and_proof: u32,
     pub altair_fork_version: [u8; 4],
     /// The Altair fork epoch is optional, with `None` representing "Altair never happens".
-    pub altair_fork_epoch: Option<Epoch>,
+    pub altair_fork_epoch: Option<NonMaxEpoch>,
 
     /*
      * Bellatrix hard fork params
@@ -160,7 +161,7 @@ pub struct ChainSpec {
     pub proportional_slashing_multiplier_bellatrix: u64,
     pub bellatrix_fork_version: [u8; 4],
     /// The Bellatrix fork epoch is optional, with `None` representing "Bellatrix never happens".
-    pub bellatrix_fork_epoch: Option<Epoch>,
+    pub bellatrix_fork_epoch: Option<NonMaxEpoch>,
     pub terminal_total_difficulty: Uint256,
     pub terminal_block_hash: ExecutionBlockHash,
     pub terminal_block_hash_activation_epoch: Epoch,
@@ -170,21 +171,21 @@ pub struct ChainSpec {
      */
     pub capella_fork_version: [u8; 4],
     /// The Capella fork epoch is optional, with `None` representing "Capella never happens".
-    pub capella_fork_epoch: Option<Epoch>,
+    pub capella_fork_epoch: Option<NonMaxEpoch>,
     pub max_validators_per_withdrawals_sweep: u64,
 
     /*
      * Deneb hard fork params
      */
     pub deneb_fork_version: [u8; 4],
-    pub deneb_fork_epoch: Option<Epoch>,
+    pub deneb_fork_epoch: Option<NonMaxEpoch>,
 
     /*
      * Electra hard fork params
      */
     pub electra_fork_version: [u8; 4],
     /// The Electra fork epoch is optional, with `None` representing "Electra never happens".
-    pub electra_fork_epoch: Option<Epoch>,
+    pub electra_fork_epoch: Option<NonMaxEpoch>,
     pub unset_deposit_requests_start_index: u64,
     pub full_exit_request_amount: u64,
     pub min_activation_balance: u64,
@@ -200,7 +201,7 @@ pub struct ChainSpec {
      */
     pub fulu_fork_version: [u8; 4],
     /// The Fulu fork epoch is optional, with `None` representing "Fulu never happens".
-    pub fulu_fork_epoch: Option<Epoch>,
+    pub fulu_fork_epoch: Option<NonMaxEpoch>,
     pub number_of_custody_groups: u64,
     pub data_column_sidecar_subnet_count: u64,
     pub samples_per_slot: u64,
@@ -213,7 +214,7 @@ pub struct ChainSpec {
      */
     pub gloas_fork_version: [u8; 4],
     /// The Gloas fork epoch is optional, with `None` representing "Gloas never happens".
-    pub gloas_fork_epoch: Option<Epoch>,
+    pub gloas_fork_epoch: Option<NonMaxEpoch>,
 
     /*
      * Networking
@@ -321,7 +322,7 @@ impl ChainSpec {
     pub fn next_fork_epoch<E: EthSpec>(&self, slot: Slot) -> Option<(ForkName, Epoch)> {
         let current_fork_name = self.fork_name_at_slot::<E>(slot);
         let next_fork_name = current_fork_name.next_fork()?;
-        let fork_epoch = self.fork_epoch(next_fork_name)?;
+        let fork_epoch = self.fork_epoch(next_fork_name)?.get();
         Some((next_fork_name, fork_epoch))
     }
 
@@ -345,7 +346,7 @@ impl ChainSpec {
         // Find the first fork where `epoch` is >= `fork_epoch`.
         for (fork_epoch_opt, fork_name) in forks.iter() {
             if let Some(fork_epoch) = fork_epoch_opt
-                && epoch >= *fork_epoch
+                && epoch >= fork_epoch.get()
             {
                 return *fork_name;
             }
@@ -374,9 +375,10 @@ impl ChainSpec {
     }
 
     /// For a given fork name, return the epoch at which it activates.
-    pub fn fork_epoch(&self, fork_name: ForkName) -> Option<Epoch> {
+    // FIXME(sproul): consider applying conversion to Epoch
+    pub fn fork_epoch(&self, fork_name: ForkName) -> Option<NonMaxEpoch> {
         match fork_name {
-            ForkName::Base => Some(Epoch::new(0)),
+            ForkName::Base => NonMaxEpoch::new(Epoch::new(0)),
             ForkName::Altair => self.altair_fork_epoch,
             ForkName::Bellatrix => self.bellatrix_fork_epoch,
             ForkName::Capella => self.capella_fork_epoch,
@@ -453,7 +455,7 @@ impl ChainSpec {
     /// Returns true if the given epoch is greater than or equal to the `FULU_FORK_EPOCH`.
     pub fn is_peer_das_enabled_for_epoch(&self, block_epoch: Epoch) -> bool {
         self.fulu_fork_epoch
-            .is_some_and(|fulu_fork_epoch| block_epoch >= fulu_fork_epoch)
+            .is_some_and(|fulu_fork_epoch| block_epoch >= fulu_fork_epoch.get())
     }
 
     /// Returns true if PeerDAS is scheduled. Alias for [`Self::is_fulu_scheduled`]
@@ -461,16 +463,14 @@ impl ChainSpec {
         self.is_fulu_scheduled()
     }
 
-    /// Returns true if `FULU_FORK_EPOCH` is set and is not set to `FAR_FUTURE_EPOCH`.
+    /// Returns true if `FULU_FORK_EPOCH` is set and is not set to `FAR_FUTURE_EPOCH` (None).
     pub fn is_fulu_scheduled(&self) -> bool {
-        self.fulu_fork_epoch
-            .is_some_and(|fulu_fork_epoch| fulu_fork_epoch != self.far_future_epoch)
+        self.fulu_fork_epoch.is_some()
     }
 
-    /// Returns true if `GLOAS_FORK_EPOCH` is set and is not set to `FAR_FUTURE_EPOCH`.
+    /// Returns true if `GLOAS_FORK_EPOCH` is set and is not set to `FAR_FUTURE_EPOCH` (None).
     pub fn is_gloas_scheduled(&self) -> bool {
-        self.gloas_fork_epoch
-            .is_some_and(|gloas_fork_epoch| gloas_fork_epoch != self.far_future_epoch)
+        self.gloas_fork_epoch.is_some()
     }
 
     /// Returns a full `Fork` struct for a given epoch.
@@ -479,7 +479,7 @@ impl ChainSpec {
 
         let fork_epoch = self
             .fork_epoch(current_fork_name)
-            .unwrap_or_else(|| Epoch::new(0));
+            .map_or(Epoch::new(0), |fork_epoch| fork_epoch.get());
 
         // At genesis the Fork is initialised with two copies of the same value for both
         // `previous_version` and `current_version` (see `initialize_beacon_state_from_eth1`).
@@ -500,7 +500,7 @@ impl ChainSpec {
     /// an activation epoch.
     pub fn fork_for_name(&self, fork_name: ForkName) -> Option<Fork> {
         let previous_fork_name = fork_name.previous_fork().unwrap_or(ForkName::Base);
-        let epoch = self.fork_epoch(fork_name)?;
+        let epoch = self.fork_epoch(fork_name)?.get();
 
         Some(Fork {
             previous_version: self.fork_version_for_name(previous_fork_name),
@@ -599,7 +599,7 @@ impl ChainSpec {
         };
 
         match self.fulu_fork_epoch {
-            Some(fulu_epoch) if epoch >= fulu_epoch => {
+            Some(fulu_epoch) if epoch >= fulu_epoch.get() => {
                 // Concatenate epoch and max_blobs_per_block as u64 bytes
                 let mut input = Vec::with_capacity(16);
                 input.extend_from_slice(&blob_parameters.epoch.as_u64().to_le_bytes());
@@ -639,13 +639,16 @@ impl ChainSpec {
 
     pub fn next_digest_epoch(&self, epoch: Epoch) -> Option<Epoch> {
         match self.fulu_fork_epoch {
-            Some(fulu_epoch) if epoch >= fulu_epoch => self
+            Some(fulu_epoch) if epoch >= fulu_epoch.get() => self
                 .all_digest_epochs()
                 .find(|digest_epoch| *digest_epoch > epoch),
             _ => self
                 .fork_name_at_epoch(epoch)
                 .next_fork()
-                .and_then(|fork_name| self.fork_epoch(fork_name)),
+                .and_then(|fork_name| {
+                    self.fork_epoch(fork_name)
+                        .map(|fork_epoch| fork_epoch.get())
+                }),
         }
     }
 
@@ -748,9 +751,7 @@ impl ChainSpec {
                 .blob_parameters_for_epoch(epoch)
                 .or_else(|| {
                     Some(BlobParameters {
-                        epoch: self
-                            .electra_fork_epoch
-                            .expect("electra fork epoch must be set if fulu epoch is set"),
+                        epoch: self.electra_fork_epoch?.get(),
                         max_blobs_per_block: self.max_blobs_per_block_electra,
                     })
                 }),
@@ -829,7 +830,7 @@ impl ChainSpec {
     /// Returns the min epoch for blob / data column sidecar requests based on the current epoch.
     /// Switch to use the column sidecar config once the `blob_retention_epoch` has passed Fulu fork epoch.
     pub fn min_epoch_data_availability_boundary(&self, current_epoch: Epoch) -> Option<Epoch> {
-        let fork_epoch = self.deneb_fork_epoch?;
+        let fork_epoch = self.deneb_fork_epoch?.get();
         let blob_retention_epoch =
             current_epoch.saturating_sub(self.min_epochs_for_blob_sidecars_requests);
         match self.fulu_fork_epoch {
@@ -1033,7 +1034,7 @@ impl ChainSpec {
             domain_sync_committee_selection_proof: 8,
             domain_contribution_and_proof: 9,
             altair_fork_version: [0x01, 0x00, 0x00, 0x00],
-            altair_fork_epoch: Some(Epoch::new(74240)),
+            altair_fork_epoch: NonMaxEpoch::new(Epoch::new(74240)),
 
             /*
              * Bellatrix hard fork params
@@ -1044,7 +1045,7 @@ impl ChainSpec {
                 .expect("pow does not overflow"),
             proportional_slashing_multiplier_bellatrix: 3,
             bellatrix_fork_version: [0x02, 0x00, 0x00, 0x00],
-            bellatrix_fork_epoch: Some(Epoch::new(144896)),
+            bellatrix_fork_epoch: NonMaxEpoch::new(Epoch::new(144896)),
             terminal_total_difficulty: "58750000000000000000000"
                 .parse()
                 .expect("terminal_total_difficulty is a valid integer"),
@@ -1055,20 +1056,20 @@ impl ChainSpec {
              * Capella hard fork params
              */
             capella_fork_version: [0x03, 00, 00, 00],
-            capella_fork_epoch: Some(Epoch::new(194048)),
+            capella_fork_epoch: NonMaxEpoch::new(Epoch::new(194048)),
             max_validators_per_withdrawals_sweep: 16384,
 
             /*
              * Deneb hard fork params
              */
             deneb_fork_version: [0x04, 0x00, 0x00, 0x00],
-            deneb_fork_epoch: Some(Epoch::new(269568)),
+            deneb_fork_epoch: NonMaxEpoch::new(Epoch::new(269568)),
 
             /*
              * Electra hard fork params
              */
             electra_fork_version: [0x05, 00, 00, 00],
-            electra_fork_epoch: Some(Epoch::new(364032)),
+            electra_fork_epoch: NonMaxEpoch::new(Epoch::new(364032)),
             unset_deposit_requests_start_index: u64::MAX,
             full_exit_request_amount: 0,
             min_activation_balance: option_wrapper(|| {
@@ -1379,7 +1380,7 @@ impl ChainSpec {
             domain_sync_committee_selection_proof: 8,
             domain_contribution_and_proof: 9,
             altair_fork_version: [0x01, 0x00, 0x00, 0x64],
-            altair_fork_epoch: Some(Epoch::new(512)),
+            altair_fork_epoch: NonMaxEpoch::new(Epoch::new(512)),
 
             /*
              * Bellatrix hard fork params
@@ -1390,7 +1391,7 @@ impl ChainSpec {
                 .expect("pow does not overflow"),
             proportional_slashing_multiplier_bellatrix: 3,
             bellatrix_fork_version: [0x02, 0x00, 0x00, 0x64],
-            bellatrix_fork_epoch: Some(Epoch::new(385536)),
+            bellatrix_fork_epoch: NonMaxEpoch::new(Epoch::new(385536)),
             terminal_total_difficulty: "8626000000000000000000058750000000000000000000"
                 .parse()
                 .expect("terminal_total_difficulty is a valid integer"),
@@ -1401,20 +1402,20 @@ impl ChainSpec {
              * Capella hard fork params
              */
             capella_fork_version: [0x03, 0x00, 0x00, 0x64],
-            capella_fork_epoch: Some(Epoch::new(648704)),
+            capella_fork_epoch: NonMaxEpoch::new(Epoch::new(648704)),
             max_validators_per_withdrawals_sweep: 8192,
 
             /*
              * Deneb hard fork params
              */
             deneb_fork_version: [0x04, 0x00, 0x00, 0x64],
-            deneb_fork_epoch: Some(Epoch::new(889856)),
+            deneb_fork_epoch: NonMaxEpoch::new(Epoch::new(889856)),
 
             /*
              * Electra hard fork params
              */
             electra_fork_version: [0x05, 0x00, 0x00, 0x64],
-            electra_fork_epoch: Some(Epoch::new(1337856)),
+            electra_fork_epoch: NonMaxEpoch::new(Epoch::new(1337856)),
             unset_deposit_requests_start_index: u64::MAX,
             full_exit_request_amount: 0,
             min_activation_balance: option_wrapper(|| {
@@ -1677,7 +1678,7 @@ pub struct Config {
     altair_fork_version: [u8; 4],
     #[serde(serialize_with = "serialize_fork_epoch")]
     #[serde(deserialize_with = "deserialize_fork_epoch")]
-    pub altair_fork_epoch: Option<MaybeQuoted<Epoch>>,
+    pub altair_fork_epoch: Option<MaybeQuoted<NonMaxEpoch>>,
 
     #[serde(default = "default_bellatrix_fork_version")]
     #[serde(with = "serde_utils::bytes_4_hex")]
@@ -1685,7 +1686,7 @@ pub struct Config {
     #[serde(default)]
     #[serde(serialize_with = "serialize_fork_epoch")]
     #[serde(deserialize_with = "deserialize_fork_epoch")]
-    pub bellatrix_fork_epoch: Option<MaybeQuoted<Epoch>>,
+    pub bellatrix_fork_epoch: Option<MaybeQuoted<NonMaxEpoch>>,
 
     #[serde(default = "default_capella_fork_version")]
     #[serde(with = "serde_utils::bytes_4_hex")]
@@ -1693,7 +1694,7 @@ pub struct Config {
     #[serde(default)]
     #[serde(serialize_with = "serialize_fork_epoch")]
     #[serde(deserialize_with = "deserialize_fork_epoch")]
-    pub capella_fork_epoch: Option<MaybeQuoted<Epoch>>,
+    pub capella_fork_epoch: Option<MaybeQuoted<NonMaxEpoch>>,
 
     #[serde(default = "default_deneb_fork_version")]
     #[serde(with = "serde_utils::bytes_4_hex")]
@@ -1701,7 +1702,7 @@ pub struct Config {
     #[serde(default)]
     #[serde(serialize_with = "serialize_fork_epoch")]
     #[serde(deserialize_with = "deserialize_fork_epoch")]
-    pub deneb_fork_epoch: Option<MaybeQuoted<Epoch>>,
+    pub deneb_fork_epoch: Option<MaybeQuoted<NonMaxEpoch>>,
 
     #[serde(default = "default_electra_fork_version")]
     #[serde(with = "serde_utils::bytes_4_hex")]
@@ -1709,7 +1710,7 @@ pub struct Config {
     #[serde(default)]
     #[serde(serialize_with = "serialize_fork_epoch")]
     #[serde(deserialize_with = "deserialize_fork_epoch")]
-    pub electra_fork_epoch: Option<MaybeQuoted<Epoch>>,
+    pub electra_fork_epoch: Option<MaybeQuoted<NonMaxEpoch>>,
 
     #[serde(default = "default_fulu_fork_version")]
     #[serde(with = "serde_utils::bytes_4_hex")]
@@ -1717,7 +1718,7 @@ pub struct Config {
     #[serde(default)]
     #[serde(serialize_with = "serialize_fork_epoch")]
     #[serde(deserialize_with = "deserialize_fork_epoch")]
-    pub fulu_fork_epoch: Option<MaybeQuoted<Epoch>>,
+    pub fulu_fork_epoch: Option<MaybeQuoted<NonMaxEpoch>>,
 
     #[serde(default = "default_gloas_fork_version")]
     #[serde(with = "serde_utils::bytes_4_hex")]
@@ -1725,7 +1726,7 @@ pub struct Config {
     #[serde(default)]
     #[serde(serialize_with = "serialize_fork_epoch")]
     #[serde(deserialize_with = "deserialize_fork_epoch")]
-    pub gloas_fork_epoch: Option<MaybeQuoted<Epoch>>,
+    pub gloas_fork_epoch: Option<MaybeQuoted<NonMaxEpoch>>,
 
     #[serde(with = "serde_utils::quoted_u64")]
     seconds_per_slot: u64,
@@ -2104,7 +2105,7 @@ impl Default for Config {
 
 /// Util function to serialize a `None` fork epoch value
 /// as `Epoch::max_value()`.
-fn serialize_fork_epoch<S>(val: &Option<MaybeQuoted<Epoch>>, s: S) -> Result<S::Ok, S::Error>
+fn serialize_fork_epoch<S>(val: &Option<MaybeQuoted<NonMaxEpoch>>, s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -2113,22 +2114,24 @@ where
             value: Epoch::max_value(),
         }
         .serialize(s),
-        Some(epoch) => epoch.serialize(s),
+        Some(epoch) => epoch.value.get().serialize(s),
     }
 }
 
 /// Util function to deserialize a u64::max() fork epoch as `None`.
-fn deserialize_fork_epoch<'de, D>(deserializer: D) -> Result<Option<MaybeQuoted<Epoch>>, D::Error>
+fn deserialize_fork_epoch<'de, D>(
+    deserializer: D,
+) -> Result<Option<MaybeQuoted<NonMaxEpoch>>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let decoded: Option<MaybeQuoted<Epoch>> = serde::de::Deserialize::deserialize(deserializer)?;
-    if let Some(fork_epoch) = decoded
-        && fork_epoch.value != Epoch::max_value()
-    {
-        return Ok(Some(fork_epoch));
+    if let Some(fork_epoch) = decoded {
+        // `NonMaxEpoch::new` handles the conversion from u64::MAX to `None`.
+        Ok(NonMaxEpoch::new(fork_epoch).map(MaybeQuoted::new))
+    } else {
+        Ok(None)
     }
-    Ok(None)
 }
 
 impl Config {

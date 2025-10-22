@@ -426,6 +426,7 @@ impl<E: EthSpec, Payload: AbstractExecPayload<E>> EmptyBlock for BeaconBlockAlta
             slot: spec
                 .altair_fork_epoch
                 .expect("altair enabled")
+                .get()
                 .start_slot(E::slots_per_epoch()),
             proposer_index: 0,
             parent_root: Hash256::zero(),
@@ -462,6 +463,7 @@ impl<E: EthSpec, Payload: AbstractExecPayload<E>> BeaconBlockAltair<E, Payload> 
             slot: spec
                 .altair_fork_epoch
                 .expect("altair enabled")
+                .get()
                 .start_slot(E::slots_per_epoch()),
             proposer_index: 0,
             parent_root: Hash256::zero(),
@@ -493,6 +495,7 @@ impl<E: EthSpec, Payload: AbstractExecPayload<E>> EmptyBlock for BeaconBlockBell
             slot: spec
                 .bellatrix_fork_epoch
                 .expect("bellatrix enabled")
+                .get()
                 .start_slot(E::slots_per_epoch()),
             proposer_index: 0,
             parent_root: Hash256::zero(),
@@ -524,6 +527,7 @@ impl<E: EthSpec, Payload: AbstractExecPayload<E>> EmptyBlock for BeaconBlockCape
             slot: spec
                 .capella_fork_epoch
                 .expect("capella enabled")
+                .get()
                 .start_slot(E::slots_per_epoch()),
             proposer_index: 0,
             parent_root: Hash256::zero(),
@@ -556,6 +560,7 @@ impl<E: EthSpec, Payload: AbstractExecPayload<E>> EmptyBlock for BeaconBlockDene
             slot: spec
                 .deneb_fork_epoch
                 .expect("deneb enabled")
+                .get()
                 .start_slot(E::slots_per_epoch()),
             proposer_index: 0,
             parent_root: Hash256::zero(),
@@ -589,6 +594,7 @@ impl<E: EthSpec, Payload: AbstractExecPayload<E>> EmptyBlock for BeaconBlockElec
             slot: spec
                 .electra_fork_epoch
                 .expect("electra enabled")
+                .get()
                 .start_slot(E::slots_per_epoch()),
             proposer_index: 0,
             parent_root: Hash256::zero(),
@@ -623,6 +629,7 @@ impl<E: EthSpec, Payload: AbstractExecPayload<E>> EmptyBlock for BeaconBlockFulu
             slot: spec
                 .fulu_fork_epoch
                 .expect("fulu enabled")
+                .get()
                 .start_slot(E::slots_per_epoch()),
             proposer_index: 0,
             parent_root: Hash256::zero(),
