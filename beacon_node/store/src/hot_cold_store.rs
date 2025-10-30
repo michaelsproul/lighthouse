@@ -1091,6 +1091,11 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         let split = self.split.read_recursive();
 
         if state_root != split.state_root {
+            let backtrace = std::backtrace::Backtrace::force_capture();
+            debug!(
+                %backtrace,
+                "State cache miss backtrace"
+            );
             warn!(?state_root, ?block_root, "State cache missed");
         }
 
@@ -1711,6 +1716,11 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
 
         if *state_root != self.get_split_info().state_root {
             // Do not warn on start up when loading the split state.
+            let backtrace = std::backtrace::Backtrace::force_capture();
+            debug!(
+                %backtrace,
+                "State cache miss backtrace"
+            );
             warn!(?state_root, "State cache missed");
         }
 
