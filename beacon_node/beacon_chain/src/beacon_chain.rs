@@ -870,6 +870,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     /// ## Errors
     ///
     /// May return a database error.
+    #[instrument(level = "debug", skip(self))]
     pub fn state_root_at_slot(&self, request_slot: Slot) -> Result<Option<Hash256>, Error> {
         if request_slot == self.spec.genesis_slot {
             return Ok(Some(self.genesis_state_root));

@@ -122,6 +122,12 @@ impl StateId {
             }
         };
 
+        tracing::debug!(
+            %slot,
+            state_id = ?self,
+            "State root at slot in API"
+        );
+
         let root = chain
             .state_root_at_slot(slot)
             .map_err(warp_utils::reject::unhandled_error)?
