@@ -1,6 +1,5 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use fork_choice::{QueuedAttestation, dequeue_attestations};
-use std::collections::VecDeque;
 use types::{Epoch, Hash256, Slot};
 
 fn all_benches(c: &mut Criterion) {
@@ -14,7 +13,7 @@ fn all_benches(c: &mut Criterion) {
             block_root: Hash256::ZERO,
             target_epoch: Epoch::new(0),
         })
-        .collect::<VecDeque<_>>();
+        .collect::<Vec<_>>();
 
     let current_slot = Slot::from(unique_slots) - 1;
 
