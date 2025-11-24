@@ -835,15 +835,11 @@ impl<T: BeaconChainTypes> GossipVerifiedBlock<T> {
         // we assume it will be transformed into a fully verified block. We *do* need to supply
         // it to the slasher if an error occurs, because that's the end of this block's journey,
         // and it could be a repeat proposal (a likely cause for slashing!).
-        let header = block.signed_block_header();
-        // The `SignedBeaconBlock` and `SignedBeaconBlockHeader` have the same canonical root,
-        // but it's way quicker to calculate root of the header since the hash of the tree rooted
-        // at `BeaconBlockBody` is already computed in the header.
-        Self::new_without_slasher_checks(block, &header, chain)
+        Self::new_without_slasher_checks(block.clone(), chain)
             .map_err(|e| {
                 process_block_slash_info::<_, BlockError>(
                     chain,
-                    BlockSlashInfo::from_early_error_block(header, e),
+                    BlockSlashInfo::from_early_error_block(block.signed_block_header(), e),
                 )
             })
             .inspect(|block| {
@@ -855,7 +851,6 @@ impl<T: BeaconChainTypes> GossipVerifiedBlock<T> {
     /// As for new, but doesn't pass the block to the slasher.
     fn new_without_slasher_checks(
         block: Arc<SignedBeaconBlock<T::EthSpec>>,
-        block_header: &SignedBeaconBlockHeader,
         chain: &BeaconChain<T>,
     ) -> Result<Self, BlockError> {
         // Ensure the block is the correct structure for the fork at `block.slot()`.
@@ -890,7 +885,7 @@ impl<T: BeaconChainTypes> GossipVerifiedBlock<T> {
             }
         }
 
-        let block_root = get_block_header_root(block_header);
+        let block_root = get_block_root(&block);
 
         // Do not gossip a block from a finalized slot.
         check_block_against_finalized_slot(block.message(), block_root, chain)?;
@@ -1814,23 +1809,11 @@ pub fn check_block_relevancy<T: BeaconChainTypes>(
 /// Returns the canonical root of the given `block`.
 ///
 /// Use this function to ensure that we report the block hashing time Prometheus metric.
+#[instrument(level = "debug", skip_all)]
 pub fn get_block_root<E: EthSpec>(block: &SignedBeaconBlock<E>) -> Hash256 {
     let block_root_timer = metrics::start_timer(&metrics::BLOCK_PROCESSING_BLOCK_ROOT);
 
     let block_root = block.canonical_root();
-
-    metrics::stop_timer(block_root_timer);
-
-    block_root
-}
-
-/// Returns the canonical root of the given `block_header`.
-///
-/// Use this function to ensure that we report the block hashing time Prometheus metric.
-pub fn get_block_header_root(block_header: &SignedBeaconBlockHeader) -> Hash256 {
-    let block_root_timer = metrics::start_timer(&metrics::BLOCK_HEADER_PROCESSING_BLOCK_ROOT);
-
-    let block_root = block_header.message.canonical_root();
 
     metrics::stop_timer(block_root_timer);
 
