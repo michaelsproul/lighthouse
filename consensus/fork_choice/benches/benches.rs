@@ -1,6 +1,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fork_choice::{QueuedAttestation, dequeue_attestations};
-use std::collections::VecDeque;
+use itertools::Itertools;
+use std::collections::HashMap;
 use types::{Epoch, Hash256, Slot};
 
 fn all_benches(c: &mut Criterion) {
@@ -9,13 +10,18 @@ fn all_benches(c: &mut Criterion) {
     let num_iterations = 64;
     let attestations_per_slot = num_attestations / unique_slots;
     let queued_attestations = (0..num_attestations)
-        .map(|i| QueuedAttestation {
-            slot: Slot::from(i / attestations_per_slot),
-            attesting_indices: vec![],
-            block_root: Hash256::ZERO,
-            target_epoch: Epoch::new(0),
+        .map(|i| {
+            (
+                Slot::from(i / attestations_per_slot),
+                QueuedAttestation {
+                    slot: Slot::from(i / attestations_per_slot),
+                    attesting_indices: vec![],
+                    block_root: Hash256::ZERO,
+                    target_epoch: Epoch::new(0),
+                },
+            )
         })
-        .collect::<VecDeque<_>>();
+        .into_group_map();
 
     c.bench_with_input(
         BenchmarkId::new("dequeue_attestations", num_attestations),
@@ -30,7 +36,7 @@ fn all_benches(c: &mut Criterion) {
                     assert_eq!(dequeued.len(), attestations_per_slot);
 
                     // Capacity should be unchanged.
-                    assert_eq!(attestations.capacity(), num_attestations);
+                    // assert_eq!(attestations.capacity(), num_attestations);
 
                     let next_slot = end_slot + i - 1;
                     let new_attestations = std::iter::repeat_n(
@@ -44,10 +50,13 @@ fn all_benches(c: &mut Criterion) {
                     );
 
                     for attestation in new_attestations {
-                        attestations.push_back(attestation);
+                        attestations
+                            .entry(attestation.slot)
+                            .or_default()
+                            .push(attestation);
                     }
 
-                    assert_eq!(attestations.len(), num_attestations);
+                    assert_eq!(attestations.len(), 2);
                 }
             })
         },

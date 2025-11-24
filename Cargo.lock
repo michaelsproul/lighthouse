@@ -3828,6 +3828,7 @@ dependencies = [
  "criterion",
  "ethereum_ssz",
  "ethereum_ssz_derive",
+ "itertools 0.10.5",
  "logging",
  "metrics",
  "proto_array",
