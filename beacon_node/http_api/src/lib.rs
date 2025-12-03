@@ -106,7 +106,7 @@ use version::{
 use warp::Reply;
 use warp::hyper::Body;
 use warp::sse::Event;
-use warp::{Filter, Rejection, http::Response};
+use warp::{Filter, Rejection, filters::BoxedFilter, http::Response};
 use warp_utils::{query::multi_key_query, reject::convert_rejection, uor::UnifyingOrFilter};
 
 const API_PREFIX: &str = "eth";
@@ -586,25 +586,37 @@ pub fn serve<T: BeaconChainTypes>(
         .and(chain_filter.clone());
 
     // GET beacon/states/{state_id}/root
-    let get_beacon_state_root = beacon_states_path
-        .clone()
-        .and(warp::path("root"))
-        .and(warp::path::end())
-        .then(
-            |state_id: StateId,
-             task_spawner: TaskSpawner<T::EthSpec>,
-             chain: Arc<BeaconChain<T>>| {
-                task_spawner.blocking_json_task(Priority::P1, move || {
-                    let (root, execution_optimistic, finalized) = state_id.root(&chain)?;
-                    Ok(api_types::GenericResponse::from(api_types::RootData::from(
-                        root,
-                    )))
-                    .map(|resp| {
-                        resp.add_execution_optimistic_finalized(execution_optimistic, finalized)
+    fn get_beacon_state_root<
+        T: BeaconChainTypes,
+        F: Filter<
+                Extract = (StateId, TaskSpawner<T::EthSpec>, Arc<BeaconChain<T>>),
+                Error = Rejection,
+            > + Send
+            + Sync
+            + 'static,
+    >(
+        beacon_states_path: F,
+    ) -> BoxedFilter<(warp::reply::Response,)> {
+        beacon_states_path
+            .and(warp::path("root"))
+            .and(warp::path::end())
+            .then(
+                |state_id: StateId,
+                 task_spawner: TaskSpawner<T::EthSpec>,
+                 chain: Arc<BeaconChain<T>>| {
+                    task_spawner.blocking_json_task(Priority::P1, move || {
+                        let (root, execution_optimistic, finalized) = state_id.root(&chain)?;
+                        Ok(api_types::GenericResponse::from(api_types::RootData::from(
+                            root,
+                        )))
+                        .map(|resp| {
+                            resp.add_execution_optimistic_finalized(execution_optimistic, finalized)
+                        })
                     })
-                })
-            },
-        );
+                },
+            )
+            .boxed()
+    }
 
     // GET beacon/states/{state_id}/fork
     let get_beacon_state_fork = beacon_states_path
@@ -4904,7 +4916,7 @@ pub fn serve<T: BeaconChainTypes>(
     let routes = warp::get()
         .and(
             get_beacon_genesis
-                .uor(get_beacon_state_root)
+                .uor(get_beacon_state_root(beacon_states_path.clone()))
                 .uor(get_beacon_state_fork)
                 .uor(get_beacon_state_finality_checkpoints)
                 .uor(get_beacon_state_validator_balances)
