@@ -482,7 +482,7 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec, S: SlashingDatabase + S
                     let secrets_dir = store_passwords_in_secrets_dir.then_some(secrets_dir);
                     if let Some(handle) = task_executor.handle() {
                         let (validators, mnemonic) =
-                            handle.block_on(create_validators_mnemonic::<_, _, E>(
+                            handle.block_on(create_validators_mnemonic::<_, _, E, S>(
                                 None,
                                 None,
                                 &body,
@@ -534,7 +534,7 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec, S: SlashingDatabase + S
                                 ))
                             })?;
                         let (validators, _mnemonic) =
-                            handle.block_on(create_validators_mnemonic::<_, _, E>(
+                            handle.block_on(create_validators_mnemonic::<_, _, E, S>(
                                 Some(mnemonic),
                                 Some(body.key_derivation_path_offset),
                                 &body.validators,
@@ -681,7 +681,7 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec, S: SlashingDatabase + S
                                 ),
                             })
                             .collect();
-                        handle.block_on(create_validators_web3signer::<_, E>(
+                        handle.block_on(create_validators_web3signer::<_, E, S>(
                             web3signers,
                             &validator_store,
                         ))?;
@@ -1142,7 +1142,7 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec, S: SlashingDatabase + S
                 blocking_json_task(move || {
                     if let Some(handle) = task_executor.handle() {
                         let signed_voluntary_exit =
-                            handle.block_on(create_signed_voluntary_exit::<T, E>(
+                            handle.block_on(create_signed_voluntary_exit::<T, E, S>(
                                 pubkey,
                                 query.epoch,
                                 validator_store,
@@ -1250,7 +1250,7 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec, S: SlashingDatabase + S
             move |request, validator_dir, secrets_dir, validator_store, task_executor| {
                 let secrets_dir = store_passwords_in_secrets_dir.then_some(secrets_dir);
                 blocking_json_task(move || {
-                    keystores::import::<_, E>(
+                    keystores::import::<_, E, S>(
                         request,
                         validator_dir,
                         secrets_dir,
@@ -1284,7 +1284,7 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec, S: SlashingDatabase + S
         .and(task_executor_filter.clone())
         .then(|request, validator_store, task_executor| {
             blocking_json_task(move || {
-                remotekeys::import::<_, E>(request, validator_store, task_executor)
+                remotekeys::import::<_, E, S>(request, validator_store, task_executor)
             })
         });
 

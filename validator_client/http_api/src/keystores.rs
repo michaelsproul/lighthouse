@@ -1,5 +1,5 @@
-use slashing_protection::SlashingDatabase;
 //! Implementation of the standard keystore management API.
+use slashing_protection::SlashingDatabase;
 use account_utils::validator_definitions::PasswordStorage;
 use bls::PublicKeyBytes;
 use eth2::lighthouse_vc::{
@@ -26,7 +26,7 @@ use warp::Rejection;
 use warp_utils::reject::{custom_bad_request, custom_server_error};
 use zeroize::Zeroizing;
 
-pub fn list<T: SlotClock + 'static, E: EthSpec>(
+pub fn list<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
 ) -> ListKeystoresResponse {
     let initialized_validators_rwlock = validator_store.initialized_validators();
@@ -60,7 +60,7 @@ pub fn list<T: SlotClock + 'static, E: EthSpec>(
     ListKeystoresResponse { data: keystores }
 }
 
-pub fn import<T: SlotClock + 'static, E: EthSpec>(
+pub fn import<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     request: ImportKeystoresRequest,
     validator_dir: PathBuf,
     secrets_dir: Option<PathBuf>,
@@ -161,7 +161,7 @@ pub fn import<T: SlotClock + 'static, E: EthSpec>(
     Ok(ImportKeystoresResponse { data: statuses })
 }
 
-fn import_single_keystore<T: SlotClock + 'static, E: EthSpec>(
+fn import_single_keystore<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     keystore: Keystore,
     password: Zeroizing<String>,
     validator_dir_path: PathBuf,
@@ -234,7 +234,7 @@ fn import_single_keystore<T: SlotClock + 'static, E: EthSpec>(
     Ok(ImportKeystoreStatus::Imported)
 }
 
-pub fn delete<T: SlotClock + 'static, E: EthSpec>(
+pub fn delete<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     request: DeleteKeystoresRequest,
     validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
     task_executor: TaskExecutor,
@@ -265,7 +265,7 @@ pub fn delete<T: SlotClock + 'static, E: EthSpec>(
     })
 }
 
-pub fn export<T: SlotClock + 'static, E: EthSpec>(
+pub fn export<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     request: DeleteKeystoresRequest,
     validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
     task_executor: TaskExecutor,

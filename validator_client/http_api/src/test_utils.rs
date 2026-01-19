@@ -132,7 +132,7 @@ impl ApiTester {
         let context = Arc::new(Context {
             task_executor: test_runtime.task_executor.clone(),
             api_secret,
-            block_service: None::<BlockService<LighthouseValidatorStore<_, _>, _>>,
+            block_service: None::<BlockService<LighthouseValidatorStore<_, _, SqliteSlashingDatabase>, _>>,
             validator_dir: Some(validator_dir.path().into()),
             secrets_dir: Some(secrets_dir.path().into()),
             validator_store: Some(validator_store.clone()),
@@ -149,7 +149,7 @@ impl ApiTester {
             // It's not really interesting why this triggered, just that it happened.
             let _ = shutdown_rx.await;
         };
-        let (listening_socket, server) = super::serve::<_, E>(ctx, server_shutdown).unwrap();
+        let (listening_socket, server) = super::serve::<_, E, SqliteSlashingDatabase>(ctx, server_shutdown).unwrap();
 
         tokio::spawn(server);
 

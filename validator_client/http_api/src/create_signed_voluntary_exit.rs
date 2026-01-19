@@ -16,7 +16,7 @@ pub async fn create_signed_voluntary_exit<T: 'static + SlotClock + Clone, E: Eth
 ) -> Result<GenericResponse<SignedVoluntaryExit>, warp::Rejection> {
     let epoch = match maybe_epoch {
         Some(epoch) => epoch,
-        None => get_current_epoch::<T, E>(slot_clock).ok_or_else(|| {
+        None => get_current_epoch::<T, E, S>(slot_clock).ok_or_else(|| {
             warp_utils::reject::custom_server_error("Unable to determine current epoch".to_string())
         })?,
     };

@@ -1,5 +1,5 @@
-use slashing_protection::SlashingDatabase;
 //! Implementation of the standard remotekey management API.
+use slashing_protection::SlashingDatabase;
 use account_utils::validator_definitions::{
     SigningDefinition, ValidatorDefinition, Web3SignerDefinition,
 };
@@ -21,7 +21,7 @@ use url::Url;
 use warp::Rejection;
 use warp_utils::reject::custom_server_error;
 
-pub fn list<T: SlotClock + 'static, E: EthSpec>(
+pub fn list<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
 ) -> ListRemotekeysResponse {
     let initialized_validators_rwlock = validator_store.initialized_validators();
@@ -50,7 +50,7 @@ pub fn list<T: SlotClock + 'static, E: EthSpec>(
     ListRemotekeysResponse { data: keystores }
 }
 
-pub fn import<T: SlotClock + 'static, E: EthSpec>(
+pub fn import<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     request: ImportRemotekeysRequest,
     validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
     task_executor: TaskExecutor,
@@ -92,7 +92,7 @@ pub fn import<T: SlotClock + 'static, E: EthSpec>(
     Ok(ImportRemotekeysResponse { data: statuses })
 }
 
-fn import_single_remotekey<T: SlotClock + 'static, E: EthSpec>(
+fn import_single_remotekey<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     pubkey: PublicKeyBytes,
     url: String,
     validator_store: &LighthouseValidatorStore<T, E, S>,
@@ -147,7 +147,7 @@ fn import_single_remotekey<T: SlotClock + 'static, E: EthSpec>(
     Ok(ImportRemotekeyStatus::Imported)
 }
 
-pub fn delete<T: SlotClock + 'static, E: EthSpec>(
+pub fn delete<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     request: DeleteRemotekeysRequest,
     validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
     task_executor: TaskExecutor,

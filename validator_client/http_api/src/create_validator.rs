@@ -24,7 +24,7 @@ use zeroize::Zeroizing;
 ///
 /// If `key_derivation_path_offset` is supplied then the EIP-2334 validator index will start at
 /// this point.
-pub async fn create_validators_mnemonic<P: AsRef<Path>, T: 'static + SlotClock, E: EthSpec>(
+pub async fn create_validators_mnemonic<P: AsRef<Path>, T: 'static + SlotClock, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     mnemonic_opt: Option<Mnemonic>,
     key_derivation_path_offset: Option<u32>,
     validator_requests: &[api_types::ValidatorRequest],

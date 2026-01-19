@@ -70,7 +70,7 @@ pub const AGGREGATION_PRE_COMPUTE_EPOCHS: u64 = 2;
 /// Number of slots in advance to compute sync selection proofs when in `distributed` mode.
 pub const AGGREGATION_PRE_COMPUTE_SLOTS_DISTRIBUTED: u64 = 1;
 
-type ValidatorStore<E> = LighthouseValidatorStore<SystemTimeSlotClock, E>;
+type ValidatorStore<E> = LighthouseValidatorStore<SystemTimeSlotClock, E, SqliteSlashingDatabase>;
 
 #[derive(Clone)]
 pub struct ProductionValidatorClient<E: EthSpec> {
@@ -575,7 +575,7 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
 
             let exit = self.context.executor.exit();
 
-            let (listen_addr, server) = validator_http_api::serve::<_, E>(ctx, exit)
+            let (listen_addr, server) = validator_http_api::serve::<_, E, SqliteSlashingDatabase>(ctx, exit)
                 .map_err(|e| format!("Unable to start HTTP API server: {:?}", e))?;
 
             self.context
