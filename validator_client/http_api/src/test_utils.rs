@@ -18,7 +18,7 @@ use initialized_validators::{InitializedValidators, OnDecryptFailure};
 use lighthouse_validator_store::{Config as ValidatorStoreConfig, LighthouseValidatorStore};
 use parking_lot::RwLock;
 use sensitive_url::SensitiveUrl;
-use slashing_protection::{SLASHING_PROTECTION_FILENAME, SlashingDatabase};
+use slashing_protection::{SLASHING_PROTECTION_FILENAME, SlashingDatabase, SqliteSlashingDatabase};
 use slot_clock::{SlotClock, TestingSlotClock};
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr};
@@ -56,7 +56,7 @@ pub struct Web3SignerValidatorScenario {
 pub struct ApiTester {
     pub client: ValidatorClientHttpClient,
     pub initialized_validators: Arc<RwLock<InitializedValidators>>,
-    pub validator_store: Arc<LighthouseValidatorStore<TestingSlotClock, E>>,
+    pub validator_store: Arc<LighthouseValidatorStore<TestingSlotClock, E, SqliteSlashingDatabase>>,
     pub url: SensitiveUrl,
     pub api_token: String,
     pub test_runtime: TestRuntime,
@@ -108,7 +108,7 @@ impl ApiTester {
         };
 
         let slashing_db_path = validator_dir.path().join(SLASHING_PROTECTION_FILENAME);
-        let slashing_protection = SlashingDatabase::open_or_create(&slashing_db_path).unwrap();
+        let slashing_protection = SqliteSlashingDatabase::open_or_create(&slashing_db_path).unwrap();
 
         let test_runtime = TestRuntime::default();
 
@@ -132,7 +132,7 @@ impl ApiTester {
         let context = Arc::new(Context {
             task_executor: test_runtime.task_executor.clone(),
             api_secret,
-            block_service: None::<BlockService<LighthouseValidatorStore<_, _>, _>>,
+            block_service: None::<BlockService<LighthouseValidatorStore<_, _, SqliteSlashingDatabase>, _>>,
             validator_dir: Some(validator_dir.path().into()),
             secrets_dir: Some(secrets_dir.path().into()),
             validator_store: Some(validator_store.clone()),
@@ -149,7 +149,7 @@ impl ApiTester {
             // It's not really interesting why this triggered, just that it happened.
             let _ = shutdown_rx.await;
         };
-        let (listening_socket, server) = super::serve::<_, E>(ctx, server_shutdown).unwrap();
+        let (listening_socket, server) = super::serve::<_, E, SqliteSlashingDatabase>(ctx, server_shutdown).unwrap();
 
         tokio::spawn(server);
 

@@ -11,7 +11,7 @@ use account_utils::{
 };
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap_utils::FLAG_HEADER;
-use slashing_protection::{SLASHING_PROTECTION_FILENAME, SlashingDatabase};
+use slashing_protection::{SLASHING_PROTECTION_FILENAME, SqliteSlashingDatabase};
 use std::fs;
 use std::path::PathBuf;
 use std::thread::sleep;
@@ -97,7 +97,7 @@ pub fn cli_run(matches: &ArgMatches, validator_dir: PathBuf) -> Result<(), Strin
 
     let slashing_protection_path = validator_dir.join(SLASHING_PROTECTION_FILENAME);
     let slashing_protection =
-        SlashingDatabase::open_or_create(&slashing_protection_path).map_err(|e| {
+        SqliteSlashingDatabase::open_or_create(&slashing_protection_path).map_err(|e| {
             format!(
                 "Unable to open or create slashing protection database at {}: {:?}",
                 slashing_protection_path.display(),

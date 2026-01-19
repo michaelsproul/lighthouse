@@ -8,7 +8,7 @@ use initialized_validators::InitializedValidators;
 use metrics::set_gauge;
 use monitoring_api::{MonitoringHttpClient, ProcessType};
 use sensitive_url::SensitiveUrl;
-use slashing_protection::{SLASHING_PROTECTION_FILENAME, SlashingDatabase};
+use slashing_protection::{SLASHING_PROTECTION_FILENAME, SqliteSlashingDatabase};
 
 use account_utils::validator_definitions::ValidatorDefinitions;
 use beacon_node_fallback::{
@@ -70,7 +70,7 @@ pub const AGGREGATION_PRE_COMPUTE_EPOCHS: u64 = 2;
 /// Number of slots in advance to compute sync selection proofs when in `distributed` mode.
 pub const AGGREGATION_PRE_COMPUTE_SLOTS_DISTRIBUTED: u64 = 1;
 
-type ValidatorStore<E> = LighthouseValidatorStore<SystemTimeSlotClock, E>;
+type ValidatorStore<E> = LighthouseValidatorStore<SystemTimeSlotClock, E, SqliteSlashingDatabase>;
 
 #[derive(Clone)]
 pub struct ProductionValidatorClient<E: EthSpec> {
@@ -224,14 +224,14 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
         // database without any validators in it.
         let slashing_db_path = config.validator_dir.join(SLASHING_PROTECTION_FILENAME);
         let slashing_protection = if config.init_slashing_protection || voting_pubkeys.is_empty() {
-            SlashingDatabase::open_or_create(&slashing_db_path).map_err(|e| {
+            SqliteSlashingDatabase::open_or_create(&slashing_db_path).map_err(|e| {
                 format!(
                     "Failed to open or create slashing protection database: {:?}",
                     e
                 )
             })
         } else {
-            SlashingDatabase::open(&slashing_db_path).map_err(|e| {
+            SqliteSlashingDatabase::open(&slashing_db_path).map_err(|e| {
                 format!(
                     "Failed to open slashing protection database: {:?}.\n\
                      Ensure that `slashing_protection.sqlite` is in {:?} folder",
@@ -575,7 +575,7 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
 
             let exit = self.context.executor.exit();
 
-            let (listen_addr, server) = validator_http_api::serve::<_, E>(ctx, exit)
+            let (listen_addr, server) = validator_http_api::serve::<_, E, SqliteSlashingDatabase>(ctx, exit)
                 .map_err(|e| format!("Unable to start HTTP API server: {:?}", e))?;
 
             self.context

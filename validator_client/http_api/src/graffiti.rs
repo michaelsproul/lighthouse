@@ -1,12 +1,13 @@
+use slashing_protection::SlashingDatabase;
 use bls::PublicKey;
 use lighthouse_validator_store::LighthouseValidatorStore;
 use slot_clock::SlotClock;
 use std::sync::Arc;
 use types::{EthSpec, Graffiti, graffiti::GraffitiString};
 
-pub fn get_graffiti<T: 'static + SlotClock + Clone, E: EthSpec>(
+pub fn get_graffiti<T: 'static + SlotClock + Clone, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     validator_pubkey: PublicKey,
-    validator_store: Arc<LighthouseValidatorStore<T, E>>,
+    validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
     graffiti_flag: Option<Graffiti>,
 ) -> Result<Graffiti, warp::Rejection> {
     let initialized_validators_rw_lock = validator_store.initialized_validators();
@@ -26,10 +27,10 @@ pub fn get_graffiti<T: 'static + SlotClock + Clone, E: EthSpec>(
     }
 }
 
-pub fn set_graffiti<T: 'static + SlotClock + Clone, E: EthSpec>(
+pub fn set_graffiti<T: 'static + SlotClock + Clone, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     validator_pubkey: PublicKey,
     graffiti: GraffitiString,
-    validator_store: Arc<LighthouseValidatorStore<T, E>>,
+    validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
 ) -> Result<(), warp::Rejection> {
     let initialized_validators_rw_lock = validator_store.initialized_validators();
     let mut initialized_validators = initialized_validators_rw_lock.write();
@@ -53,9 +54,9 @@ pub fn set_graffiti<T: 'static + SlotClock + Clone, E: EthSpec>(
     }
 }
 
-pub fn delete_graffiti<T: 'static + SlotClock + Clone, E: EthSpec>(
+pub fn delete_graffiti<T: 'static + SlotClock + Clone, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     validator_pubkey: PublicKey,
-    validator_store: Arc<LighthouseValidatorStore<T, E>>,
+    validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
 ) -> Result<(), warp::Rejection> {
     let initialized_validators_rw_lock = validator_store.initialized_validators();
     let mut initialized_validators = initialized_validators_rw_lock.write();

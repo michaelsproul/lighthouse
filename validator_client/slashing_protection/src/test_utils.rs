@@ -1,4 +1,4 @@
-use crate::slashing_database::CheckSlashability;
+use crate::slashing_database::{CheckSlashability, SqliteSlashingDatabase};
 use crate::*;
 use tempfile::{TempDir, tempdir};
 use types::{AttestationData, BeaconBlockHeader, test_utils::generate_deterministic_keypair};
@@ -81,7 +81,7 @@ impl StreamTest<AttestationData> {
     pub fn run_solo(&self) {
         let dir = tempdir().unwrap();
         let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-        let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+        let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
         for pubkey in &self.registered_validators {
             slashing_db.register_validator(*pubkey).unwrap();
@@ -110,7 +110,7 @@ impl StreamTest<AttestationData> {
     pub fn run_batched(&self) {
         let dir = tempdir().unwrap();
         let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-        let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+        let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
         for pubkey in &self.registered_validators {
             slashing_db.register_validator(*pubkey).unwrap();
@@ -153,7 +153,7 @@ impl StreamTest<BeaconBlockHeader> {
     pub fn run(&self) {
         let dir = tempdir().unwrap();
         let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-        let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+        let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
         for pubkey in &self.registered_validators {
             slashing_db.register_validator(*pubkey).unwrap();
@@ -176,12 +176,12 @@ impl StreamTest<BeaconBlockHeader> {
 
 // This function roundtrips the database, but applies minification in order to be compatible with
 // the implicit minification done on import.
-fn roundtrip_database(dir: &TempDir, db: &SlashingDatabase, is_empty: bool) {
+fn roundtrip_database<T: SlashingDatabase>(dir: &TempDir, db: &T, is_empty: bool) {
     let exported = db
         .export_all_interchange_info(DEFAULT_GENESIS_VALIDATORS_ROOT)
         .unwrap();
     let new_db =
-        SlashingDatabase::create(&dir.path().join("roundtrip_slashing_protection.sqlite")).unwrap();
+        SqliteSlashingDatabase::create(&dir.path().join("roundtrip_slashing_protection.sqlite")).unwrap();
     new_db
         .import_interchange_info(exported.clone(), DEFAULT_GENESIS_VALIDATORS_ROOT)
         .unwrap();
@@ -198,8 +198,8 @@ fn roundtrip_database(dir: &TempDir, db: &SlashingDatabase, is_empty: bool) {
     assert_eq!(is_empty, exported.is_empty());
 }
 
-fn check_registration_invariants(
-    slashing_db: &SlashingDatabase,
+fn check_registration_invariants<T: SlashingDatabase>(
+    slashing_db: &T,
     registered_validators: &[PublicKeyBytes],
 ) {
     slashing_db

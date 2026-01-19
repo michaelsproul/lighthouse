@@ -3,6 +3,7 @@
 //! For other endpoints, see the `http_api` crate.
 
 use lighthouse_validator_store::LighthouseValidatorStore;
+use slashing_protection::SqliteSlashingDatabase;
 use lighthouse_version::version_with_platform;
 use logging::crit;
 use malloc_utils::scrape_allocator_metrics;
@@ -36,7 +37,7 @@ impl From<String> for Error {
     }
 }
 
-type ValidatorStore<E> = LighthouseValidatorStore<SystemTimeSlotClock, E>;
+type ValidatorStore<E> = LighthouseValidatorStore<SystemTimeSlotClock, E, SqliteSlashingDatabase>;
 
 /// Contains objects which have shared access from inside/outside of the metrics server.
 pub struct Shared<E> {

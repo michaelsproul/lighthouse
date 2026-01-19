@@ -9702,6 +9702,7 @@ dependencies = [
  "metrics",
  "parking_lot",
  "serde",
+ "slashing_protection",
  "slot_clock",
  "tracing",
  "types",

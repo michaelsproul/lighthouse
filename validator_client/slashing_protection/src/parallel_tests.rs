@@ -12,7 +12,7 @@ use tempfile::tempdir;
 fn block_same_slot() {
     let dir = tempdir().unwrap();
     let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-    let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+    let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
     let pk = pubkey(0);
 
@@ -33,7 +33,7 @@ fn block_same_slot() {
 fn attestation_same_target() {
     let dir = tempdir().unwrap();
     let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-    let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+    let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
     let pk = pubkey(0);
 
@@ -63,7 +63,7 @@ fn attestation_same_target() {
 fn attestation_surround_fest() {
     let dir = tempdir().unwrap();
     let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-    let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+    let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
     let pk = pubkey(0);
 

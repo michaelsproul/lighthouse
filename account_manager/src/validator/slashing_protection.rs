@@ -3,7 +3,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use environment::Environment;
 use slashing_protection::{
     InterchangeError, InterchangeImportOutcome, SLASHING_PROTECTION_FILENAME, SlashingDatabase,
-    interchange::Interchange,
+    SqliteSlashingDatabase, interchange::Interchange,
 };
 use std::fs::File;
 use std::path::PathBuf;
@@ -89,7 +89,7 @@ pub fn cli_run<E: EthSpec>(
             eprintln!(" [done].");
 
             let slashing_protection_database =
-                SlashingDatabase::open_or_create(&slashing_protection_db_path).map_err(|e| {
+                SqliteSlashingDatabase::open_or_create(&slashing_protection_db_path).map_err(|e| {
                     format!(
                         "Unable to open slashing protection database at {}: {:?}",
                         slashing_protection_db_path.display(),
@@ -196,7 +196,7 @@ pub fn cli_run<E: EthSpec>(
                 ));
             }
 
-            let slashing_protection_database = SlashingDatabase::open(&slashing_protection_db_path)
+            let slashing_protection_database = SqliteSlashingDatabase::open(&slashing_protection_db_path)
                 .map_err(|e| {
                     format!(
                         "Unable to open slashing protection database at {}: {:?}",

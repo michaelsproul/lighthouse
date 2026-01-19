@@ -13,6 +13,7 @@ malloc_utils = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
+slashing_protection = { workspace = true }
 slot_clock = { workspace = true }
 tracing = { workspace = true }
 types = { workspace = true }

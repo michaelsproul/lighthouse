@@ -1,5 +1,5 @@
 use crate::{
-    SigningRoot, SlashingDatabase,
+    SigningRoot, SqliteSlashingDatabase,
     test_utils::{DEFAULT_GENESIS_VALIDATORS_ROOT, pubkey},
 };
 use bls::PublicKeyBytes;
@@ -70,7 +70,7 @@ impl MultiTestCase {
     pub fn run(&self, minify: bool) {
         let dir = tempdir().unwrap();
         let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-        let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+        let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
         for test_case in &self.steps {
             // If the test case is marked as containing slashable data, then the spec allows us to

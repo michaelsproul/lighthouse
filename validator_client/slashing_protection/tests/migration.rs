@@ -1,6 +1,6 @@
 //! Tests for upgrading a previous version of the database to the latest schema.
 use fixed_bytes::FixedBytesExtended;
-use slashing_protection::{NotSafe, SlashingDatabase};
+use slashing_protection::{NotSafe, SqliteSlashingDatabase};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,7 +28,7 @@ fn add_enabled_column() {
 
     // Database should open without errors, indicating successfull application of migrations.
     // The input file has no `enabled` column, which should get added when opening it here.
-    let db = SlashingDatabase::open(&path).unwrap();
+    let db = SqliteSlashingDatabase::open(&path).unwrap();
 
     // Check that exporting an interchange file lists all the validators.
     let interchange = db.export_all_interchange_info(Hash256::zero()).unwrap();
