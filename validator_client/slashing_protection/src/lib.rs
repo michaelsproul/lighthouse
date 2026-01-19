@@ -16,8 +16,8 @@ pub mod interchange {
 pub use crate::signed_attestation::{InvalidAttestation, SignedAttestation};
 pub use crate::signed_block::{InvalidBlock, SignedBlock};
 pub use crate::slashing_database::{
-    CheckSlashability, InterchangeError, InterchangeImportOutcome,
-    SUPPORTED_INTERCHANGE_FORMAT_VERSION, SlashingDatabase,
+    CheckSlashability, InterchangeError, InterchangeImportOutcome, SlashingDatabase,
+    SqliteSlashingDatabase, SUPPORTED_INTERCHANGE_FORMAT_VERSION,
 };
 use bls::PublicKeyBytes;
 use rusqlite::Error as SQLError;

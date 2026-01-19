@@ -1,3 +1,4 @@
+use slashing_protection::SlashingDatabase;
 use account_utils::validator_definitions::{PasswordStorage, ValidatorDefinition};
 use account_utils::{
     eth2_keystore::Keystore,
@@ -29,7 +30,7 @@ pub async fn create_validators_mnemonic<P: AsRef<Path>, T: 'static + SlotClock, 
     validator_requests: &[api_types::ValidatorRequest],
     validator_dir: P,
     secrets_dir: Option<PathBuf>,
-    validator_store: &LighthouseValidatorStore<T, E>,
+    validator_store: &LighthouseValidatorStore<T, E, S>,
     spec: &ChainSpec,
 ) -> Result<(Vec<api_types::CreatedValidator>, Mnemonic), warp::Rejection> {
     let mnemonic = mnemonic_opt.unwrap_or_else(random_mnemonic);
@@ -175,9 +176,9 @@ pub async fn create_validators_mnemonic<P: AsRef<Path>, T: 'static + SlotClock, 
     Ok((validators, mnemonic))
 }
 
-pub async fn create_validators_web3signer<T: 'static + SlotClock, E: EthSpec>(
+pub async fn create_validators_web3signer<T: 'static + SlotClock, E: EthSpec, S: SlashingDatabase + Send + Sync + 'static>(
     validators: Vec<ValidatorDefinition>,
-    validator_store: &LighthouseValidatorStore<T, E>,
+    validator_store: &LighthouseValidatorStore<T, E, S>,
 ) -> Result<(), warp::Rejection> {
     for validator in validators {
         validator_store

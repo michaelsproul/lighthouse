@@ -1,3 +1,4 @@
+use slashing_protection::SlashingDatabase;
 //! Implementation of the standard remotekey management API.
 use account_utils::validator_definitions::{
     SigningDefinition, ValidatorDefinition, Web3SignerDefinition,
@@ -21,7 +22,7 @@ use warp::Rejection;
 use warp_utils::reject::custom_server_error;
 
 pub fn list<T: SlotClock + 'static, E: EthSpec>(
-    validator_store: Arc<LighthouseValidatorStore<T, E>>,
+    validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
 ) -> ListRemotekeysResponse {
     let initialized_validators_rwlock = validator_store.initialized_validators();
     let initialized_validators = initialized_validators_rwlock.read();
@@ -51,7 +52,7 @@ pub fn list<T: SlotClock + 'static, E: EthSpec>(
 
 pub fn import<T: SlotClock + 'static, E: EthSpec>(
     request: ImportRemotekeysRequest,
-    validator_store: Arc<LighthouseValidatorStore<T, E>>,
+    validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
     task_executor: TaskExecutor,
 ) -> Result<ImportRemotekeysResponse, Rejection> {
     info!(
@@ -64,7 +65,7 @@ pub fn import<T: SlotClock + 'static, E: EthSpec>(
     for remotekey in request.remote_keys {
         let status = if let Some(handle) = task_executor.handle() {
             // Import the keystore.
-            match import_single_remotekey::<_, E>(
+            match import_single_remotekey::<_, E, S>(
                 remotekey.pubkey,
                 remotekey.url,
                 &validator_store,
@@ -94,7 +95,7 @@ pub fn import<T: SlotClock + 'static, E: EthSpec>(
 fn import_single_remotekey<T: SlotClock + 'static, E: EthSpec>(
     pubkey: PublicKeyBytes,
     url: String,
-    validator_store: &LighthouseValidatorStore<T, E>,
+    validator_store: &LighthouseValidatorStore<T, E, S>,
     handle: Handle,
 ) -> Result<ImportRemotekeyStatus, String> {
     if let Err(url_err) = Url::parse(&url) {
@@ -148,7 +149,7 @@ fn import_single_remotekey<T: SlotClock + 'static, E: EthSpec>(
 
 pub fn delete<T: SlotClock + 'static, E: EthSpec>(
     request: DeleteRemotekeysRequest,
-    validator_store: Arc<LighthouseValidatorStore<T, E>>,
+    validator_store: Arc<LighthouseValidatorStore<T, E, S>>,
     task_executor: TaskExecutor,
 ) -> Result<DeleteRemotekeysResponse, Rejection> {
     info!(

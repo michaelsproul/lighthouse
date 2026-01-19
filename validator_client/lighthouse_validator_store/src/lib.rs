@@ -59,9 +59,9 @@ const SLASHING_PROTECTION_HISTORY_EPOCHS: u64 = 512;
 /// https://ethpandaops.io/posts/gaslimit-scaling/.
 pub const DEFAULT_GAS_LIMIT: u64 = 60_000_000;
 
-pub struct LighthouseValidatorStore<T, E> {
+pub struct LighthouseValidatorStore<T, E, S> {
     validators: Arc<RwLock<InitializedValidators>>,
-    slashing_protection: SlashingDatabase,
+    slashing_protection: S,
     slashing_protection_last_prune: Arc<Mutex<Epoch>>,
     genesis_validators_root: Hash256,
     spec: Arc<ChainSpec>,
@@ -77,13 +77,13 @@ pub struct LighthouseValidatorStore<T, E> {
     _phantom: PhantomData<E>,
 }
 
-impl<T: SlotClock + 'static, E: EthSpec> LighthouseValidatorStore<T, E> {
+impl<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync> LighthouseValidatorStore<T, E, S> {
     // All arguments are different types. Making the fields `pub` is undesired. A builder seems
     // unnecessary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         validators: InitializedValidators,
-        slashing_protection: SlashingDatabase,
+        slashing_protection: S,
         genesis_validators_root: Hash256,
         spec: Arc<ChainSpec>,
         doppelganger_service: Option<Arc<DoppelgangerService>>,
@@ -558,7 +558,7 @@ impl<T: SlotClock + 'static, E: EthSpec> LighthouseValidatorStore<T, E> {
     }
 }
 
-impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore for LighthouseValidatorStore<T, E> {
+impl<T: SlotClock + 'static, E: EthSpec, S: SlashingDatabase + Send + Sync> ValidatorStore for LighthouseValidatorStore<T, E, S> {
     type Error = SigningError;
     type E = E;
 
@@ -794,7 +794,7 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore for LighthouseValidatorS
         &self,
         attestations: Vec<(Attestation<E>, PublicKeyBytes)>,
     ) -> Result<Vec<(Attestation<E>, PublicKeyBytes)>, Error> {
-        let mut safe_attestations = vec![];
+        let mut safe_attestations: Vec<(Attestation<E>, PublicKeyBytes)> = vec![];
         let mut attestations_to_check = vec![];
 
         // Split attestations into de-facto safe attestations (checked by web3signer's slashing

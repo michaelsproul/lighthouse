@@ -9,7 +9,7 @@ use tempfile::tempdir;
 fn double_register_validators() {
     let dir = tempdir().unwrap();
     let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-    let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+    let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
     let num_validators = 100u32;
     let pubkeys = (0..num_validators as usize).map(pubkey).collect::<Vec<_>>();
@@ -36,7 +36,7 @@ fn double_register_validators() {
 fn reregister_validator() {
     let dir = tempdir().unwrap();
     let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-    let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+    let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
     let pk = pubkey(0);
 

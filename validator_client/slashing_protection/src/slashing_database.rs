@@ -33,8 +33,231 @@ pub const SUPPORTED_INTERCHANGE_FORMAT_VERSION: u64 = 5;
 /// Column ID of the `validators.enabled` column.
 pub const VALIDATORS_ENABLED_CID: i64 = 2;
 
+/// Trait for slashing protection databases.
+///
+/// This trait defines the interface for checking and recording validator signatures
+/// to prevent slashable behavior. Implementations may use different storage backends
+/// or add instrumentation for testing.
+pub trait SlashingDatabase {
+    /// Creates an empty transaction and drops it. Used to test whether the database is locked.
+    fn test_transaction(&self) -> Result<(), NotSafe>;
+
+    /// Execute a database transaction as a closure, committing if `f` returns `Ok`.
+    fn with_transaction<T, U, F>(&self, f: F) -> Result<T, U>
+    where
+        F: FnOnce(&Transaction) -> Result<T, U>,
+        U: From<NotSafe>;
+
+    /// Register a validator with the slashing protection database.
+    fn register_validator(&self, validator_pk: PublicKeyBytes) -> Result<(), NotSafe>;
+
+    /// Register multiple validators with the slashing protection database.
+    fn register_validators<'a>(
+        &self,
+        public_keys: impl Iterator<Item = &'a PublicKeyBytes>,
+    ) -> Result<(), NotSafe>;
+
+    /// Register multiple validators inside the given transaction.
+    fn register_validators_in_txn<'a>(
+        &self,
+        public_keys: impl Iterator<Item = &'a PublicKeyBytes>,
+        txn: &Transaction,
+    ) -> Result<(), NotSafe>;
+
+    /// Update the enabled status of a validator.
+    fn update_validator_status(
+        &self,
+        txn: &Transaction,
+        validator_id: i64,
+        status: bool,
+    ) -> Result<(), NotSafe>;
+
+    /// Check that all of the given validators are registered.
+    fn check_validator_registrations<'a>(
+        &self,
+        public_keys: impl Iterator<Item = &'a PublicKeyBytes>,
+    ) -> Result<(), NotSafe>;
+
+    /// List the internal validator ID and public key of every registered validator.
+    fn list_all_registered_validators(
+        &self,
+        txn: &Transaction,
+    ) -> Result<Vec<(i64, PublicKeyBytes)>, InterchangeError>;
+
+    /// Get the database-internal ID for an enabled validator.
+    fn get_validator_id(&self, public_key: &PublicKeyBytes) -> Result<i64, NotSafe>;
+
+    /// Get the validator ID within a transaction.
+    fn get_validator_id_in_txn(
+        &self,
+        txn: &Transaction,
+        public_key: &PublicKeyBytes,
+    ) -> Result<i64, NotSafe>;
+
+    /// Get validator ID regardless of whether or not it is enabled.
+    fn get_validator_id_ignoring_status(
+        &self,
+        txn: &Transaction,
+        public_key: &PublicKeyBytes,
+    ) -> Result<i64, NotSafe>;
+
+    /// Get validator ID along with its enabled status.
+    fn get_validator_id_with_status(
+        &self,
+        txn: &Transaction,
+        public_key: &PublicKeyBytes,
+    ) -> Result<Option<(i64, bool)>, NotSafe>;
+
+    /// Check a block proposal for slash safety, and if it is safe, record it in the database.
+    fn check_and_insert_block_proposal(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        block_header: &BeaconBlockHeader,
+        domain: Hash256,
+    ) -> Result<Safe, NotSafe>;
+
+    /// As for `check_and_insert_block_proposal` but without requiring the whole `BeaconBlockHeader`.
+    fn check_and_insert_block_signing_root(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        slot: Slot,
+        signing_root: SigningRoot,
+    ) -> Result<Safe, NotSafe>;
+
+    /// Transactional variant of `check_and_insert_block_signing_root`.
+    fn check_and_insert_block_signing_root_txn(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        slot: Slot,
+        signing_root: SigningRoot,
+        txn: &Transaction,
+    ) -> Result<Safe, NotSafe>;
+
+    /// Check whether a block would be safe to sign if we were to sign it now.
+    fn preliminary_check_block_proposal(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        block_header: &BeaconBlockHeader,
+        domain: Hash256,
+    ) -> Result<Safe, NotSafe>;
+
+    /// As for `preliminary_check_block_proposal` but without requiring the whole `BeaconBlockHeader`.
+    fn preliminary_check_block_signing_root(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        slot: Slot,
+        signing_root: SigningRoot,
+    ) -> Result<Safe, NotSafe>;
+
+    /// Check and insert multiple attestations atomically.
+    fn check_and_insert_attestations<'a>(
+        &self,
+        attestations: &'a [(
+            &'a AttestationData,
+            &'a PublicKeyBytes,
+            Hash256,
+            CheckSlashability,
+        )],
+    ) -> Result<Vec<Result<Safe, NotSafe>>, NotSafe>;
+
+    /// Check an attestation for slash safety, and if it is safe, record it in the database.
+    fn check_and_insert_attestation(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        attestation: &AttestationData,
+        domain: Hash256,
+        txn: &Transaction,
+    ) -> Result<Safe, NotSafe>;
+
+    /// As for `check_and_insert_attestation` but without requiring the whole `AttestationData`.
+    fn check_and_insert_attestation_signing_root(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        att_source_epoch: Epoch,
+        att_target_epoch: Epoch,
+        att_signing_root: SigningRoot,
+        txn: &Transaction,
+    ) -> Result<Safe, NotSafe>;
+
+    /// Check whether an attestation would be safe to sign if we were to sign it now.
+    fn preliminary_check_attestation(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        attestation: &AttestationData,
+        domain: Hash256,
+    ) -> Result<Safe, NotSafe>;
+
+    /// As for `preliminary_check_attestation` but without requiring the whole `AttestationData`.
+    fn preliminary_check_attestation_signing_root(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        att_source_epoch: Epoch,
+        att_target_epoch: Epoch,
+        att_signing_root: SigningRoot,
+    ) -> Result<Safe, NotSafe>;
+
+    /// Import slashing protection from another client in the interchange format.
+    fn import_interchange_info(
+        &self,
+        interchange: Interchange,
+        genesis_validators_root: Hash256,
+    ) -> Result<Vec<InterchangeImportOutcome>, InterchangeError>;
+
+    /// Import a single interchange record.
+    fn import_interchange_record(
+        &self,
+        record: InterchangeData,
+        txn: &Transaction,
+    ) -> Result<ValidatorSummary, NotSafe>;
+
+    /// Export slashing protection data for all validators.
+    fn export_all_interchange_info(
+        &self,
+        genesis_validators_root: Hash256,
+    ) -> Result<Interchange, InterchangeError>;
+
+    /// Export slashing protection data for selected validators.
+    fn export_interchange_info(
+        &self,
+        genesis_validators_root: Hash256,
+        selected_pubkeys: Option<&[PublicKeyBytes]>,
+    ) -> Result<Interchange, InterchangeError>;
+
+    /// Export interchange info within a transaction.
+    fn export_interchange_info_in_txn(
+        &self,
+        genesis_validators_root: Hash256,
+        selected_pubkeys: Option<&[PublicKeyBytes]>,
+        txn: &Transaction,
+    ) -> Result<Interchange, InterchangeError>;
+
+    /// Prune the signed blocks table for the given public keys.
+    fn prune_all_signed_blocks<'a>(
+        &self,
+        public_keys: impl Iterator<Item = &'a PublicKeyBytes>,
+        new_min_slot: Slot,
+    ) -> Result<(), NotSafe>;
+
+    /// Prune the signed attestations table for the given validator keys.
+    fn prune_all_signed_attestations<'a>(
+        &self,
+        public_keys: impl Iterator<Item = &'a PublicKeyBytes>,
+        new_min_target: Epoch,
+    ) -> Result<(), NotSafe>;
+
+    /// Get the number of registered validators.
+    fn num_validator_rows(&self) -> Result<u32, NotSafe>;
+
+    /// Get a summary of a validator's slashing protection data.
+    fn validator_summary(
+        &self,
+        public_key: &PublicKeyBytes,
+        txn: &Transaction,
+    ) -> Result<ValidatorSummary, NotSafe>;
+}
+
 #[derive(Debug, Clone)]
-pub struct SlashingDatabase {
+pub struct SqliteSlashingDatabase {
     conn_pool: Pool,
 }
 
@@ -49,7 +272,7 @@ pub enum CheckSlashability {
     No,
 }
 
-impl SlashingDatabase {
+impl SqliteSlashingDatabase {
     /// Open an existing database at the given `path`, or create one if none exists.
     pub fn open_or_create(path: &Path) -> Result<Self, NotSafe> {
         if path.exists() {
@@ -113,7 +336,7 @@ impl SlashingDatabase {
         Ok(Self { conn_pool })
     }
 
-    /// Open an existing `SlashingDatabase` from disk.
+    /// Open an existing `SqliteSlashingDatabase` from disk.
     ///
     /// This will automatically check for and apply the latest schema migrations.
     pub fn open(path: &Path) -> Result<Self, NotSafe> {
@@ -1190,6 +1413,571 @@ impl SlashingDatabase {
     }
 }
 
+impl SlashingDatabase for SqliteSlashingDatabase {
+    fn test_transaction(&self) -> Result<(), NotSafe> {
+        let mut conn = self.conn_pool.get()?;
+        Transaction::new(&mut conn, TransactionBehavior::Exclusive)?;
+        Ok(())
+    }
+
+    fn with_transaction<T, U, F>(&self, f: F) -> Result<T, U>
+    where
+        F: FnOnce(&Transaction) -> Result<T, U>,
+        U: From<NotSafe>,
+    {
+        let mut conn = self.conn_pool.get().map_err(NotSafe::from)?;
+        let txn = conn.transaction().map_err(NotSafe::from)?;
+        let value = f(&txn)?;
+        txn.commit().map_err(NotSafe::from)?;
+        Ok(value)
+    }
+
+    fn register_validator(&self, validator_pk: PublicKeyBytes) -> Result<(), NotSafe> {
+        self.register_validators(std::iter::once(&validator_pk))
+    }
+
+    fn register_validators<'a>(
+        &self,
+        public_keys: impl Iterator<Item = &'a PublicKeyBytes>,
+    ) -> Result<(), NotSafe> {
+        self.with_transaction(|txn| self.register_validators_in_txn(public_keys, txn))
+    }
+
+    fn register_validators_in_txn<'a>(
+        &self,
+        public_keys: impl Iterator<Item = &'a PublicKeyBytes>,
+        txn: &Transaction,
+    ) -> Result<(), NotSafe> {
+        let mut stmt =
+            txn.prepare("INSERT INTO validators (public_key, enabled) VALUES (?1, TRUE)")?;
+        for pubkey in public_keys {
+            match self.get_validator_id_with_status(txn, pubkey)? {
+                None => {
+                    stmt.execute([pubkey.as_hex_string()])?;
+                }
+                Some((validator_id, false)) => {
+                    self.update_validator_status(txn, validator_id, true)?;
+                }
+                Some((_, true)) => {
+                    // Validator already registered and enabled.
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn update_validator_status(
+        &self,
+        txn: &Transaction,
+        validator_id: i64,
+        status: bool,
+    ) -> Result<(), NotSafe> {
+        txn.execute(
+            "UPDATE validators SET enabled = ? WHERE id = ?",
+            params![status, validator_id],
+        )?;
+        Ok(())
+    }
+
+    fn check_validator_registrations<'a>(
+        &self,
+        mut public_keys: impl Iterator<Item = &'a PublicKeyBytes>,
+    ) -> Result<(), NotSafe> {
+        let mut conn = self.conn_pool.get()?;
+        let txn = conn.transaction()?;
+        public_keys
+            .try_for_each(|public_key| self.get_validator_id_in_txn(&txn, public_key).map(|_| ()))
+    }
+
+    fn list_all_registered_validators(
+        &self,
+        txn: &Transaction,
+    ) -> Result<Vec<(i64, PublicKeyBytes)>, InterchangeError> {
+        txn.prepare("SELECT id, public_key FROM validators ORDER BY id ASC")?
+            .query_and_then(params![], |row| {
+                let validator_id = row.get(0)?;
+                let pubkey_str: String = row.get(1)?;
+                let pubkey = pubkey_str
+                    .parse()
+                    .map_err(InterchangeError::InvalidPubkey)?;
+                Ok((validator_id, pubkey))
+            })?
+            .collect()
+    }
+
+    fn get_validator_id(&self, public_key: &PublicKeyBytes) -> Result<i64, NotSafe> {
+        let mut conn = self.conn_pool.get()?;
+        let txn = conn.transaction()?;
+        self.get_validator_id_in_txn(&txn, public_key)
+    }
+
+    fn get_validator_id_in_txn(
+        &self,
+        txn: &Transaction,
+        public_key: &PublicKeyBytes,
+    ) -> Result<i64, NotSafe> {
+        let (validator_id, enabled) = self
+            .get_validator_id_with_status(txn, public_key)?
+            .ok_or(NotSafe::UnregisteredValidator(*public_key))?;
+        if enabled {
+            Ok(validator_id)
+        } else {
+            Err(NotSafe::DisabledValidator(*public_key))
+        }
+    }
+
+    fn get_validator_id_ignoring_status(
+        &self,
+        txn: &Transaction,
+        public_key: &PublicKeyBytes,
+    ) -> Result<i64, NotSafe> {
+        let (validator_id, _) = self
+            .get_validator_id_with_status(txn, public_key)?
+            .ok_or(NotSafe::UnregisteredValidator(*public_key))?;
+        Ok(validator_id)
+    }
+
+    fn get_validator_id_with_status(
+        &self,
+        txn: &Transaction,
+        public_key: &PublicKeyBytes,
+    ) -> Result<Option<(i64, bool)>, NotSafe> {
+        Ok(txn
+            .query_row(
+                "SELECT id, enabled FROM validators WHERE public_key = ?1",
+                params![&public_key.as_hex_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    fn check_and_insert_block_proposal(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        block_header: &BeaconBlockHeader,
+        domain: Hash256,
+    ) -> Result<Safe, NotSafe> {
+        self.check_and_insert_block_signing_root(
+            validator_pubkey,
+            block_header.slot,
+            block_header.signing_root(domain).into(),
+        )
+    }
+
+    fn check_and_insert_block_signing_root(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        slot: Slot,
+        signing_root: SigningRoot,
+    ) -> Result<Safe, NotSafe> {
+        let mut conn = self.conn_pool.get()?;
+        let txn = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
+        let safe = self.check_and_insert_block_signing_root_txn(
+            validator_pubkey,
+            slot,
+            signing_root,
+            &txn,
+        )?;
+        txn.commit()?;
+        Ok(safe)
+    }
+
+    fn check_and_insert_block_signing_root_txn(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        slot: Slot,
+        signing_root: SigningRoot,
+        txn: &Transaction,
+    ) -> Result<Safe, NotSafe> {
+        let safe = self.check_block_proposal(txn, validator_pubkey, slot, signing_root)?;
+
+        if safe != Safe::SameData {
+            self.insert_block_proposal(txn, validator_pubkey, slot, signing_root)?;
+        }
+        Ok(safe)
+    }
+
+    fn preliminary_check_block_proposal(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        block_header: &BeaconBlockHeader,
+        domain: Hash256,
+    ) -> Result<Safe, NotSafe> {
+        #[allow(clippy::disallowed_methods)]
+        self.preliminary_check_block_signing_root(
+            validator_pubkey,
+            block_header.slot,
+            block_header.signing_root(domain).into(),
+        )
+    }
+
+    fn preliminary_check_block_signing_root(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        slot: Slot,
+        signing_root: SigningRoot,
+    ) -> Result<Safe, NotSafe> {
+        let mut conn = self.conn_pool.get()?;
+        let txn = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
+        self.check_block_proposal(&txn, validator_pubkey, slot, signing_root)
+    }
+
+    fn check_and_insert_attestations<'a>(
+        &self,
+        attestations: &'a [(
+            &'a AttestationData,
+            &'a PublicKeyBytes,
+            Hash256,
+            CheckSlashability,
+        )],
+    ) -> Result<Vec<Result<Safe, NotSafe>>, NotSafe> {
+        let mut conn = self.conn_pool.get()?;
+        let txn = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
+
+        let mut results = vec![];
+        for (attestation, validator_pubkey, domain, check_slashability) in attestations {
+            match check_slashability {
+                CheckSlashability::No => {
+                    results.push(Ok(Safe::Valid));
+                }
+                CheckSlashability::Yes => {
+                    let attestation_signing_root = attestation.signing_root(*domain).into();
+                    results.push(self.check_and_insert_attestation_signing_root(
+                        validator_pubkey,
+                        attestation.source.epoch,
+                        attestation.target.epoch,
+                        attestation_signing_root,
+                        &txn,
+                    ));
+                }
+            }
+        }
+
+        txn.commit()?;
+
+        Ok(results)
+    }
+
+    fn check_and_insert_attestation(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        attestation: &AttestationData,
+        domain: Hash256,
+        txn: &Transaction,
+    ) -> Result<Safe, NotSafe> {
+        let attestation_signing_root = attestation.signing_root(domain).into();
+        self.check_and_insert_attestation_signing_root(
+            validator_pubkey,
+            attestation.source.epoch,
+            attestation.target.epoch,
+            attestation_signing_root,
+            txn,
+        )
+    }
+
+    fn check_and_insert_attestation_signing_root(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        att_source_epoch: Epoch,
+        att_target_epoch: Epoch,
+        att_signing_root: SigningRoot,
+        txn: &Transaction,
+    ) -> Result<Safe, NotSafe> {
+        let safe = self.check_and_insert_attestation_signing_root_txn(
+            validator_pubkey,
+            att_source_epoch,
+            att_target_epoch,
+            att_signing_root,
+            txn,
+        )?;
+        Ok(safe)
+    }
+
+    fn preliminary_check_attestation(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        attestation: &AttestationData,
+        domain: Hash256,
+    ) -> Result<Safe, NotSafe> {
+        let attestation_signing_root = attestation.signing_root(domain).into();
+        #[allow(clippy::disallowed_methods)]
+        self.preliminary_check_attestation_signing_root(
+            validator_pubkey,
+            attestation.source.epoch,
+            attestation.target.epoch,
+            attestation_signing_root,
+        )
+    }
+
+    fn preliminary_check_attestation_signing_root(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        att_source_epoch: Epoch,
+        att_target_epoch: Epoch,
+        att_signing_root: SigningRoot,
+    ) -> Result<Safe, NotSafe> {
+        let mut conn = self.conn_pool.get()?;
+        let txn = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
+        self.check_attestation(
+            &txn,
+            validator_pubkey,
+            att_source_epoch,
+            att_target_epoch,
+            att_signing_root,
+        )
+    }
+
+    fn import_interchange_info(
+        &self,
+        interchange: Interchange,
+        genesis_validators_root: Hash256,
+    ) -> Result<Vec<InterchangeImportOutcome>, InterchangeError> {
+        let version = interchange.metadata.interchange_format_version;
+        if version != SUPPORTED_INTERCHANGE_FORMAT_VERSION {
+            return Err(InterchangeError::UnsupportedVersion(version));
+        }
+
+        if genesis_validators_root != interchange.metadata.genesis_validators_root {
+            return Err(InterchangeError::GenesisValidatorsMismatch {
+                client: genesis_validators_root,
+                interchange_file: interchange.metadata.genesis_validators_root,
+            });
+        }
+
+        // Create a single transaction for the entire batch, which will only be committed if
+        // all records are imported successfully.
+        let mut conn = self.conn_pool.get()?;
+        let txn = conn.transaction()?;
+
+        let mut import_outcomes = vec![];
+        let mut commit = true;
+
+        for record in interchange.data {
+            let pubkey = record.pubkey;
+            match self.import_interchange_record(record, &txn) {
+                Ok(summary) => {
+                    import_outcomes.push(InterchangeImportOutcome::Success { pubkey, summary });
+                }
+                Err(error) => {
+                    import_outcomes.push(InterchangeImportOutcome::Failure { pubkey, error });
+                    commit = false;
+                }
+            }
+        }
+
+        if commit {
+            txn.commit()?;
+            Ok(import_outcomes)
+        } else {
+            Err(InterchangeError::AtomicBatchAborted(import_outcomes))
+        }
+    }
+
+    fn import_interchange_record(
+        &self,
+        record: InterchangeData,
+        txn: &Transaction,
+    ) -> Result<ValidatorSummary, NotSafe> {
+        let pubkey = &record.pubkey;
+
+        self.register_validators_in_txn(std::iter::once(pubkey), txn)?;
+
+        // Summary of minimum and maximum messages pre-import.
+        let prev_summary = self.validator_summary(pubkey, txn)?;
+
+        // If the interchange contains any blocks, update the database with the new max slot.
+        let max_block = record.signed_blocks.iter().max_by_key(|b| b.slot);
+
+        if let Some(max_block) = max_block {
+            // Store new synthetic block with maximum slot and null signing root. Remove all other
+            // blocks.
+            let new_max_slot = max_or(prev_summary.max_block_slot, max_block.slot);
+            let signing_root = SigningRoot::default();
+
+            self.clear_signed_blocks(pubkey, txn)?;
+            self.insert_block_proposal(txn, pubkey, new_max_slot, signing_root)?;
+        }
+
+        // Find the attestations with max source and max target. Unless the input contains slashable
+        // data these two attestations should be identical, but we also handle the case where they
+        // are not.
+        let max_source_attestation = record
+            .signed_attestations
+            .iter()
+            .max_by_key(|att| att.source_epoch);
+        let max_target_attestation = record
+            .signed_attestations
+            .iter()
+            .max_by_key(|att| att.target_epoch);
+
+        if let (Some(max_source_att), Some(max_target_att)) =
+            (max_source_attestation, max_target_attestation)
+        {
+            let source_epoch = max_or(
+                prev_summary.max_attestation_source,
+                max_source_att.source_epoch,
+            );
+            let target_epoch = max_or(
+                prev_summary.max_attestation_target,
+                max_target_att.target_epoch,
+            );
+            let signing_root = SigningRoot::default();
+
+            // Clear existing attestations before insert to avoid running afoul of the target epoch
+            // uniqueness constraint.
+            self.clear_signed_attestations(pubkey, txn)?;
+            self.insert_attestation(txn, pubkey, source_epoch, target_epoch, signing_root)?;
+        }
+
+        let summary = self.validator_summary(&record.pubkey, txn)?;
+
+        // Check that the summary is consistent with having added the new data.
+        if summary.check_block_consistency(&prev_summary, !record.signed_blocks.is_empty())
+            && summary.check_attestation_consistency(
+                &prev_summary,
+                !record.signed_attestations.is_empty(),
+            )
+        {
+            Ok(summary)
+        } else {
+            // This should never occur and is indicative of a bug in the import code.
+            Err(NotSafe::ConsistencyError)
+        }
+    }
+
+    fn export_all_interchange_info(
+        &self,
+        genesis_validators_root: Hash256,
+    ) -> Result<Interchange, InterchangeError> {
+        self.export_interchange_info(genesis_validators_root, None)
+    }
+
+    fn export_interchange_info(
+        &self,
+        genesis_validators_root: Hash256,
+        selected_pubkeys: Option<&[PublicKeyBytes]>,
+    ) -> Result<Interchange, InterchangeError> {
+        let mut conn = self.conn_pool.get()?;
+        let txn = &conn.transaction()?;
+        self.export_interchange_info_in_txn(genesis_validators_root, selected_pubkeys, txn)
+    }
+
+    fn export_interchange_info_in_txn(
+        &self,
+        genesis_validators_root: Hash256,
+        selected_pubkeys: Option<&[PublicKeyBytes]>,
+        txn: &Transaction,
+    ) -> Result<Interchange, InterchangeError> {
+        // Determine the validator IDs and public keys to export data for.
+        let to_export = if let Some(selected_pubkeys) = selected_pubkeys {
+            selected_pubkeys
+                .iter()
+                .map(|pubkey| {
+                    let id = self.get_validator_id_ignoring_status(txn, pubkey)?;
+                    Ok((id, *pubkey))
+                })
+                .collect::<Result<_, InterchangeError>>()?
+        } else {
+            self.list_all_registered_validators(txn)?
+        };
+
+        let data = to_export
+            .into_iter()
+            .map(|(validator_id, pubkey)| {
+                let signed_blocks =
+                    self.export_interchange_blocks_for_validator(validator_id, txn)?;
+                let signed_attestations =
+                    self.export_interchange_attestations_for_validator(validator_id, txn)?;
+                Ok(InterchangeData {
+                    pubkey,
+                    signed_blocks,
+                    signed_attestations,
+                })
+            })
+            .collect::<Result<_, InterchangeError>>()?;
+
+        let metadata = InterchangeMetadata {
+            interchange_format_version: SUPPORTED_INTERCHANGE_FORMAT_VERSION,
+            genesis_validators_root,
+        };
+
+        Ok(Interchange { metadata, data })
+    }
+
+    fn prune_all_signed_blocks<'a>(
+        &self,
+        mut public_keys: impl Iterator<Item = &'a PublicKeyBytes>,
+        new_min_slot: Slot,
+    ) -> Result<(), NotSafe> {
+        let mut conn = self.conn_pool.get()?;
+        let txn = conn.transaction()?;
+        public_keys.try_for_each(|pubkey| self.prune_signed_blocks(pubkey, new_min_slot, &txn))?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    fn prune_all_signed_attestations<'a>(
+        &self,
+        mut public_keys: impl Iterator<Item = &'a PublicKeyBytes>,
+        new_min_target: Epoch,
+    ) -> Result<(), NotSafe> {
+        let mut conn = self.conn_pool.get()?;
+        let txn = conn.transaction()?;
+        public_keys
+            .try_for_each(|pubkey| self.prune_signed_attestations(pubkey, new_min_target, &txn))?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    fn num_validator_rows(&self) -> Result<u32, NotSafe> {
+        let mut conn = self.conn_pool.get()?;
+        let txn = conn.transaction()?;
+        let count = txn
+            .prepare("SELECT COALESCE(COUNT(*), 0) FROM validators")?
+            .query_row(params![], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    fn validator_summary(
+        &self,
+        public_key: &PublicKeyBytes,
+        txn: &Transaction,
+    ) -> Result<ValidatorSummary, NotSafe> {
+        let validator_id = self.get_validator_id_in_txn(txn, public_key)?;
+        let (min_block_slot, max_block_slot) = txn
+            .prepare(
+                "SELECT MIN(slot), MAX(slot)
+                 FROM signed_blocks
+                 WHERE validator_id = ?1",
+            )?
+            .query_row(params![validator_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+
+        let (
+            min_attestation_source,
+            min_attestation_target,
+            max_attestation_source,
+            max_attestation_target,
+        ) = txn
+            .prepare(
+                "SELECT MIN(source_epoch), MIN(target_epoch), MAX(source_epoch), MAX(target_epoch)
+                 FROM signed_attestations
+                 WHERE validator_id = ?1",
+            )?
+            .query_row(params![validator_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+
+        Ok(ValidatorSummary {
+            min_block_slot,
+            max_block_slot,
+            min_attestation_source,
+            min_attestation_target,
+            max_attestation_source,
+            max_attestation_target,
+        })
+    }
+}
+
 /// Minimum and maximum slots and epochs signed by a validator.
 #[derive(Debug)]
 pub struct ValidatorSummary {
@@ -1313,7 +2101,7 @@ mod tests {
     fn open_non_existent_error() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("db.sqlite");
-        assert!(SlashingDatabase::open(&file).is_err());
+        assert!(SqliteSlashingDatabase::open(&file).is_err());
     }
 
     // Due to the exclusive locking, trying to use an already open database should error.
@@ -1321,9 +2109,9 @@ mod tests {
     fn double_open_error() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("db.sqlite");
-        let _db1 = SlashingDatabase::create(&file).unwrap();
+        let _db1 = SqliteSlashingDatabase::create(&file).unwrap();
 
-        SlashingDatabase::open(&file).unwrap_err();
+        SqliteSlashingDatabase::open(&file).unwrap_err();
     }
 
     // Attempting to create the same database twice should error.
@@ -1331,9 +2119,9 @@ mod tests {
     fn double_create_error() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("db.sqlite");
-        let _db1 = SlashingDatabase::create(&file).unwrap();
+        let _db1 = SqliteSlashingDatabase::create(&file).unwrap();
         drop(_db1);
-        SlashingDatabase::create(&file).unwrap_err();
+        SqliteSlashingDatabase::create(&file).unwrap_err();
     }
 
     // Check that both `open` and `create` apply the same connection settings.
@@ -1342,7 +2130,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let file = dir.path().join("db.sqlite");
 
-        let check = |db: &SlashingDatabase| {
+        let check = |db: &SqliteSlashingDatabase| {
             assert_eq!(db.conn_pool.max_size(), POOL_SIZE);
             assert_eq!(db.conn_pool.connection_timeout(), CONNECTION_TIMEOUT);
             let conn = db.conn_pool.get().unwrap();
@@ -1358,10 +2146,10 @@ mod tests {
             );
         };
 
-        let db1 = SlashingDatabase::create(&file).unwrap();
+        let db1 = SqliteSlashingDatabase::create(&file).unwrap();
         check(&db1);
         drop(db1);
-        let db2 = SlashingDatabase::open(&file).unwrap();
+        let db2 = SqliteSlashingDatabase::open(&file).unwrap();
         check(&db2);
     }
 
@@ -1369,7 +2157,7 @@ mod tests {
     fn test_transaction_failure() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("db.sqlite");
-        let db = SlashingDatabase::create(&file).unwrap();
+        let db = SqliteSlashingDatabase::create(&file).unwrap();
 
         db.with_transaction(|_| {
             db.test_transaction().unwrap_err();

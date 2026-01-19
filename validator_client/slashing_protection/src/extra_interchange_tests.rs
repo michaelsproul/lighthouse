@@ -9,7 +9,7 @@ use tempfile::tempdir;
 fn export_non_existent_key() {
     let dir = tempdir().unwrap();
     let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-    let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+    let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
     let key1 = pubkey(1);
     let key2 = pubkey(2);
@@ -46,7 +46,7 @@ fn export_non_existent_key() {
 fn export_same_key_twice() {
     let dir = tempdir().unwrap();
     let slashing_db_file = dir.path().join("slashing_protection.sqlite");
-    let slashing_db = SlashingDatabase::create(&slashing_db_file).unwrap();
+    let slashing_db = SqliteSlashingDatabase::create(&slashing_db_file).unwrap();
 
     let key1 = pubkey(1);
 

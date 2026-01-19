@@ -9,7 +9,7 @@ use clap_utils::FLAG_HEADER;
 use directory::{DEFAULT_SECRET_DIR, DEFAULT_WALLET_DIR, parse_path_or_default_with_flag};
 use environment::Environment;
 use eth2_wallet_manager::WalletManager;
-use slashing_protection::{SLASHING_PROTECTION_FILENAME, SlashingDatabase};
+use slashing_protection::{SLASHING_PROTECTION_FILENAME, SqliteSlashingDatabase};
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::create_dir_all;
@@ -203,7 +203,7 @@ pub fn cli_run<E: EthSpec>(
 
     let slashing_protection_path = validator_dir.join(SLASHING_PROTECTION_FILENAME);
     let slashing_protection =
-        SlashingDatabase::open_or_create(&slashing_protection_path).map_err(|e| {
+        SqliteSlashingDatabase::open_or_create(&slashing_protection_path).map_err(|e| {
             format!(
                 "Unable to open or create slashing protection database at {}: {:?}",
                 slashing_protection_path.display(),
