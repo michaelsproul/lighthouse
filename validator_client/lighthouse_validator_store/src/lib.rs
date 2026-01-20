@@ -753,27 +753,30 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore for LighthouseValidatorS
         mut attestations: Vec<(PublicKeyBytes, usize, Attestation<Self::E>)>,
     ) -> Result<Vec<Attestation<E>>, Error> {
         // Sign all attestations concurrently.
-        let signing_futures = attestations.iter_mut().map(|(pubkey, validator_committee_index, attestation)| {
-            let pubkey = *pubkey;
-            let validator_committee_index = *validator_committee_index;
-            async move {
-                self
-                    .sign_attestation_no_checks(
-                        pubkey,
-                        validator_committee_index,
-                        attestation,
-                    )
-                    .await
-                    .map(|_| pubkey)
-            }
-        });
+        let signing_futures =
+            attestations
+                .iter_mut()
+                .map(|(pubkey, validator_committee_index, attestation)| {
+                    let pubkey = *pubkey;
+                    let validator_committee_index = *validator_committee_index;
+                    async move {
+                        self.sign_attestation_no_checks(
+                            pubkey,
+                            validator_committee_index,
+                            attestation,
+                        )
+                        .await
+                        .map(|_| pubkey)
+                    }
+                });
 
         // Execute all signing in parallel.
         let results: Vec<_> = join_all(signing_futures).await;
 
         // Collect successfully signed attestations and log errors.
         let mut signed_attestations = Vec::new();
-        for (result, (pubkey, _, attestation)) in results.into_iter().zip(attestations.into_iter()) {
+        for (result, (pubkey, _, attestation)) in results.into_iter().zip(attestations.into_iter())
+        {
             match result {
                 Ok(_) => {
                     signed_attestations.push((attestation, pubkey));
