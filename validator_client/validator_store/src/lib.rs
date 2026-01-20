@@ -103,10 +103,11 @@ pub trait ValidatorStore: Send + Sync {
         current_slot: Slot,
     ) -> impl Future<Output = Result<SignedBlock<Self::E>, Error<Self::Error>>> + Send;
 
+    #[allow(clippy::type_complexity)]
     fn sign_attestations(
         &self,
-        attestations: Vec<(PublicKeyBytes, usize, &mut Attestation<Self::E>)>,
-    ) -> impl Future<Output = Result<(), Error<Self::Error>>> + Send;
+        attestations: Vec<(PublicKeyBytes, usize, Attestation<Self::E>)>,
+    ) -> impl Future<Output = Result<Vec<Attestation<Self::E>>, Error<Self::Error>>> + Send;
 
     fn sign_attestation_no_checks(
         &self,

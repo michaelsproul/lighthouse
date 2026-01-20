@@ -750,8 +750,8 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore for LighthouseValidatorS
 
     async fn sign_attestations(
         &self,
-        mut attestations: Vec<(PublicKeyBytes, usize, &mut Attestation<Self::E>)>,
-    ) -> Result<(), Error> {
+        mut attestations: Vec<(PublicKeyBytes, usize, Attestation<Self::E>)>,
+    ) -> Result<Vec<Attestation<E>>, Error> {
         // Sign all attestations concurrently.
         let signing_futures = attestations.iter_mut().map(|(pubkey, validator_committee_index, attestation)| {
             let pubkey = *pubkey;
@@ -764,35 +764,43 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore for LighthouseValidatorS
                         attestation,
                     )
                     .await
-                    .map(|_| (pubkey, validator_committee_index))
+                    .map(|_| pubkey)
             }
         });
 
         // Execute all signing in parallel.
         let results: Vec<_> = join_all(signing_futures).await;
 
-        // Log errors but don't fail the entire batch.
-        for result in results {
-            if let Err(e) = result {
-                match e {
-                    ValidatorStoreError::UnknownPubkey(pubkey) => {
-                        warn!(
-                            info = "a validator may have recently been removed from this VC",
-                            ?pubkey,
-                            "Missing pubkey for attestation"
-                        );
-                    }
-                    e => {
-                        crit!(
-                            error = ?e,
-                            "Failed to sign attestation"
-                        );
-                    }
+        // Collect successfully signed attestations and log errors.
+        let mut signed_attestations = Vec::new();
+        for (result, (pubkey, _, attestation)) in results.into_iter().zip(attestations.into_iter()) {
+            match result {
+                Ok(_) => {
+                    signed_attestations.push((attestation, pubkey));
+                }
+                Err(ValidatorStoreError::UnknownPubkey(pubkey)) => {
+                    warn!(
+                        info = "a validator may have recently been removed from this VC",
+                        ?pubkey,
+                        "Missing pubkey for attestation"
+                    );
+                }
+                Err(e) => {
+                    crit!(
+                        error = ?e,
+                        "Failed to sign attestation"
+                    );
                 }
             }
         }
 
-        Ok(())
+        if signed_attestations.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Check slashing protection and insert into database.
+        let safe_attestations = self.check_and_insert_attestations(signed_attestations)?;
+        Ok(safe_attestations.into_iter().map(|(a, _)| a).collect())
     }
 
     #[instrument(skip_all)]
