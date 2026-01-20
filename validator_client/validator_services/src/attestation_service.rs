@@ -383,6 +383,14 @@ impl<S: ValidatorStore + 'static, T: SlotClock + 'static> AttestationService<S, 
             .ok_or("Unable to determine current slot from clock")?
             .epoch(S::E::slots_per_epoch());
 
+        // Make sure the target epoch is not higher than the current epoch to avoid potential attacks.
+        if attestation.data().target.epoch > current_epoch {
+            return Err(Error::GreaterThanCurrentEpoch {
+                epoch: attestation.data().target.epoch,
+                current_epoch,
+            });
+        }
+
         // Create futures to produce signed `Attestation` objects.
         let attestation_data_ref = &attestation_data;
         let signing_futures = validator_duties.iter().map(|duty_and_proof| {

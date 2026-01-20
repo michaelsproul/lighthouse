@@ -835,7 +835,12 @@ mod tests {
                 .sign_attestation(pubkey, 0, &mut attestation, current_epoch)
                 .await
                 .unwrap();
-            attestation
+            validator_store
+                .check_and_insert_attestations(vec![(attestation, pubkey)])
+                .unwrap()
+                .pop()
+                .unwrap()
+                .0
         })
         .await
         .assert_slashable_message_should_sign(

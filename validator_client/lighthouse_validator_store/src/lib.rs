@@ -747,22 +747,54 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore for LighthouseValidatorS
         }
     }
 
+    async fn sign_attestations(
+        &self,
+        attestations: Vec<(PublicKeyBytes, usize, &mut Attestation<Self::E>)>,
+    ) -> Result<(), Error> {
+        let signing_futures = attestations.iter().map(|(pubkey, validator_committee_index,
+        attestation)| {
+            async move {
+                match self
+                    .sign_attestation_no_checks(
+                        pubkey,
+                        validator_committee_index,
+                        attestation,
+                    )
+                    .await
+                {
+                    Ok(()) => Some(((attestation, duty.pubkey), duty.validator_index)),
+                    Err(ValidatorStoreError::UnknownPubkey(pubkey)) => {
+                        // A pubkey can be missing when a validator was recently
+                        // removed via the API.
+                        warn!(
+                            info = "a validator may have recently been removed from this VC",
+                            ?pubkey,
+                            slot = %attestation.data.slot,
+                            "Missing pubkey for attestation"
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        crit!(
+                            error = ?e,
+                            validator = ?pubkey,
+                            slot = slot.as_u64(),
+                            "Failed to sign attestation"
+                        );
+                        None
+                    }
+                }
+
+            });
+    }
+
     #[instrument(skip_all)]
-    async fn sign_attestation(
+    async fn sign_attestation_no_checks(
         &self,
         validator_pubkey: PublicKeyBytes,
         validator_committee_position: usize,
         attestation: &mut Attestation<E>,
-        current_epoch: Epoch,
     ) -> Result<(), Error> {
-        // Make sure the target epoch is not higher than the current epoch to avoid potential attacks.
-        if attestation.data().target.epoch > current_epoch {
-            return Err(Error::GreaterThanCurrentEpoch {
-                epoch: attestation.data().target.epoch,
-                current_epoch,
-            });
-        }
-
         // Get the signing method and check doppelganger protection.
         let signing_method = self.doppelganger_checked_signing_method(validator_pubkey)?;
 
