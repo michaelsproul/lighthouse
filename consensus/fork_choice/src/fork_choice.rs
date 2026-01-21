@@ -727,15 +727,6 @@ where
             }));
         }
 
-        // Add proposer score boost if the block is timely.
-        let is_before_attesting_interval =
-            block_delay < Duration::from_secs(spec.seconds_per_slot / INTERVALS_PER_SLOT);
-
-        let is_first_block = self.fc_store.proposer_boost_root().is_zero();
-        if current_slot == block.slot() && is_before_attesting_interval && is_first_block {
-            self.fc_store.set_proposer_boost_root(block_root);
-        }
-
         // Update store with checkpoints if necessary
         self.update_checkpoints(
             state.current_justified_checkpoint(),
@@ -881,33 +872,58 @@ where
             ExecutionStatus::irrelevant()
         };
 
+        let proto_block = ProtoBlock {
+            slot: block.slot(),
+            root: block_root,
+            parent_root: Some(block.parent_root()),
+            target_root,
+            current_epoch_shuffling_id: AttestationShufflingId::new(
+                block_root,
+                state,
+                RelativeEpoch::Current,
+            )
+            .map_err(Error::BeaconStateError)?,
+            next_epoch_shuffling_id: AttestationShufflingId::new(
+                block_root,
+                state,
+                RelativeEpoch::Next,
+            )
+            .map_err(Error::BeaconStateError)?,
+            state_root: block.state_root(),
+            justified_checkpoint: state.current_justified_checkpoint(),
+            finalized_checkpoint: state.finalized_checkpoint(),
+            execution_status,
+            unrealized_justified_checkpoint: Some(unrealized_justified_checkpoint),
+            unrealized_finalized_checkpoint: Some(unrealized_finalized_checkpoint),
+        };
+
+        // Add proposer score boost if the block is timely, not conflicting with an
+        // existing block, with the same the proposer as the canonical chain.
+        let is_first_block = self.fc_store.proposer_boost_root().is_zero();
+        let is_timely = current_slot == block.slot()
+            && block_delay < Duration::from_secs(spec.seconds_per_slot / INTERVALS_PER_SLOT);
+        if is_timely && is_first_block {
+            let head_block_root = self.forkchoice_update_parameters.head_root;
+            let head_block = self
+                .get_block(&head_block_root)
+                .ok_or(Error::MissingProtoArrayBlock(head_block_root))?;
+
+            let current_epoch = current_slot.epoch(E::slots_per_epoch());
+
+            let head_block_shuffling_id_at_current_epoch =
+                head_block.proposer_shuffling_root_for_child_block(current_epoch, spec);
+            let block_shuffling_id_at_current_epoch =
+                proto_block.proposer_shuffling_root_for_child_block(current_epoch, spec);
+
+            if head_block_shuffling_id_at_current_epoch == block_shuffling_id_at_current_epoch {
+                self.fc_store.set_proposer_boost_root(block_root);
+            }
+        }
+
         // This does not apply a vote to the block, it just makes fork choice aware of the block so
         // it can still be identified as the head even if it doesn't have any votes.
         self.proto_array.process_block::<E>(
-            ProtoBlock {
-                slot: block.slot(),
-                root: block_root,
-                parent_root: Some(block.parent_root()),
-                target_root,
-                current_epoch_shuffling_id: AttestationShufflingId::new(
-                    block_root,
-                    state,
-                    RelativeEpoch::Current,
-                )
-                .map_err(Error::BeaconStateError)?,
-                next_epoch_shuffling_id: AttestationShufflingId::new(
-                    block_root,
-                    state,
-                    RelativeEpoch::Next,
-                )
-                .map_err(Error::BeaconStateError)?,
-                state_root: block.state_root(),
-                justified_checkpoint: state.current_justified_checkpoint(),
-                finalized_checkpoint: state.finalized_checkpoint(),
-                execution_status,
-                unrealized_justified_checkpoint: Some(unrealized_justified_checkpoint),
-                unrealized_finalized_checkpoint: Some(unrealized_finalized_checkpoint),
-            },
+            proto_block,
             current_slot,
             self.justified_checkpoint(),
             self.finalized_checkpoint(),
