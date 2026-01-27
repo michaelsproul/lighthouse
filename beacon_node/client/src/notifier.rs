@@ -1,5 +1,8 @@
 use crate::metrics;
-use beacon_chain::{BeaconChain, BeaconChainTypes, ExecutionStatus};
+use beacon_chain::{
+    BeaconChain, BeaconChainTypes, ExecutionStatus,
+    genesis_payload_check::GenesisExecutionPayloadStatus,
+};
 use execution_layer::{
     EngineCapabilities,
     http::{
@@ -69,6 +72,7 @@ pub fn spawn_notifier<T: BeaconChainTypes>(
                         "Waiting for genesis"
                     );
                     post_bellatrix_readiness_logging(Slot::new(0), &beacon_chain).await;
+                    genesis_execution_payload_logging(&beacon_chain).await;
                     sleep(slot_duration).await;
                 }
                 _ => break,
@@ -562,6 +566,43 @@ fn methods_required_for_fork(
         }
     }
     missing_methods
+}
+
+async fn genesis_execution_payload_logging<T: BeaconChainTypes>(beacon_chain: &BeaconChain<T>) {
+    match beacon_chain
+        .check_genesis_execution_payload_is_correct()
+        .await
+    {
+        Ok(GenesisExecutionPayloadStatus::Correct(block_hash)) => {
+            info!(
+                genesis_payload_block_hash = ?block_hash,
+                "Execution enabled from genesis"
+            );
+        }
+        Ok(GenesisExecutionPayloadStatus::BlockHashMismatch { got, expected }) => {
+            error!(
+                info = "genesis is misconfigured and likely to fail",
+                consensus_node_block_hash = ?expected,
+                execution_node_block_hash = ?got,
+                "Genesis payload block hash mismatch"
+            );
+        }
+        Ok(GenesisExecutionPayloadStatus::Irrelevant) => {
+            info!("Execution is not enabled from genesis");
+        }
+        Ok(GenesisExecutionPayloadStatus::AlreadyHappened) => {
+            warn!(
+                info = "this is probably a race condition or a bug",
+                "Unable to check genesis which has already occurred"
+            );
+        }
+        Err(e) => {
+            error!(
+                error = ?e,
+                "Unable to check genesis execution payload"
+            );
+        }
+    }
 }
 
 /// Returns the peer count, returning something helpful if it's `usize::MAX` (effectively a
