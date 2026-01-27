@@ -1,10 +1,5 @@
 use crate::metrics;
-use beacon_chain::{
-    BeaconChain, BeaconChainTypes, ExecutionStatus,
-    bellatrix_readiness::{
-        BellatrixReadiness, GenesisExecutionPayloadStatus, MergeConfig, SECONDS_IN_A_WEEK,
-    },
-};
+use beacon_chain::{BeaconChain, BeaconChainTypes, ExecutionStatus};
 use execution_layer::{
     EngineCapabilities,
     http::{
@@ -29,6 +24,7 @@ pub const WARN_PEER_COUNT: usize = 1;
 const DAYS_PER_WEEK: i64 = 7;
 const HOURS_PER_DAY: i64 = 24;
 const MINUTES_PER_HOUR: i64 = 60;
+const SECONDS_PER_WEEK: u64 = 604800;
 
 /// The number of historical observations that should be used to determine the average sync time.
 const SPEEDO_OBSERVATIONS: usize = 4;
@@ -36,7 +32,7 @@ const SPEEDO_OBSERVATIONS: usize = 4;
 /// The number of slots between logs that give detail about backfill process.
 const BACKFILL_LOG_INTERVAL: u64 = 5;
 
-pub const FORK_READINESS_PREPARATION_SECONDS: u64 = SECONDS_IN_A_WEEK * 2;
+pub const FORK_READINESS_PREPARATION_SECONDS: u64 = SECONDS_PER_WEEK * 2;
 pub const ENGINE_CAPABILITIES_REFRESH_INTERVAL: u64 = 300;
 
 /// Spawns a notifier service which periodically logs information about the node.
@@ -72,9 +68,7 @@ pub fn spawn_notifier<T: BeaconChainTypes>(
                         wait_time = estimated_time_pretty(Some(next_slot.as_secs() as f64)),
                         "Waiting for genesis"
                     );
-                    bellatrix_readiness_logging(Slot::new(0), &beacon_chain).await;
                     post_bellatrix_readiness_logging(Slot::new(0), &beacon_chain).await;
-                    genesis_execution_payload_logging(&beacon_chain).await;
                     sleep(slot_duration).await;
                 }
                 _ => break,
@@ -416,7 +410,6 @@ pub fn spawn_notifier<T: BeaconChainTypes>(
                 );
             }
 
-            bellatrix_readiness_logging(current_slot, &beacon_chain).await;
             post_bellatrix_readiness_logging(current_slot, &beacon_chain).await;
         }
     };
@@ -425,77 +418,6 @@ pub fn spawn_notifier<T: BeaconChainTypes>(
     executor.spawn(interval_future, "notifier");
 
     Ok(())
-}
-
-/// Provides some helpful logging to users to indicate if their node is ready for the Bellatrix
-/// fork and subsequent merge transition.
-async fn bellatrix_readiness_logging<T: BeaconChainTypes>(
-    current_slot: Slot,
-    beacon_chain: &BeaconChain<T>,
-) {
-    let merge_completed = beacon_chain
-        .canonical_head
-        .cached_head()
-        .snapshot
-        .beacon_block
-        .message()
-        .body()
-        .execution_payload()
-        .is_ok_and(|payload| payload.parent_hash() != ExecutionBlockHash::zero());
-
-    let has_execution_layer = beacon_chain.execution_layer.is_some();
-
-    if merge_completed && has_execution_layer
-        || !beacon_chain.is_time_to_prepare_for_bellatrix(current_slot)
-    {
-        return;
-    }
-
-    match beacon_chain.check_bellatrix_readiness(current_slot).await {
-        BellatrixReadiness::Ready {
-            config,
-            current_difficulty,
-        } => match config {
-            MergeConfig {
-                terminal_total_difficulty: Some(ttd),
-                terminal_block_hash: None,
-                terminal_block_hash_epoch: None,
-            } => {
-                info!(
-                    terminal_total_difficulty = %ttd,
-                    current_difficulty = current_difficulty
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "??".into()),
-                    "Ready for Bellatrix"
-                )
-            }
-            MergeConfig {
-                terminal_total_difficulty: _,
-                terminal_block_hash: Some(terminal_block_hash),
-                terminal_block_hash_epoch: Some(terminal_block_hash_epoch),
-            } => {
-                info!(
-                    info = "you are using override parameters, please ensure that you \
-                    understand these parameters and their implications.",
-                    ?terminal_block_hash,
-                    ?terminal_block_hash_epoch,
-                    "Ready for Bellatrix"
-                )
-            }
-            other => error!(
-                config = ?other,
-                "Inconsistent merge configuration"
-            ),
-        },
-        readiness @ BellatrixReadiness::NotSynced => warn!(
-            info = %readiness,
-            "Not ready Bellatrix"
-        ),
-        readiness @ BellatrixReadiness::NoExecutionEndpoint => warn!(
-            info = %readiness,
-            "Not ready for Bellatrix"
-        ),
-    }
 }
 
 /// Provides some helpful logging to users to indicate if their node is ready for Capella
@@ -640,66 +562,6 @@ fn methods_required_for_fork(
         }
     }
     missing_methods
-}
-
-async fn genesis_execution_payload_logging<T: BeaconChainTypes>(beacon_chain: &BeaconChain<T>) {
-    match beacon_chain
-        .check_genesis_execution_payload_is_correct()
-        .await
-    {
-        Ok(GenesisExecutionPayloadStatus::Correct(block_hash)) => {
-            info!(
-                genesis_payload_block_hash = ?block_hash,
-                "Execution enabled from genesis"
-            );
-        }
-        Ok(GenesisExecutionPayloadStatus::BlockHashMismatch { got, expected }) => {
-            error!(
-                info = "genesis is misconfigured and likely to fail",
-                consensus_node_block_hash = ?expected,
-                execution_node_block_hash = ?got,
-                "Genesis payload block hash mismatch"
-            );
-        }
-        Ok(GenesisExecutionPayloadStatus::TransactionsRootMismatch { got, expected }) => {
-            error!(
-                info = "genesis is misconfigured and likely to fail",
-                consensus_node_transactions_root = ?expected,
-                execution_node_transactions_root = ?got,
-                "Genesis payload transactions root mismatch"
-            );
-        }
-        Ok(GenesisExecutionPayloadStatus::WithdrawalsRootMismatch { got, expected }) => {
-            error!(
-                info = "genesis is misconfigured and likely to fail",
-                consensus_node_withdrawals_root = ?expected,
-                execution_node_withdrawals_root = ?got,
-                "Genesis payload withdrawals root mismatch"
-            );
-        }
-        Ok(GenesisExecutionPayloadStatus::OtherMismatch) => {
-            error!(
-                info = "genesis is misconfigured and likely to fail",
-                detail = "see debug logs for payload headers",
-                "Genesis payload header mismatch"
-            );
-        }
-        Ok(GenesisExecutionPayloadStatus::Irrelevant) => {
-            info!("Execution is not enabled from genesis");
-        }
-        Ok(GenesisExecutionPayloadStatus::AlreadyHappened) => {
-            warn!(
-                info = "this is probably a race condition or a bug",
-                "Unable to check genesis which has already occurred"
-            );
-        }
-        Err(e) => {
-            error!(
-                error = ?e,
-                "Unable to check genesis execution payload"
-            );
-        }
-    }
 }
 
 /// Returns the peer count, returning something helpful if it's `usize::MAX` (effectively a

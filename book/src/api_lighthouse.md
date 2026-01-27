@@ -478,40 +478,6 @@ This endpoint should only be used to fix nodes that may have partial custody col
 curl -X POST "http://localhost:5052/lighthouse/custody/backfill"
 ```
 
-## `/lighthouse/merge_readiness`
-
-Returns the current difficulty and terminal total difficulty of the network. Before [The Merge](https://ethereum.org/en/roadmap/merge/) on 15<sup>th</sup> September 2022, you will see that the current difficulty is less than the terminal total difficulty, An example is shown below:
-
-```bash
-curl -X GET "http://localhost:5052/lighthouse/merge_readiness" | jq
-```
-
-```json
-{
-    "data":{
-       "type":"ready",
-       "config":{
-          "terminal_total_difficulty":"6400"
-       },
-       "current_difficulty":"4800"
-    }
- }
-```
-
-As all testnets and Mainnet have been merged, both values will be the same after The Merge. An example of response on the Goerli testnet:
-
-```json
-{
-  "data": {
-    "type": "ready",
-    "config": {
-      "terminal_total_difficulty": "10790000"
-    },
-    "current_difficulty": "10790000"
-  }
-}
-```
-
 ## `/lighthouse/analysis/attestation_performance/{index}`
 
 Fetch information about the attestation performance of a validator index or all validators for a
