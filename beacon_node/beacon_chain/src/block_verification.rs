@@ -32,10 +32,10 @@
 //!             |---------------
 //!             |
 //!             ▼
-//!    SignatureVerifiedBlock
+//!    ExecutionPendingBlock
 //!             |
 //!             ▼
-//!    ExecutionPendingBlock
+//!    SignatureVerifiedBlock
 //!             |
 //!           await
 //!             |
@@ -536,7 +536,7 @@ pub enum BlockSlashInfo<TErr> {
     SignatureNotChecked(SignedBeaconBlockHeader, TErr),
     /// The block's proposer signature is invalid, so it will never be slashable.
     SignatureInvalid(TErr),
-    /// The signature is valid but the attestation is invalid in some other way.
+    /// The signature is valid but the block is invalid in some other way.
     SignatureValid(SignedBeaconBlockHeader, TErr),
 }
 
@@ -699,12 +699,13 @@ pub struct GossipVerifiedBlock<T: BeaconChainTypes> {
 }
 
 /// A wrapper around a `SignedBeaconBlock` that indicates that all signatures (except the deposit
-/// signatures) have been verified.
+/// signatures) have been verified AND that payload verification is in-progress.
 pub struct SignatureVerifiedBlock<T: BeaconChainTypes> {
     block: MaybeAvailableBlock<T::EthSpec>,
     block_root: Hash256,
     parent: Option<PreProcessingSnapshot<T::EthSpec>>,
     consensus_context: ConsensusContext<T::EthSpec>,
+    pub payload_verification_handle: PayloadVerificationHandle,
 }
 
 /// Used to await the result of executing payload with an EE.
@@ -1060,7 +1061,7 @@ impl<T: BeaconChainTypes> GossipVerifiedBlock<T> {
 }
 
 impl<T: BeaconChainTypes> IntoExecutionPendingBlock<T> for GossipVerifiedBlock<T> {
-    /// Completes verification of the wrapped `block`.
+    /// Completes execution of a `GossipVerifiedBlock` prior to full signature verification.
     #[instrument(
         name = "gossip_block_into_execution_pending_block_slashable",
         level = "debug"
@@ -1072,13 +1073,23 @@ impl<T: BeaconChainTypes> IntoExecutionPendingBlock<T> for GossipVerifiedBlock<T
         chain: &Arc<BeaconChain<T>>,
         notify_execution_layer: NotifyExecutionLayer,
     ) -> Result<ExecutionPendingBlock<T>, BlockSlashInfo<BlockError>> {
-        let execution_pending =
-            SignatureVerifiedBlock::from_gossip_verified_block_check_slashable(self, chain)?;
-        execution_pending.into_execution_pending_block_slashable(
+        let arc_block = self.block.block_cloned();
+        let (parent, block) = if let Some(parent) = self.parent {
+            (parent, self.block)
+        } else {
+            load_parent(self.block, chain)
+                .map_err(|e| BlockSlashInfo::SignatureValid(arc_block.signed_block_header(), e))?
+        };
+
+        ExecutionPendingBlock::from_signature_verified_components(
+            block,
             block_root,
+            parent,
+            self.consensus_context,
             chain,
             notify_execution_layer,
         )
+        .map_err(|e| BlockSlashInfo::SignatureValid(arc_block.signed_block_header(), e))
     }
 
     fn block(&self) -> &SignedBeaconBlock<T::EthSpec> {
@@ -1239,47 +1250,6 @@ impl<T: BeaconChainTypes> SignatureVerifiedBlock<T> {
     }
 }
 
-impl<T: BeaconChainTypes> IntoExecutionPendingBlock<T> for SignatureVerifiedBlock<T> {
-    /// Completes verification of the wrapped `block`.
-    #[instrument(
-        name = "sig_verified_block_into_execution_pending_block_slashable",
-        level = "debug"
-        skip_all,
-    )]
-    fn into_execution_pending_block_slashable(
-        self,
-        block_root: Hash256,
-        chain: &Arc<BeaconChain<T>>,
-        notify_execution_layer: NotifyExecutionLayer,
-    ) -> Result<ExecutionPendingBlock<T>, BlockSlashInfo<BlockError>> {
-        let arc_block = self.block.block_cloned();
-        let (parent, block) = if let Some(parent) = self.parent {
-            (parent, self.block)
-        } else {
-            load_parent(self.block, chain)
-                .map_err(|e| BlockSlashInfo::SignatureValid(arc_block.signed_block_header(), e))?
-        };
-
-        ExecutionPendingBlock::from_signature_verified_components(
-            block,
-            block_root,
-            parent,
-            self.consensus_context,
-            chain,
-            notify_execution_layer,
-        )
-        .map_err(|e| BlockSlashInfo::SignatureValid(arc_block.signed_block_header(), e))
-    }
-
-    fn block(&self) -> &SignedBeaconBlock<T::EthSpec> {
-        self.block.as_block()
-    }
-
-    fn block_cloned(&self) -> Arc<SignedBeaconBlock<T::EthSpec>> {
-        self.block.block_cloned()
-    }
-}
-
 impl<T: BeaconChainTypes> IntoExecutionPendingBlock<T> for RpcBlock<T::EthSpec> {
     /// Verifies the `SignedBeaconBlock` by first transforming it into a `SignatureVerifiedBlock`
     /// and then using that implementation of `IntoExecutionPendingBlock` to complete verification.
@@ -1297,17 +1267,99 @@ impl<T: BeaconChainTypes> IntoExecutionPendingBlock<T> for RpcBlock<T::EthSpec> 
         // Perform an early check to prevent wasting time on irrelevant blocks.
         let block_root = check_block_relevancy(self.as_block(), block_root, chain)
             .map_err(|e| BlockSlashInfo::SignatureNotChecked(self.signed_block_header(), e))?;
+
+        // Check the proposer signature prior to starting execution.
+        // FIXME(sproul): de-duplicate this/refactor into `ProposerSignatureVerifiedBlock`?
+        let fork_choice_read_lock = chain.canonical_head.fork_choice_read_lock();
+        let (parent_block, block) =
+            verify_parent_block_is_known::<T>(&fork_choice_read_lock, self.block_cloned())?;
+        drop(fork_choice_read_lock);
+
+        let block_slot = self.as_block().slot();
+        let block_epoch = block_slot.epoch(T::EthSpec::slots_per_epoch());
+        let proposer_shuffling_decision_block =
+            parent_block.proposer_shuffling_root_for_child_block(block_epoch, &chain.spec);
+
+        let mut opt_parent = None;
+        let proposer = chain.with_proposer_cache::<_, BlockError>(
+            proposer_shuffling_decision_block,
+            block_epoch,
+            |proposers| proposers.get_slot::<T::EthSpec>(block_slot),
+            || {
+                // The proposer index was *not* cached and we must load the parent in order to
+                // determine the proposer index.
+                let (mut parent, _) = load_parent(block.clone(), chain)?;
+                let parent_state_root = if let Some(state_root) = parent.beacon_state_root {
+                    state_root
+                } else {
+                    // This is potentially a little inefficient, although we are likely to need
+                    // the state's hash eventually (if the block is valid), and we are also likely
+                    // to already have the hash cached (if fetched from the state cache).
+                    parent.pre_state.canonical_root()?
+                };
+                let parent_state = parent.pre_state.clone();
+                opt_parent = Some(parent);
+                Ok((parent_state_root, parent_state))
+            },
+        )?;
+        let expected_proposer = proposer.index;
+        let fork = proposer.fork;
+
+        let signature_is_valid = {
+            let pubkey_cache = get_validator_pubkey_cache(chain)?;
+            let pubkey = pubkey_cache
+                .get(block.message().proposer_index() as usize)
+                .ok_or_else(|| BlockError::UnknownValidator(block.message().proposer_index()))?;
+            block.verify_signature(
+                Some(block_root),
+                pubkey,
+                &fork,
+                chain.genesis_validators_root,
+                &chain.spec,
+            )
+        };
+        if !signature_is_valid {
+            return Err(BlockSlashInfo::SignatureInvalid(
+                BlockError::InvalidSignature(InvalidSignature::ProposerSignature),
+            ));
+        }
+
+        if block.message().proposer_index() != expected_proposer as u64 {
+            return Err(BlockSlashInfo::SignatureValid(
+                BlockError::IncorrectBlockProposer {
+                    block: block.message().proposer_index(),
+                    local_shuffling: expected_proposer as u64,
+                },
+            ));
+        }
+
         let maybe_available = chain
             .data_availability_checker
             .verify_kzg_for_rpc_block(self.clone())
             .map_err(|e| {
-                BlockSlashInfo::SignatureNotChecked(
+                BlockSlashInfo::SignatureValid(
                     self.signed_block_header(),
                     BlockError::AvailabilityCheck(e),
                 )
             })?;
-        SignatureVerifiedBlock::check_slashable(maybe_available, block_root, chain)?
-            .into_execution_pending_block_slashable(block_root, chain, notify_execution_layer)
+
+        let arc_block = self.block.block_cloned();
+        let (parent, block) = if let Some(parent) = opt_parent {
+            (parent, self.block)
+        } else {
+            load_parent(self.block, chain)
+                .map_err(|e| BlockSlashInfo::SignatureValid(arc_block.signed_block_header(), e))?
+        };
+
+        ExecutionPendingBlock::from_signature_verified_components(
+            block,
+            block_root,
+            parent,
+            self.consensus_context,
+            chain,
+            notify_execution_layer,
+        )
+        .map_err(|e| BlockSlashInfo::SignatureValid(arc_block.signed_block_header(), e))
     }
 
     fn block(&self) -> &SignedBeaconBlock<T::EthSpec> {
