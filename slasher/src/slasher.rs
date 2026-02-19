@@ -1,8 +1,10 @@
 use crate::batch_stats::{AttestationStats, BatchStats, BlockStats};
 use crate::metrics::{
-    self, SLASHER_NUM_ATTESTATIONS_DEFERRED, SLASHER_NUM_ATTESTATIONS_DROPPED,
-    SLASHER_NUM_ATTESTATIONS_STORED_PER_BATCH, SLASHER_NUM_ATTESTATIONS_VALID,
-    SLASHER_NUM_BLOCKS_PROCESSED,
+    self, SLASHER_ATTESTATION_PROCESSING_TIME, SLASHER_ATTESTATION_STORE_TIME,
+    SLASHER_DOUBLE_VOTE_CHECK_TIME, SLASHER_NUM_ATTESTATIONS_DEFERRED,
+    SLASHER_NUM_ATTESTATIONS_DROPPED, SLASHER_NUM_ATTESTATIONS_STORED_PER_BATCH,
+    SLASHER_NUM_ATTESTATIONS_VALID, SLASHER_NUM_BLOCKS_PROCESSED, SLASHER_NUM_SUBQUEUES,
+    SLASHER_SURROUND_VOTE_CHECK_TIME, SLASHER_TXN_COMMIT_TIME,
 };
 use crate::{
     AttestationBatch, AttestationQueue, AttesterRecord, BlockQueue, Config, Error,
@@ -89,7 +91,9 @@ impl<E: EthSpec> Slasher<E> {
         let mut txn = self.db.begin_rw_txn()?;
         let block_stats = self.process_blocks(&mut txn)?;
         let attestation_stats = self.process_attestations(current_epoch, &mut txn)?;
+        let commit_timer = metrics::start_timer(&SLASHER_TXN_COMMIT_TIME);
         txn.commit()?;
+        drop(commit_timer);
         Ok(BatchStats {
             block_stats,
             attestation_stats,
@@ -159,6 +163,7 @@ impl<E: EthSpec> Slasher<E> {
         }
 
         // Insert relevant attestations into database.
+        let store_timer = metrics::start_timer(&SLASHER_ATTESTATION_STORE_TIME);
         let mut num_stored = 0;
         for weak_record in &batch.attestations {
             if let Some(indexed_record) = weak_record.upgrade() {
@@ -178,6 +183,7 @@ impl<E: EthSpec> Slasher<E> {
                 num_stored += 1;
             }
         }
+        drop(store_timer);
 
         debug!(num_stored, ?num_valid, "Stored attestations in slasher DB");
         metrics::set_gauge(
@@ -187,9 +193,18 @@ impl<E: EthSpec> Slasher<E> {
 
         // Group attestations into chunked batches and process them.
         let grouped_attestations = batch.group_by_validator_chunk_index(&self.config);
+        let num_subqueues = grouped_attestations
+            .subqueues
+            .iter()
+            .filter(|s| !s.is_empty())
+            .count();
+        metrics::set_gauge(&SLASHER_NUM_SUBQUEUES, num_subqueues as i64);
+
+        let processing_timer = metrics::start_timer(&SLASHER_ATTESTATION_PROCESSING_TIME);
         for (subqueue_id, subqueue) in grouped_attestations.subqueues.into_iter().enumerate() {
             self.process_batch(txn, subqueue_id, subqueue, current_epoch)?;
         }
+        drop(processing_timer);
 
         metrics::set_gauge(
             &metrics::SLASHER_ATTESTATION_ROOT_CACHE_SIZE,
@@ -208,6 +223,7 @@ impl<E: EthSpec> Slasher<E> {
         current_epoch: Epoch,
     ) -> Result<(), Error> {
         // First, check for double votes.
+        let double_vote_timer = metrics::start_timer(&SLASHER_DOUBLE_VOTE_CHECK_TIME);
         for attestation in &batch {
             let indexed_attestation_id = IndexedAttestationId::new(attestation.get_id());
             match self.check_double_votes(
@@ -228,12 +244,15 @@ impl<E: EthSpec> Slasher<E> {
                         error = ?e,
                         "Error checking for double votes"
                     );
+                    drop(double_vote_timer);
                     return Err(e);
                 }
             }
         }
+        drop(double_vote_timer);
 
         // Then check for surrounds using the min-max arrays.
+        let surround_timer = metrics::start_timer(&SLASHER_SURROUND_VOTE_CHECK_TIME);
         match array::update(
             &self.db,
             txn,
@@ -243,12 +262,14 @@ impl<E: EthSpec> Slasher<E> {
             &self.config,
         ) {
             Ok(slashings) => {
+                drop(surround_timer);
                 if !slashings.is_empty() {
                     info!("Found {} new surround slashings!", slashings.len());
                 }
                 self.attester_slashings.lock().extend(slashings);
             }
             Err(e) => {
+                drop(surround_timer);
                 error!(error = ?e, "Error processing array update");
                 return Err(e);
             }

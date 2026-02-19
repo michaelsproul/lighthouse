@@ -6,7 +6,9 @@ use lighthouse_network::PubsubMessage;
 use network::NetworkMessage;
 use slasher::{
     Slasher,
-    metrics::{self, SLASHER_DATABASE_SIZE, SLASHER_RUN_TIME},
+    metrics::{
+        self, SLASHER_DATABASE_SIZE, SLASHER_DB_SIZE_TIME, SLASHER_PRUNE_TIME, SLASHER_RUN_TIME,
+    },
 };
 use slot_clock::SlotClock;
 use state_processing::{
@@ -134,19 +136,24 @@ impl<T: BeaconChainTypes> SlasherService<T> {
 
             // Prune the database, even in the case where batch processing failed.
             // If the database is full then pruning could help to free it up.
+            let prune_timer = metrics::start_timer(&SLASHER_PRUNE_TIME);
             if let Err(e) = slasher.prune_database(current_epoch) {
                 error!(
                     epoch = %current_epoch,
                     error = ?e,
                     "Error during slasher database pruning"
                 );
+                drop(prune_timer);
                 continue;
             };
+            drop(prune_timer);
 
             // Provide slashings to the beacon chain, and optionally publish them.
             Self::process_slashings(&beacon_chain, &slasher, &network_sender);
 
+            let db_size_timer = metrics::start_timer(&SLASHER_DB_SIZE_TIME);
             let database_size = size_of_dir(&slasher.config().database_path);
+            drop(db_size_timer);
             metrics::set_gauge(&SLASHER_DATABASE_SIZE, database_size as i64);
 
             if let Some(stats) = stats {

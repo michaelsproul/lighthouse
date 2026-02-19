@@ -5,7 +5,8 @@ mod redb_impl;
 
 use crate::{
     AttesterRecord, AttesterSlashingStatus, CompactAttesterRecord, Config, Database, Error,
-    ProposerSlashingStatus, metrics,
+    ProposerSlashingStatus,
+    metrics::{self, SLASHER_ATTESTER_MAX_TARGET_GAPS, SLASHER_ATTESTER_RECORD_LOOKUPS},
 };
 use bls::AggregateSignature;
 use byteorder::{BigEndian, ByteOrder};
@@ -420,6 +421,8 @@ impl<E: EthSpec> SlasherDB<E> {
                 previous_max_target.as_u64() + 1,
                 (max_target.as_u64() + 1).saturating_sub(self.config.history_length as u64),
             );
+            let gap_size = max_target.as_u64().saturating_sub(start_epoch);
+            metrics::inc_counter_by(&SLASHER_ATTESTER_MAX_TARGET_GAPS, gap_size);
             for target_epoch in (start_epoch..max_target.as_u64()).map(Epoch::new) {
                 txn.put(
                     &self.databases.attesters_db,
@@ -592,6 +595,8 @@ impl<E: EthSpec> SlasherDB<E> {
         record: &AttesterRecord,
         indexed_attestation_id: IndexedAttestationId,
     ) -> Result<AttesterSlashingStatus<E>, Error> {
+        metrics::inc_counter(&SLASHER_ATTESTER_RECORD_LOOKUPS);
+
         // See if there's an existing attestation for this attester.
         let target_epoch = attestation.data().target.epoch;
 

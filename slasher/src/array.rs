@@ -1,4 +1,9 @@
-use crate::metrics::{self, SLASHER_COMPRESSION_RATIO, SLASHER_NUM_CHUNKS_UPDATED};
+use crate::metrics::{
+    self, SLASHER_ATTESTATION_APPLY_TIME, SLASHER_CHUNK_COMPRESS_TIME,
+    SLASHER_CHUNK_DECOMPRESS_TIME, SLASHER_CHUNK_LOAD_COUNT, SLASHER_CHUNK_STORE_COUNT,
+    SLASHER_CHUNK_STORE_TIME, SLASHER_COMPRESSION_RATIO, SLASHER_EPOCH_UPDATE_TIME,
+    SLASHER_EPOCH_UPDATE_VALIDATORS_COUNT, SLASHER_NUM_CHUNKS_UPDATED,
+};
 use crate::{
     AttesterSlashingStatus, Config, Database, Error, IndexedAttesterRecord, RwTransaction,
     SlasherDB,
@@ -161,7 +166,10 @@ pub trait TargetArrayChunk: Sized + serde::Serialize + serde::de::DeserializeOwn
             return Ok(None);
         };
 
+        let decompress_timer = metrics::start_timer(&SLASHER_CHUNK_DECOMPRESS_TIME);
         let chunk = bincode::deserialize_from(ZlibDecoder::new(chunk_bytes.borrow()))?;
+        drop(decompress_timer);
+        metrics::inc_counter(&SLASHER_CHUNK_LOAD_COUNT);
 
         Ok(Some(chunk))
     }
@@ -175,13 +183,17 @@ pub trait TargetArrayChunk: Sized + serde::Serialize + serde::de::DeserializeOwn
         config: &Config,
     ) -> Result<(), Error> {
         let disk_key = config.disk_key(validator_chunk_index, chunk_index);
+
+        let compress_timer = metrics::start_timer(&SLASHER_CHUNK_COMPRESS_TIME);
         let value = bincode::serialize(self)?;
         let mut encoder = ZlibEncoder::new(&value[..], flate2::Compression::default());
         let mut compressed_value = vec![];
         encoder.read_to_end(&mut compressed_value)?;
+        drop(compress_timer);
 
         let compression_ratio = value.len() as f64 / compressed_value.len() as f64;
         metrics::set_float_gauge(&SLASHER_COMPRESSION_RATIO, compression_ratio);
+        metrics::inc_counter(&SLASHER_CHUNK_STORE_COUNT);
 
         txn.put(
             Self::select_db(db),
@@ -576,6 +588,8 @@ pub fn update_array<E: EthSpec, T: TargetArrayChunk>(
     let mut updated_chunks = BTreeMap::new();
 
     // Update the arrays for the change of current epoch.
+    let epoch_update_timer = metrics::start_timer(&SLASHER_EPOCH_UPDATE_TIME);
+    let mut epoch_update_count: i64 = 0;
     for validator_index in config.validator_indices_in_chunk(validator_chunk_index) {
         epoch_update_for_validator(
             db,
@@ -586,8 +600,15 @@ pub fn update_array<E: EthSpec, T: TargetArrayChunk>(
             current_epoch,
             config,
         )?;
+        epoch_update_count += 1;
     }
+    drop(epoch_update_timer);
+    metrics::inc_counter_by(
+        &SLASHER_EPOCH_UPDATE_VALIDATORS_COUNT,
+        epoch_update_count as u64,
+    );
 
+    let apply_timer = metrics::start_timer(&SLASHER_ATTESTATION_APPLY_TIME);
     for attestations in chunk_attestations.values() {
         for attestation in attestations {
             for validator_index in
@@ -609,6 +630,7 @@ pub fn update_array<E: EthSpec, T: TargetArrayChunk>(
             }
         }
     }
+    drop(apply_timer);
 
     // Store chunks on disk.
     metrics::inc_counter_vec_by(
@@ -617,9 +639,11 @@ pub fn update_array<E: EthSpec, T: TargetArrayChunk>(
         updated_chunks.len() as u64,
     );
 
+    let chunk_store_timer = metrics::start_timer(&SLASHER_CHUNK_STORE_TIME);
     for (chunk_index, chunk) in updated_chunks {
         chunk.store(db, txn, validator_chunk_index, chunk_index, config)?;
     }
+    drop(chunk_store_timer);
 
     Ok(slashings)
 }
