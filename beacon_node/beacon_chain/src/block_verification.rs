@@ -340,7 +340,7 @@ pub enum BlockError {
     ///
     /// ## Peer scoring
     ///
-    /// The block is invalid and the peer should be penalised.
+    /// The block is invalid and the peer should be penalized.
     BidParentRootMismatch {
         bid_parent_root: Hash256,
         block_parent_root: Hash256,
@@ -899,27 +899,15 @@ impl<T: BeaconChainTypes> GossipVerifiedBlock<T> {
 
         // Do not gossip blocks that claim to contain more blobs than the max allowed
         // at the given block epoch.
-        // GLOAS: check bid's commitments; pre-GLOAS: check body's commitments.
-        if let Ok(bid) = block.message().body().signed_execution_payload_bid() {
+        if let Some(blob_kzg_commitments_len) = block.message().blob_kzg_commitments_len() {
             let max_blobs_at_epoch = chain
                 .spec
                 .max_blobs_per_block(block.slot().epoch(T::EthSpec::slots_per_epoch()))
                 as usize;
-            if bid.message.blob_kzg_commitments.len() > max_blobs_at_epoch {
+            if blob_kzg_commitments_len > max_blobs_at_epoch {
                 return Err(BlockError::InvalidBlobCount {
                     max_blobs_at_epoch,
-                    block: bid.message.blob_kzg_commitments.len(),
-                });
-            }
-        } else if let Ok(commitments) = block.message().body().blob_kzg_commitments() {
-            let max_blobs_at_epoch = chain
-                .spec
-                .max_blobs_per_block(block.slot().epoch(T::EthSpec::slots_per_epoch()))
-                as usize;
-            if commitments.len() > max_blobs_at_epoch {
-                return Err(BlockError::InvalidBlobCount {
-                    max_blobs_at_epoch,
-                    block: commitments.len(),
+                    block: blob_kzg_commitments_len,
                 });
             }
         }
@@ -1086,8 +1074,15 @@ impl<T: BeaconChainTypes> GossipVerifiedBlock<T> {
             });
         }
 
-        // Validate the block's execution_payload (if any).
-        validate_execution_payload_for_gossip(&parent_block, block.message(), chain)?;
+        // [New in Gloas]: Skip payload validation checks. The payload now arrives separately
+        // via `ExecutionPayloadEnvelope`.
+        if !chain
+            .spec
+            .fork_name_at_slot::<T::EthSpec>(block.slot())
+            .gloas_enabled()
+        {
+            validate_execution_payload_for_gossip(&parent_block, block.message(), chain)?;
+        }
 
         // Beacon API block_gossip events
         if let Some(event_handler) = chain.event_handler.as_ref()
@@ -1268,9 +1263,12 @@ impl<T: BeaconChainTypes> SignatureVerifiedBlock<T> {
         let result = info_span!("signature_verify").in_scope(|| signature_verifier.verify());
         match result {
             Ok(_) => {
-                // GLOAS blocks are always "data available" from the block's perspective
-                // (the execution payload arrives separately via the payload envelope).
-                let maybe_available = if block.fork_name_unchecked().gloas_enabled() {
+                // gloas blocks are always available.
+                let maybe_available = if chain
+                    .spec
+                    .fork_name_at_slot::<T::EthSpec>(block.slot())
+                    .gloas_enabled()
+                {
                     MaybeAvailableBlock::Available(
                         AvailableBlock::new(
                             block,

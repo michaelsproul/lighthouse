@@ -63,8 +63,7 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
         notify_execution_layer: NotifyExecutionLayer,
     ) -> Result<Self, BlockError> {
         let payload_verification_status = if block.fork_name_unchecked().gloas_enabled() {
-            // GLOAS blocks don't carry an execution payload in the block body.
-            // Execution verification happens via the payload envelope pipeline.
+            // Gloas blocks don't contain an execution payload.
             Some(PayloadVerificationStatus::Irrelevant)
         } else if is_execution_enabled(state, block.message().body()) {
             // Perform the initial stages of payload verification.
@@ -308,7 +307,7 @@ pub fn validate_execution_payload_for_gossip<T: BeaconChainTypes>(
     block: BeaconBlockRef<'_, T::EthSpec>,
     chain: &BeaconChain<T>,
 ) -> Result<(), BlockError> {
-    // GLOAS blocks don't have an execution payload in the block body.
+    // Gloas blocks don't have an execution payload in the block body.
     // Bid-related validations are handled in gossip block verification.
     if block.fork_name_unchecked().gloas_enabled() {
         return Ok(());

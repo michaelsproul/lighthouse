@@ -3402,8 +3402,8 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             );
         }
 
-        // GLOAS blocks don't need DA checking - they are always available from the
-        // block's perspective. Skip inserting into the DA cache.
+        // Gloas blocks dont need to be inserted into the DA cache
+        // they are always available.
         if !unverified_block
             .block()
             .fork_name_unchecked()
@@ -3590,15 +3590,16 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // For now, treat all envelopes as available after EL verification with empty columns.
         let signed_envelope = match signed_envelope {
             available @ MaybeAvailableEnvelope::Available(_) => available,
-            MaybeAvailableEnvelope::AvailabilityPending { block_hash, envelope } => {
-                MaybeAvailableEnvelope::Available(AvailableEnvelope::new(
-                    block_hash,
-                    envelope,
-                    vec![],
-                    None,
-                    self.spec.clone(),
-                ))
-            }
+            MaybeAvailableEnvelope::AvailabilityPending {
+                block_hash,
+                envelope,
+            } => MaybeAvailableEnvelope::Available(AvailableEnvelope::new(
+                block_hash,
+                envelope,
+                vec![],
+                None,
+                self.spec.clone(),
+            )),
         };
 
         Ok(ExecutedEnvelope::new(
