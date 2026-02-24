@@ -36,7 +36,7 @@ use crate::{
     execution::{
         Eth1Data, ExecutionPayloadHeaderBellatrix, ExecutionPayloadHeaderCapella,
         ExecutionPayloadHeaderDeneb, ExecutionPayloadHeaderElectra, ExecutionPayloadHeaderFulu,
-        ExecutionPayloadHeaderRef, ExecutionPayloadHeaderRefMut,
+        ExecutionPayloadHeaderRef, ExecutionPayloadHeaderRefMut, StatePayloadStatus,
     },
     fork::{Fork, ForkName, ForkVersionDecode, InconsistentFork, map_fork_name},
     light_client::consts::{
@@ -1263,6 +1263,43 @@ impl<E: EthSpec> BeaconState<E> {
             )),
             // TODO(EIP-7732): investigate calling functions
             BeaconState::Gloas(_) => Err(BeaconStateError::IncorrectStateVariant),
+        }
+    }
+
+    /// Determine the payload status of this state.
+    ///
+    /// Prior to Gloas this is always `Pending`.
+    ///
+    /// Post-Gloas, the definition of the `StatePayloadStatus` is:
+    ///
+    /// - `Full` if this state is the result of envelope processing.
+    /// - `Pending` if this state is the result of block processing.
+    pub fn payload_status(&self) -> StatePayloadStatus {
+        if !self.fork_name_unchecked().gloas_enabled() {
+            StatePayloadStatus::Pending
+        } else if self.is_parent_block_full() {
+            StatePayloadStatus::Full
+        } else {
+            StatePayloadStatus::Pending
+        }
+    }
+
+    /// Determine the payload status of this state with all skipped slots considered pending.
+    ///
+    /// Prior to Gloas this is always `Pending`.
+    ///
+    /// Post-Gloas, the definition of the `StatePayloadStatus` is:
+    ///
+    /// - `Full` if this state is the IMMEDIATE result of envelope processing (no skipped slots)
+    /// - `Pending` if this state is the result of block processing, or slot processing (skipped
+    ///   slot).
+    pub fn payload_status_with_skipped_pending(&self) -> StatePayloadStatus {
+        if !self.fork_name_unchecked().gloas_enabled() {
+            StatePayloadStatus::Pending
+        } else if self.is_parent_block_full() && self.latest_block_header().slot == self.slot() {
+            StatePayloadStatus::Full
+        } else {
+            StatePayloadStatus::Pending
         }
     }
 

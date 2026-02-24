@@ -688,8 +688,13 @@ async fn block_replayer_hooks() {
         .add_attested_blocks_at_slots(state.clone(), state_root, &block_slots, &all_validators)
         .await;
 
-    let blocks = store
-        .load_blocks_to_replay(Slot::new(0), max_slot, end_block_root.into())
+    let (blocks, envelopes) = store
+        .load_blocks_to_replay(
+            Slot::new(0),
+            max_slot,
+            end_block_root.into(),
+            StatePayloadStatus::Pending,
+        )
         .unwrap();
 
     let mut pre_slots = vec![];
@@ -724,7 +729,7 @@ async fn block_replayer_hooks() {
             post_block_slots.push(block.slot());
             Ok(())
         }))
-        .apply_blocks(blocks, None)
+        .apply_blocks(blocks, envelopes, None)
         .unwrap()
         .into_state();
 
@@ -5092,7 +5097,7 @@ async fn replay_from_split_state() {
     assert!(
         store
             .hierarchy
-            .storage_strategy(split.slot, anchor_slot)
+            .storage_strategy(split.slot, anchor_slot, StatePayloadStatus::Pending)
             .unwrap()
             .is_replay_from()
     );
