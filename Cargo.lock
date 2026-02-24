@@ -2859,6 +2859,7 @@ dependencies = [
  "snap",
  "ssz_types",
  "state_processing",
+ "store",
  "swap_or_not_shuffle",
  "tree_hash",
  "tree_hash_derive",

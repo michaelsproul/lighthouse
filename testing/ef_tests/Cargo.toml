@@ -36,6 +36,7 @@ serde_yaml = { workspace = true }
 snap = { workspace = true }
 ssz_types = { workspace = true }
 state_processing = { workspace = true }
+store = { workspace = true }
 swap_or_not_shuffle = { workspace = true }
 tree_hash = { workspace = true }
 tree_hash_derive = { workspace = true }

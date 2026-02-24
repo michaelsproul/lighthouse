@@ -143,6 +143,12 @@ fn sanity_blocks() {
 }
 
 #[test]
+fn sanity_blocks_db() {
+    SanityBlocksDBHandler::<MinimalEthSpec>::default().run();
+    SanityBlocksDBHandler::<MainnetEthSpec>::default().run();
+}
+
+#[test]
 fn sanity_slots() {
     SanitySlotsHandler::<MinimalEthSpec>::default().run();
     SanitySlotsHandler::<MainnetEthSpec>::default().run();

@@ -496,6 +496,34 @@ impl<E: EthSpec + TypeName> Handler for SanityBlocksHandler<E> {
 
 #[derive(Educe)]
 #[educe(Default)]
+pub struct SanityBlocksDBHandler<E>(PhantomData<E>);
+
+impl<E: EthSpec + TypeName> Handler for SanityBlocksDBHandler<E> {
+    type Case = cases::SanityBlocksDB<E>;
+
+    fn config_name() -> &'static str {
+        E::name()
+    }
+
+    fn runner_name() -> &'static str {
+        "sanity"
+    }
+
+    fn handler_name(&self) -> String {
+        "blocks".into()
+    }
+
+    fn is_enabled_for_fork(&self, _fork_name: ForkName) -> bool {
+        cfg!(not(feature = "fake_crypto"))
+    }
+
+    fn use_rayon() -> bool {
+        false
+    }
+}
+
+#[derive(Educe)]
+#[educe(Default)]
 pub struct SanitySlotsHandler<E>(PhantomData<E>);
 
 impl<E: EthSpec + TypeName> Handler for SanitySlotsHandler<E> {
