@@ -82,14 +82,11 @@ jobs:
                   GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
                   GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
               run: |
-                  export GPG_TTY=$(tty)
-                  echo "$GPG_SIGNING_KEY" | gpg --batch --import
                   mkdir artifacts
                   mv ~/.cargo/bin/lighthouse ./artifacts
                   cd artifacts
                   tar -czf lighthouse-${{ needs.extract-version.outputs.VERSION }}-${{ matrix.arch }}.tar.gz lighthouse
-                  echo "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab lighthouse-${{ needs.extract-version.outputs.VERSION }}-${{ matrix.arch }}.tar.gz
-                  for ext in "tar.gz" "tar.gz.asc";\
+                  for ext in "tar.gz";\
                   do for f in *.$ext;\
                     do cp $f "../${f%.$ext}.$ext";\
                     done;\
