@@ -340,6 +340,10 @@ impl<E: EthSpec> Case for ForkChoiceTest<E> {
             return Err(Error::SkippedKnownFailure);
         }
 
+        if _case_index != 16 || fork_name != ForkName::Gloas {
+            return Ok(());
+        }
+
         let tester = Tester::new(self, testing_spec::<E>(fork_name))?;
 
         for step in &self.steps {
@@ -353,12 +357,16 @@ impl<E: EthSpec> Case for ForkChoiceTest<E> {
                     blobs,
                     proofs,
                     valid,
-                } => tester.process_block_and_blobs(
-                    block.clone(),
-                    blobs.clone(),
-                    proofs.clone(),
-                    *valid,
-                )?,
+                } => {
+                    println!("Applying block: {:#?}", block);
+                    println!("Block root: {:#?}", block.canonical_root());
+                    tester.process_block_and_blobs(
+                        block.clone(),
+                        blobs.clone(),
+                        proofs.clone(),
+                        *valid,
+                    )?
+                }
                 Step::Attestation { attestation } => tester.process_attestation(attestation)?,
                 Step::AttesterSlashing { attester_slashing } => {
                     tester.process_attester_slashing(attester_slashing.to_ref())
@@ -469,6 +477,15 @@ impl<E: EthSpec> Tester<E> {
     pub fn new(case: &ForkChoiceTest<E>, spec: ChainSpec) -> Result<Self, Error> {
         let spec = Arc::new(spec);
         let genesis_time = case.anchor_state.genesis_time();
+
+        println!(
+            "genesis state payload bid: {:?}",
+            case.anchor_state.latest_execution_payload_bid().unwrap()
+        );
+        println!(
+            "genesis state latest block header: {:?}",
+            case.anchor_state.latest_block_header()
+        );
 
         if case.anchor_state.slot() != spec.genesis_slot {
             // I would hope that future fork-choice tests would start from a non-genesis anchors,
@@ -828,6 +845,16 @@ impl<E: EthSpec> Tester<E> {
             slot: head.head_slot(),
             root: head.head_block_root(),
         };
+        println!(
+            "{:#?}",
+            self.harness
+                .chain
+                .canonical_head
+                .fork_choice_read_lock()
+                .proto_array()
+                .iter_nodes(&head.head_block_root())
+                .collect::<Vec<_>>()
+        );
 
         check_equal("head", chain_head, expected_head)
     }

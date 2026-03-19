@@ -472,6 +472,7 @@ impl ProtoArray {
 
             // If the node has a parent, try to update its best-child and best-descendant.
             if let Some(parent_index) = node.parent() {
+                println!("calling from apply score changes");
                 self.maybe_update_best_child_and_descendant::<E>(
                     parent_index,
                     node_index,
@@ -621,6 +622,7 @@ impl ProtoArray {
         self.nodes.push(node.clone());
 
         if let Some(parent_index) = node.parent() {
+            println!("calling from on block");
             self.maybe_update_best_child_and_descendant::<E>(
                 parent_index,
                 node_index,

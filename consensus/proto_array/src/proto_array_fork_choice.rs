@@ -1248,11 +1248,15 @@ fn compute_deltas(
                     .checked_add(new_balance as i64)
                     .ok_or(Error::DeltaOverflow(next_delta_index))?;
 
+                let slot = block_slot(next_delta_index)?;
+
                 let status = NodeDelta::payload_status(
                     vote.next_slot,
                     vote.next_payload_present,
                     block_slot(next_delta_index)?,
                 );
+                println!("Applying delta of +{new_balance} to node {next_delta_index} at {slot}");
+                println!("Payload status of vote for {slot} is {status:?}");
                 node_delta.add_payload_delta(status, new_balance, next_delta_index)?;
             }
 
