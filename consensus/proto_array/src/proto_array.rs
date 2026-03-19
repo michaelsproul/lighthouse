@@ -1151,68 +1151,83 @@ impl ProtoArray {
             E::ptc_size(),
             proposer_boost,
         );
+        let child_eligible = child_leads_to_viable_head && child_matches_dir;
+        println!(
+            "parent {} -> child {}, child eligible? {}",
+            parent_index, child_index, child_eligible
+        );
 
-        let (new_best_child, new_best_descendant) =
-            if let Some(best_child_index) = parent.best_child() {
-                if best_child_index == child_index && !child_leads_to_viable_head {
-                    // If the child is already the best-child of the parent but it's not viable for
-                    // the head, remove it.
-                    change_to_none
-                } else if best_child_index == child_index {
-                    // If the child is the best-child already, set it again to ensure that the
-                    // best-descendant of the parent is updated.
-                    change_to_child
-                } else {
-                    let best_child = self
-                        .nodes
-                        .get(best_child_index)
-                        .ok_or(Error::InvalidBestDescendant(best_child_index))?;
-
-                    let best_child_leads_to_viable_head = self.node_leads_to_viable_head::<E>(
-                        best_child,
-                        current_slot,
-                        best_justified_checkpoint,
-                        best_finalized_checkpoint,
-                    )?;
-
-                    let best_child_matches_dir = child_matches_parent_payload_preference(
-                        parent,
-                        best_child,
-                        current_slot,
-                        E::ptc_size(),
-                        proposer_boost,
-                    );
-
-                    if child_leads_to_viable_head && !best_child_leads_to_viable_head {
-                        // The child leads to a viable head, but the current best-child doesn't.
-                        change_to_child
-                    } else if !child_leads_to_viable_head && best_child_leads_to_viable_head {
-                        // The best child leads to a viable head, but the child doesn't.
-                        no_change
-                    } else if child.weight() > best_child.weight() {
-                        // Weight is the primary selector after viability.
-                        change_to_child
-                    } else if child.weight() < best_child.weight() {
-                        no_change
-                    } else if child_matches_dir && !best_child_matches_dir {
-                        // Equal weight: direction matching is the tiebreaker.
-                        change_to_child
-                    } else if !child_matches_dir && best_child_matches_dir {
-                        no_change
-                    } else if *child.root() >= *best_child.root() {
-                        // Final tie-breaker: break by root hash.
-                        change_to_child
-                    } else {
-                        no_change
-                    }
-                }
-            } else if child_leads_to_viable_head {
-                // No current best-child: set if child is viable.
+        let (new_best_child, new_best_descendant) = if let Some(best_child_index) =
+            parent.best_child()
+        {
+            println!("already have a best child (how lol?) = {best_child_index}");
+            if best_child_index == child_index && !child_eligible {
+                // If the child is already the best-child of the parent but it's not viable for
+                // the head, remove it.
+                change_to_none
+            } else if best_child_index == child_index {
+                // If the child is the best-child already, set it again to ensure that the
+                // best-descendant of the parent is updated.
                 change_to_child
             } else {
-                // Child is not viable.
-                no_change
-            };
+                let best_child = self
+                    .nodes
+                    .get(best_child_index)
+                    .ok_or(Error::InvalidBestDescendant(best_child_index))?;
+
+                let best_child_leads_to_viable_head = self.node_leads_to_viable_head::<E>(
+                    best_child,
+                    current_slot,
+                    best_justified_checkpoint,
+                    best_finalized_checkpoint,
+                )?;
+
+                let best_child_matches_dir = child_matches_parent_payload_preference(
+                    parent,
+                    best_child,
+                    current_slot,
+                    E::ptc_size(),
+                    proposer_boost,
+                );
+                // TODO(gloas): check this against the spec
+                let best_child_eligible = best_child_leads_to_viable_head && best_child_matches_dir;
+
+                if child_eligible && !best_child_eligible {
+                    // The child leads to a viable head, but the current best-child doesn't.
+                    change_to_child
+                } else if !child_eligible && best_child_eligible {
+                    // The best child leads to a viable head, but the child doesn't.
+                    no_change
+                } else if child.weight() > best_child.weight() {
+                    // Weight is the primary selector after viability.
+                    change_to_child
+                } else if child.weight() < best_child.weight() {
+                    no_change
+                } else if child_matches_dir && !best_child_matches_dir {
+                    // Equal weight: direction matching is the tiebreaker.
+                    // TODO(gloas): I don't think direction matching is just a tie-breaker, is it?
+                    change_to_child
+                } else if !child_matches_dir && best_child_matches_dir {
+                    no_change
+                } else if *child.root() >= *best_child.root() {
+                    // Final tie-breaker: break by root hash.
+                    change_to_child
+                } else {
+                    no_change
+                }
+            }
+        } else if child_leads_to_viable_head && child_matches_dir {
+            println!(
+                "child leads to viable head and matches dir: {:?}",
+                change_to_child
+            );
+            // No current best-child: set if child is viable.
+            change_to_child
+        } else {
+            println!("no change");
+            // Child is not viable.
+            no_change
+        };
 
         let parent = self
             .nodes
