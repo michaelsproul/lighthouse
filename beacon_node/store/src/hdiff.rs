@@ -26,6 +26,8 @@ pub enum Error {
     DiffDeletionsNotSupported,
     UnableToComputeDiff(xdelta3::Error),
     UnableToApplyDiff(xdelta3::Error),
+    UnableToComputeDiffLean(lean_bdiff::Error),
+    UnableToApplyDiffLean(lean_bdiff::Error),
     BalancesIncompleteChunk,
     Compression(std::io::Error),
     InvalidSszState(ssz::DecodeError),
@@ -231,6 +233,10 @@ impl<E: EthSpec> HDiffBuffer<E> {
         Ok(state)
     }
 
+    pub fn state_bytes(&self) -> &[u8] {
+        &self.state
+    }
+
     /// Byte size of this instance
     pub fn size(&self) -> usize {
         self.state.len()
@@ -280,7 +286,7 @@ impl HDiff {
         let t = std::time::Instant::now();
         let source_state = std::mem::take(&mut source.state);
         self.state_diff().apply(&source_state, &mut source.state)?;
-        eprintln!("  state_diff (xdelta3) apply: {:?}", t.elapsed());
+        eprintln!("  state_diff (lean-bdiff) apply: {:?}", t.elapsed());
 
         let t = std::time::Instant::now();
         self.balances_diff().apply(&mut source.balances, config)?;
@@ -342,7 +348,13 @@ impl StoreItem for HDiff {
 
 impl BytesDiff {
     pub fn compute(source: &[u8], target: &[u8]) -> Result<Self, Error> {
-        Self::compute_xdelta(source, target)
+        Self::compute_lean_bdiff(source, target)
+    }
+
+    pub fn compute_lean_bdiff(source_bytes: &[u8], target_bytes: &[u8]) -> Result<Self, Error> {
+        let bytes = lean_bdiff::encode(target_bytes, source_bytes)
+            .map_err(Error::UnableToComputeDiffLean)?;
+        Ok(Self { bytes })
     }
 
     pub fn compute_xdelta(source_bytes: &[u8], target_bytes: &[u8]) -> Result<Self, Error> {
@@ -359,7 +371,12 @@ impl BytesDiff {
     }
 
     pub fn apply(&self, source: &[u8], target: &mut Vec<u8>) -> Result<(), Error> {
-        self.apply_xdelta(source, target)
+        self.apply_lean_bdiff(source, target)
+    }
+
+    pub fn apply_lean_bdiff(&self, source: &[u8], target: &mut Vec<u8>) -> Result<(), Error> {
+        *target = lean_bdiff::decode(&self.bytes, source).map_err(Error::UnableToApplyDiffLean)?;
+        Ok(())
     }
 
     pub fn apply_xdelta(&self, source: &[u8], target: &mut Vec<u8>) -> Result<(), Error> {
@@ -464,9 +481,10 @@ impl CompressedU64Diff {
             // Sparse: only update non-zero diffs using copy-on-write.
             for (i, diff) in diffs.iter().enumerate().take(num_existing) {
                 if *diff != 0
-                    && let Some(x) = xs.get_mut(i) {
-                        *x = x.wrapping_add(*diff);
-                    }
+                    && let Some(x) = xs.get_mut(i)
+                {
+                    *x = x.wrapping_add(*diff);
+                }
             }
             for diff in &diffs[num_existing..] {
                 xs.push(*diff).map_err(Error::Milhouse)?;
@@ -1076,7 +1094,7 @@ mod tests {
         // First byte should match enum version.
         assert_eq!(hdiff_ssz[0], 0);
 
-        // Should roundtrip.
+        // Should roundtrip SSZ.
         assert_eq!(HDiff::from_ssz_bytes(&hdiff_ssz).unwrap(), hdiff);
 
         // Should roundtrip as V0 with enum selector stripped.
@@ -1085,19 +1103,10 @@ mod tests {
             hdiff
         );
 
-        assert_eq!(
-            hdiff_ssz,
-            vec![
-                0u8, 24, 0, 0, 0, 49, 0, 0, 0, 85, 0, 0, 0, 114, 0, 0, 0, 127, 0, 0, 0, 163, 0, 0,
-                0, 4, 0, 0, 0, 214, 195, 196, 0, 0, 0, 14, 8, 0, 8, 1, 0, 0, 1, 3, 2, 2, 3, 1, 1,
-                9, 4, 0, 0, 0, 40, 181, 47, 253, 0, 72, 189, 0, 0, 136, 255, 255, 255, 255, 196,
-                101, 54, 0, 255, 255, 255, 252, 71, 86, 198, 64, 0, 1, 0, 59, 176, 4, 4, 0, 0, 0,
-                40, 181, 47, 253, 0, 72, 133, 0, 0, 80, 255, 255, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 10,
-                192, 2, 4, 0, 0, 0, 40, 181, 47, 253, 32, 0, 1, 0, 0, 4, 0, 0, 0, 238, 238, 238,
-                238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238,
-                238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 4, 0, 0, 0
-            ]
-        );
+        // Should roundtrip the diff (apply produces the target).
+        let mut applied = pre_buffer.clone();
+        hdiff.apply::<E>(&mut applied, &config).unwrap();
+        assert_eq!(applied.state, post_buffer.state);
     }
 
     // Test that the diffs and snapshots required for storage of split states are retained in the

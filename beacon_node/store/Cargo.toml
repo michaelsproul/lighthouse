@@ -36,6 +36,7 @@ tracing-subscriber = { workspace = true }
 typenum = { workspace = true }
 types = { workspace = true }
 xdelta3 = { workspace = true }
+lean-bdiff = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]

@@ -4,7 +4,7 @@ use rand::Rng;
 use ssz::Decode;
 use store::{
     StoreConfig,
-    hdiff::{HDiff, HDiffBuffer},
+    hdiff::{BytesDiff, HDiff, HDiffBuffer},
 };
 use types::{BeaconState, Epoch, Eth1Data, EthSpec, MainnetEthSpec as E, Validator};
 
@@ -73,6 +73,41 @@ fn bench_against_states(
         b.iter(|| {
             let mut source = source.clone();
             diff.apply(&mut source, &config).unwrap();
+        })
+    });
+
+    // Benchmark BytesDiff: lean-bdiff vs xdelta3
+    let source_bytes = source.state_bytes();
+    let target_bytes = target.state_bytes();
+
+    let lean_diff = BytesDiff::compute_lean_bdiff(source_bytes, target_bytes).unwrap();
+    let xdelta_diff = BytesDiff::compute_xdelta(source_bytes, target_bytes).unwrap();
+    println!(
+        "  BytesDiff sizes {id}: lean-bdiff={} xdelta3={}",
+        lean_diff.size(),
+        xdelta_diff.size()
+    );
+
+    c.bench_function(&format!("BytesDiff compute lean-bdiff {id}"), |b| {
+        b.iter(|| {
+            BytesDiff::compute_lean_bdiff(source_bytes, target_bytes).unwrap();
+        })
+    });
+    c.bench_function(&format!("BytesDiff compute xdelta3 {id}"), |b| {
+        b.iter(|| {
+            BytesDiff::compute_xdelta(source_bytes, target_bytes).unwrap();
+        })
+    });
+    c.bench_function(&format!("BytesDiff apply lean-bdiff {id}"), |b| {
+        b.iter(|| {
+            let mut out = Vec::new();
+            lean_diff.apply_lean_bdiff(source_bytes, &mut out).unwrap();
+        })
+    });
+    c.bench_function(&format!("BytesDiff apply xdelta3 {id}"), |b| {
+        b.iter(|| {
+            let mut out = Vec::new();
+            xdelta_diff.apply_xdelta(source_bytes, &mut out).unwrap();
         })
     });
 }

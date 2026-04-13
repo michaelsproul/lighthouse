@@ -4895,6 +4895,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lean-bdiff"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "leveldb"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8470,6 +8477,7 @@ dependencies = [
  "ethereum_ssz_derive",
  "fixed_bytes",
  "itertools 0.14.0",
+ "lean-bdiff",
  "leveldb",
  "logging",
  "lru 0.12.5",
