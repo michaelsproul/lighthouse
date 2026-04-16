@@ -38,6 +38,7 @@ serde_json = { workspace = true }
 snap = { workspace = true }
 state_processing = { workspace = true }
 store = { workspace = true }
+lean-bdiff = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tree_hash = { workspace = true }

@@ -22,6 +22,9 @@ pub fn run<E: EthSpec>(
     let target_path: PathBuf = parse_required(matches, "target-state-path")?;
     let output_path: PathBuf = parse_required(matches, "output-path")?;
 
+    // Initialize Lean runtime before any timing measurements.
+    lean_bdiff::init();
+
     let source_bytes = read_file(&source_path)?;
     let target_bytes = read_file(&target_path)?;
 

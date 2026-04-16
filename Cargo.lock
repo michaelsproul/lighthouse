@@ -4875,6 +4875,7 @@ dependencies = [
  "execution_layer",
  "fixed_bytes",
  "hex",
+ "lean-bdiff",
  "lighthouse_network",
  "lighthouse_version",
  "log",

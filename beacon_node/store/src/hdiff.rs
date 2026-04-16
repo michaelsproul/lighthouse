@@ -407,6 +407,10 @@ impl BytesDiff {
         }
     }
 
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// Byte size of this instance
     pub fn size(&self) -> usize {
         self.bytes.len()
