@@ -18,6 +18,43 @@ use types::{
     Slot,
 };
 
+/// A viable filtered-tree leaf root, its payload status, and its fork choice weight.
+pub type ViableForHeadRootAndWeight = (Hash256, PayloadStatus, u64);
+
+struct FindHeadContext<'a> {
+    viable_nodes: HashSet<usize>,
+    apply_proposer_boost: bool,
+    current_slot: Slot,
+    proposer_boost_root: Hash256,
+    justified_balances: &'a JustifiedBalances,
+    spec: &'a ChainSpec,
+}
+
+struct WeightedForkChoiceNode {
+    fc_node: IndexedForkChoiceNode,
+    weight: u64,
+    payload_status_tiebreaker: u8,
+}
+
+impl WeightedForkChoiceNode {
+    fn selection_key(&self) -> (u64, Hash256, u8) {
+        (
+            self.weight,
+            self.fc_node.root,
+            self.payload_status_tiebreaker,
+        )
+    }
+
+    fn root_and_weight(&self) -> ViableForHeadRootAndWeight {
+        (self.fc_node.root, self.fc_node.payload_status, self.weight)
+    }
+}
+
+struct FindHeadResult {
+    head: IndexedForkChoiceNode,
+    viable_for_head_roots_and_weights: Vec<ViableForHeadRootAndWeight>,
+}
+
 // Define a "legacy" implementation of `Option<usize>` which uses four bytes for encoding the union
 // selector.
 four_byte_option_impl!(four_byte_option_usize, usize);
@@ -1029,6 +1066,64 @@ impl ProtoArray {
         justified_balances: &JustifiedBalances,
         spec: &ChainSpec,
     ) -> Result<(Hash256, PayloadStatus), Error> {
+        let result = self.find_head_internal::<E>(
+            justified_root,
+            current_slot,
+            best_justified_checkpoint,
+            best_finalized_checkpoint,
+            proposer_boost_root,
+            justified_balances,
+            spec,
+            false,
+        )?;
+
+        Ok((result.head.root, result.head.payload_status))
+    }
+
+    /// Run fork choice and return the viable filtered tree leaves and their weights.
+    ///
+    /// The returned weights use the same payload-aware `get_weight` path as head selection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn find_head_with_viable_for_head_roots_and_weights<E: EthSpec>(
+        &self,
+        justified_root: &Hash256,
+        current_slot: Slot,
+        best_justified_checkpoint: Checkpoint,
+        best_finalized_checkpoint: Checkpoint,
+        proposer_boost_root: Hash256,
+        justified_balances: &JustifiedBalances,
+        spec: &ChainSpec,
+    ) -> Result<(Hash256, PayloadStatus, Vec<ViableForHeadRootAndWeight>), Error> {
+        let result = self.find_head_internal::<E>(
+            justified_root,
+            current_slot,
+            best_justified_checkpoint,
+            best_finalized_checkpoint,
+            proposer_boost_root,
+            justified_balances,
+            spec,
+            true,
+        )?;
+
+        Ok((
+            result.head.root,
+            result.head.payload_status,
+            result.viable_for_head_roots_and_weights,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn find_head_internal<E: EthSpec>(
+        &self,
+        justified_root: &Hash256,
+        current_slot: Slot,
+        best_justified_checkpoint: Checkpoint,
+        best_finalized_checkpoint: Checkpoint,
+        proposer_boost_root: Hash256,
+        justified_balances: &JustifiedBalances,
+        spec: &ChainSpec,
+        collect_viable_for_head_roots_and_weights: bool,
+    ) -> Result<FindHeadResult, Error> {
         let justified_index = self
             .indices
             .get(justified_root)
@@ -1051,7 +1146,7 @@ impl ProtoArray {
             });
         }
 
-        let best_fc_node = self.find_head_walk::<E>(
+        let context = self.find_head_context::<E>(
             justified_index,
             current_slot,
             best_justified_checkpoint,
@@ -1061,11 +1156,18 @@ impl ProtoArray {
             spec,
         )?;
 
+        let result = self.find_head_walk::<E>(
+            justified_index,
+            best_justified_checkpoint,
+            &context,
+            collect_viable_for_head_roots_and_weights,
+        )?;
+
         // Perform a sanity check that the node is indeed valid to be the head.
         let best_node = self
             .nodes
-            .get(best_fc_node.proto_node_index)
-            .ok_or(Error::InvalidNodeIndex(best_fc_node.proto_node_index))?;
+            .get(result.head.proto_node_index)
+            .ok_or(Error::InvalidNodeIndex(result.head.proto_node_index))?;
         if !self.node_is_viable_for_head::<E>(
             best_node,
             current_slot,
@@ -1083,7 +1185,7 @@ impl ProtoArray {
             })));
         }
 
-        Ok((best_fc_node.root, best_fc_node.payload_status))
+        Ok(result)
     }
 
     /// Spec: `get_filtered_block_tree`.
@@ -1173,22 +1275,16 @@ impl ProtoArray {
 
     /// Spec: `get_head`.
     #[allow(clippy::too_many_arguments)]
-    fn find_head_walk<E: EthSpec>(
+    fn find_head_context<'a, E: EthSpec>(
         &self,
         start_index: usize,
         current_slot: Slot,
         best_justified_checkpoint: Checkpoint,
         best_finalized_checkpoint: Checkpoint,
         proposer_boost_root: Hash256,
-        justified_balances: &JustifiedBalances,
-        spec: &ChainSpec,
-    ) -> Result<IndexedForkChoiceNode, Error> {
-        let mut head = IndexedForkChoiceNode {
-            root: best_justified_checkpoint.root,
-            proto_node_index: start_index,
-            payload_status: PayloadStatus::Pending,
-        };
-
+        justified_balances: &'a JustifiedBalances,
+        spec: &'a ChainSpec,
+    ) -> Result<FindHeadContext<'a>, Error> {
         // Spec: `get_filtered_block_tree`.
         let viable_nodes = self.get_filtered_block_tree::<E>(
             start_index,
@@ -1201,45 +1297,134 @@ impl ProtoArray {
         let apply_proposer_boost =
             self.should_apply_proposer_boost::<E>(proposer_boost_root, justified_balances, spec)?;
 
+        Ok(FindHeadContext {
+            viable_nodes,
+            apply_proposer_boost,
+            current_slot,
+            proposer_boost_root,
+            justified_balances,
+            spec,
+        })
+    }
+
+    /// Spec: `get_head`.
+    fn find_head_walk<E: EthSpec>(
+        &self,
+        start_index: usize,
+        best_justified_checkpoint: Checkpoint,
+        context: &FindHeadContext<'_>,
+        collect_viable_for_head_roots_and_weights: bool,
+    ) -> Result<FindHeadResult, Error> {
+        let mut head = IndexedForkChoiceNode {
+            root: best_justified_checkpoint.root,
+            proto_node_index: start_index,
+            payload_status: PayloadStatus::Pending,
+        };
+        let mut head_weight = None;
+        let mut viable_for_head_roots_and_weights = Vec::new();
+        let mut deferred_nodes: Vec<WeightedForkChoiceNode> = Vec::new();
+
         loop {
-            let children: Vec<_> = self
-                .get_node_children(&head)?
-                .into_iter()
-                .filter(|(fc_node, _)| viable_nodes.contains(&fc_node.proto_node_index))
-                .collect();
+            let mut children = self.viable_weighted_children::<E>(&head, context)?;
 
             if children.is_empty() {
-                return Ok(head);
+                if collect_viable_for_head_roots_and_weights {
+                    let root = head.root;
+                    let proto_node_index = head.proto_node_index;
+                    let payload_status = head.payload_status;
+                    let weight = match head_weight {
+                        Some(weight) => weight,
+                        None => {
+                            self.weighted_fork_choice_node::<E>(
+                                IndexedForkChoiceNode {
+                                    root,
+                                    proto_node_index,
+                                    payload_status,
+                                },
+                                context,
+                            )?
+                            .weight
+                        }
+                    };
+                    viable_for_head_roots_and_weights.push((root, payload_status, weight));
+
+                    while let Some(weighted_node) = deferred_nodes.pop() {
+                        let children =
+                            self.viable_weighted_children::<E>(&weighted_node.fc_node, context)?;
+
+                        if children.is_empty() {
+                            viable_for_head_roots_and_weights.push(weighted_node.root_and_weight());
+                        } else {
+                            deferred_nodes.extend(children);
+                        }
+                    }
+                }
+
+                return Ok(FindHeadResult {
+                    head,
+                    viable_for_head_roots_and_weights,
+                });
             }
 
-            head = children
-                .into_iter()
-                .map(|(child, ref proto_node)| -> Result<_, Error> {
-                    let weight = self.get_weight::<E>(
-                        &child,
-                        proto_node,
-                        apply_proposer_boost,
-                        proposer_boost_root,
-                        current_slot,
-                        justified_balances,
-                        spec,
-                    )?;
-                    let payload_status_tiebreaker = self.get_payload_status_tiebreaker::<E>(
-                        &child,
-                        proto_node,
-                        current_slot,
-                        proposer_boost_root,
-                    )?;
-                    Ok((child, weight, payload_status_tiebreaker))
-                })
-                .collect::<Result<Vec<_>, Error>>()?
-                .into_iter()
-                .max_by_key(|(child, weight, payload_status_tiebreaker)| {
-                    (*weight, child.root, *payload_status_tiebreaker)
-                })
-                .map(|(child, _, _)| child)
+            let best_child_index = children
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, child)| child.selection_key())
+                .map(|(index, _)| index)
                 .ok_or(Error::NoViableChildren)?;
+            let best_child = children.swap_remove(best_child_index);
+
+            if collect_viable_for_head_roots_and_weights {
+                deferred_nodes.extend(children);
+            }
+
+            head = best_child.fc_node;
+            head_weight = Some(best_child.weight);
         }
+    }
+
+    fn viable_weighted_children<E: EthSpec>(
+        &self,
+        node: &IndexedForkChoiceNode,
+        context: &FindHeadContext<'_>,
+    ) -> Result<Vec<WeightedForkChoiceNode>, Error> {
+        self.get_node_children(node)?
+            .into_iter()
+            .filter(|(fc_node, _)| context.viable_nodes.contains(&fc_node.proto_node_index))
+            .map(|(fc_node, _)| self.weighted_fork_choice_node::<E>(fc_node, context))
+            .collect()
+    }
+
+    fn weighted_fork_choice_node<E: EthSpec>(
+        &self,
+        fc_node: IndexedForkChoiceNode,
+        context: &FindHeadContext<'_>,
+    ) -> Result<WeightedForkChoiceNode, Error> {
+        let proto_node = self
+            .nodes
+            .get(fc_node.proto_node_index)
+            .ok_or(Error::InvalidNodeIndex(fc_node.proto_node_index))?;
+        let weight = self.get_weight::<E>(
+            &fc_node,
+            proto_node,
+            context.apply_proposer_boost,
+            context.proposer_boost_root,
+            context.current_slot,
+            context.justified_balances,
+            context.spec,
+        )?;
+        let payload_status_tiebreaker = self.get_payload_status_tiebreaker::<E>(
+            &fc_node,
+            proto_node,
+            context.current_slot,
+            context.proposer_boost_root,
+        )?;
+
+        Ok(WeightedForkChoiceNode {
+            fc_node,
+            weight,
+            payload_status_tiebreaker,
+        })
     }
 
     /// Returns the canonical payload status of a block, matching the decision
@@ -1452,6 +1637,25 @@ impl ProtoArray {
                 .nodes
                 .get(node.proto_node_index)
                 .ok_or(Error::InvalidNodeIndex(node.proto_node_index))?;
+            if proto_node.payload_received().is_err() {
+                return Ok(self
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, child_node)| child_node.parent() == Some(node.proto_node_index))
+                    .map(|(child_index, child_node)| {
+                        (
+                            IndexedForkChoiceNode {
+                                root: child_node.root(),
+                                proto_node_index: child_index,
+                                payload_status: PayloadStatus::Pending,
+                            },
+                            child_node.clone(),
+                        )
+                    })
+                    .collect());
+            }
+
             let mut children = vec![(node.with_status(PayloadStatus::Empty), proto_node.clone())];
             // The FULL virtual child only exists if the payload has been received.
             if proto_node.payload_received().is_ok_and(|received| received) {

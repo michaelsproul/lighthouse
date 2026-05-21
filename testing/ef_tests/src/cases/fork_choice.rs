@@ -1440,9 +1440,9 @@ impl<E: EthSpec> Tester<E> {
         let current_slot = fork_choice.fc_store().get_current_slot();
         let proposer_boost_root = fork_choice.proposer_boost_root();
         let justified_balances = fork_choice.fc_store().justified_balances().clone();
-        let actual = fork_choice
+        let (_, _, actual) = fork_choice
             .proto_array()
-            .filtered_block_tree_leaves_and_weights::<E>(
+            .find_head_with_viable_for_head_roots_and_weights::<E>(
                 &justified.root,
                 current_slot,
                 justified,
@@ -1453,7 +1453,7 @@ impl<E: EthSpec> Tester<E> {
             )
             .map_err(|e| {
                 Error::InternalError(format!(
-                    "filtered_block_tree_leaves_and_weights failed: {e}"
+                    "find_head_with_viable_for_head_roots_and_weights failed: {e}"
                 ))
             })?;
         drop(fork_choice);

@@ -2,7 +2,8 @@ use crate::{
     JustifiedBalances,
     error::Error,
     proto_array::{
-        InvalidationOperation, Iter, NodeDelta, ProtoArray, ProtoNode, calculate_committee_fraction,
+        InvalidationOperation, Iter, NodeDelta, ProtoArray, ProtoNode, ViableForHeadRootAndWeight,
+        calculate_committee_fraction,
     },
     ssz_container::SszContainer,
 };
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     fmt,
     time::Duration,
 };
@@ -1088,11 +1089,11 @@ impl ProtoArrayForkChoice {
             .map(|node| node.weight())
     }
 
-    /// Returns the leaves of the filtered block tree (rooted at `justified_root`) along with
-    /// their weights — i.e. roots that are viable for head and have no descendant that is also
-    /// viable for head. Mirrors the spec's `viable_for_head_roots_and_weights` check.
+    /// Run fork choice and return the viable filtered tree leaves and their weights.
+    ///
+    /// The returned weights use the same payload-aware `get_weight` path as head selection.
     #[allow(clippy::too_many_arguments)]
-    pub fn filtered_block_tree_leaves_and_weights<E: EthSpec>(
+    pub fn find_head_with_viable_for_head_roots_and_weights<E: EthSpec>(
         &self,
         justified_root: &Hash256,
         current_slot: Slot,
@@ -1101,106 +1102,18 @@ impl ProtoArrayForkChoice {
         proposer_boost_root: Hash256,
         justified_balances: &JustifiedBalances,
         spec: &ChainSpec,
-    ) -> Result<Vec<(Hash256, PayloadStatus, u64)>, String> {
-        let start_index = self
-            .proto_array
-            .indices
-            .get(justified_root)
-            .copied()
-            .ok_or_else(|| {
-                format!(
-                    "filtered_block_tree_leaves_and_weights: justified node \
-                     {justified_root:?} unknown"
-                )
-            })?;
-        let viable = self.proto_array.get_filtered_block_tree::<E>(
-            start_index,
-            current_slot,
-            justified_checkpoint,
-            finalized_checkpoint,
-        );
-        let viable_indices = viable.iter().copied().collect::<HashSet<_>>();
-
-        let apply_proposer_boost = self
-            .proto_array
-            .should_apply_proposer_boost::<E>(proposer_boost_root, justified_balances, spec)
-            .map_err(|e| format!("should_apply_proposer_boost failed: {e:?}"))?;
-
-        let mut leaves = Vec::new();
-        let mut stack = vec![IndexedForkChoiceNode {
-            root: *justified_root,
-            proto_node_index: start_index,
-            payload_status: PayloadStatus::Pending,
-        }];
-
-        while let Some(fc_node) = stack.pop() {
-            let proto_node = self
-                .proto_array
-                .nodes
-                .get(fc_node.proto_node_index)
-                .ok_or_else(|| format!("invalid viable node index {}", fc_node.proto_node_index))?;
-
-            let children = if proto_node.payload_received().is_ok() {
-                if fc_node.payload_status == PayloadStatus::Pending {
-                    let mut children = vec![fc_node.with_status(PayloadStatus::Empty)];
-                    if proto_node.payload_received().is_ok_and(|received| received) {
-                        children.push(fc_node.with_status(PayloadStatus::Full));
-                    }
-                    children
-                } else {
-                    self.proto_array
-                        .nodes
-                        .iter()
-                        .enumerate()
-                        .filter(|(child_index, child_node)| {
-                            viable_indices.contains(child_index)
-                                && child_node.parent() == Some(fc_node.proto_node_index)
-                                && child_node.get_parent_payload_status() == fc_node.payload_status
-                        })
-                        .map(|(child_index, child_node)| IndexedForkChoiceNode {
-                            root: child_node.root(),
-                            proto_node_index: child_index,
-                            payload_status: PayloadStatus::Pending,
-                        })
-                        .collect()
-                }
-            } else {
-                self.proto_array
-                    .nodes
-                    .iter()
-                    .enumerate()
-                    .filter(|(child_index, child_node)| {
-                        viable_indices.contains(child_index)
-                            && child_node.parent() == Some(fc_node.proto_node_index)
-                    })
-                    .map(|(child_index, child_node)| IndexedForkChoiceNode {
-                        root: child_node.root(),
-                        proto_node_index: child_index,
-                        payload_status: PayloadStatus::Pending,
-                    })
-                    .collect()
-            };
-
-            if children.is_empty() {
-                let weight = self
-                    .proto_array
-                    .get_weight::<E>(
-                        &fc_node,
-                        proto_node,
-                        apply_proposer_boost,
-                        proposer_boost_root,
-                        current_slot,
-                        justified_balances,
-                        spec,
-                    )
-                    .map_err(|e| format!("get_weight failed: {e:?}"))?;
-                leaves.push((fc_node.root, fc_node.payload_status, weight));
-            } else {
-                stack.extend(children);
-            }
-        }
-
-        Ok(leaves)
+    ) -> Result<(Hash256, PayloadStatus, Vec<ViableForHeadRootAndWeight>), String> {
+        self.proto_array
+            .find_head_with_viable_for_head_roots_and_weights::<E>(
+                justified_root,
+                current_slot,
+                justified_checkpoint,
+                finalized_checkpoint,
+                proposer_boost_root,
+                justified_balances,
+                spec,
+            )
+            .map_err(|e| format!("find_head_with_viable_for_head_roots_and_weights failed: {e:?}"))
     }
 
     /// Returns the payload status of the head node based on accumulated weights and tiebreaker.
