@@ -146,6 +146,10 @@ pub enum InvalidBlock {
         finalized_root: Hash256,
         block_ancestor: Option<Hash256>,
     },
+    ParentPayloadNotReceived {
+        parent_root: Hash256,
+        block_root: Hash256,
+    },
 }
 
 #[derive(Debug)]
@@ -536,6 +540,32 @@ where
         }
     }
 
+    fn proposer_boost_parent_equivocating_balance(
+        &self,
+        spec: &ChainSpec,
+    ) -> Result<Option<u64>, Error<T::Error>> {
+        let proposer_boost_root = self.fc_store.proposer_boost_root();
+        if proposer_boost_root.is_zero() || self.fc_store.equivocating_indices().is_empty() {
+            return Ok(Some(0));
+        }
+
+        let block = self
+            .proto_array
+            .get_block(&proposer_boost_root)
+            .ok_or(Error::MissingProtoArrayBlock(proposer_boost_root))?;
+        let Some(parent_root) = block.parent_root else {
+            return Ok(Some(0));
+        };
+        let parent = self
+            .proto_array
+            .get_block(&parent_root)
+            .ok_or(Error::MissingProtoArrayBlock(parent_root))?;
+
+        self.fc_store
+            .equivocating_balance_for_slot(parent.state_root, parent.slot, spec)
+            .map_err(Error::ForkChoiceStoreError)
+    }
+
     /// Run the fork choice rule to determine the head.
     ///
     /// ## Specification
@@ -553,6 +583,8 @@ where
         // the current slot. The `fc_store` will ensure that the `current_slot` is never
         // decreasing, a property which we must maintain.
         let current_slot = self.update_time(system_time_current_slot)?;
+        let proposer_boost_parent_equivocating_balance =
+            self.proposer_boost_parent_equivocating_balance(spec)?;
 
         let store = &mut self.fc_store;
 
@@ -561,6 +593,7 @@ where
             *store.finalized_checkpoint(),
             store.justified_balances(),
             store.proposer_boost_root(),
+            proposer_boost_parent_equivocating_balance,
             store.equivocating_indices(),
             current_slot,
             spec,
@@ -801,6 +834,30 @@ where
             .get_block(&block.parent_root())
             .ok_or_else(|| Error::InvalidBlock(InvalidBlock::UnknownParent(block.parent_root())))?;
 
+        let (execution_payload_parent_hash, execution_payload_block_hash) =
+            if let Ok(signed_bid) = block.body().signed_execution_payload_bid() {
+                (
+                    Some(signed_bid.message.parent_block_hash),
+                    Some(signed_bid.message.block_hash),
+                )
+            } else {
+                (None, None)
+            };
+
+        // Spec Gloas `on_block`: if this block builds on the parent's full payload, that payload
+        // must have been verified via `on_execution_payload_envelope`.
+        if let Some(execution_payload_parent_hash) = execution_payload_parent_hash
+            && Some(execution_payload_parent_hash) == parent_block.execution_payload_block_hash
+            && !self.proto_array.is_payload_received(&block.parent_root())
+        {
+            return Err(Error::InvalidBlock(
+                InvalidBlock::ParentPayloadNotReceived {
+                    parent_root: block.parent_root(),
+                    block_root,
+                },
+            ));
+        }
+
         // Blocks cannot be in the future. If they are, their consideration must be delayed until
         // they are in the past.
         //
@@ -858,16 +915,6 @@ where
             // There is no payload to verify.
             ExecutionStatus::irrelevant()
         };
-
-        let (execution_payload_parent_hash, execution_payload_block_hash) =
-            if let Ok(signed_bid) = block.body().signed_execution_payload_bid() {
-                (
-                    Some(signed_bid.message.parent_block_hash),
-                    Some(signed_bid.message.block_hash),
-                )
-            } else {
-                (None, None)
-            };
 
         let attestation_threshold = spec.get_attestation_due::<E>(block.slot());
 
@@ -1589,11 +1636,14 @@ where
         if self.is_finalized_checkpoint_or_descendant(*block_root) {
             let current_slot = self.fc_store.get_current_slot();
             let proposer_boost_root = self.fc_store.proposer_boost_root();
+            let proposer_boost_parent_equivocating_balance =
+                self.proposer_boost_parent_equivocating_balance(spec)?;
             self.proto_array
                 .get_canonical_payload_status::<E>(
                     block_root,
                     current_slot,
                     proposer_boost_root,
+                    proposer_boost_parent_equivocating_balance,
                     spec,
                 )
                 .map_err(Error::ProtoArrayError)

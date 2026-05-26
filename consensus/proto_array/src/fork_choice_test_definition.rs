@@ -189,6 +189,7 @@ impl ForkChoiceTestDefinition {
                             finalized_checkpoint,
                             &justified_balances,
                             Hash256::zero(),
+                            None,
                             &equivocating_indices,
                             current_slot,
                             &spec,
@@ -237,6 +238,7 @@ impl ForkChoiceTestDefinition {
                             finalized_checkpoint,
                             &justified_balances,
                             proposer_boost_root,
+                            None,
                             &equivocating_indices,
                             Slot::new(0),
                             &spec,
@@ -274,6 +276,7 @@ impl ForkChoiceTestDefinition {
                         finalized_checkpoint,
                         &justified_balances,
                         Hash256::zero(),
+                        None,
                         &equivocating_indices,
                         Slot::new(0),
                         &spec,
@@ -606,6 +609,7 @@ impl ForkChoiceTestDefinition {
                             &block_root,
                             current_slot.unwrap_or(last_current_slot),
                             proposer_boost_root.unwrap_or_else(Hash256::zero),
+                            None,
                             &spec,
                         )
                         .unwrap();
@@ -654,6 +658,7 @@ fn assert_canonical_payload_status_matches_find_head(
         head,
         current_slot,
         proposer_boost_root,
+        None,
         spec,
     ) {
         Ok(actual) => assert_eq!(

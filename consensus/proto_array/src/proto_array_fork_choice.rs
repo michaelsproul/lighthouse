@@ -678,6 +678,7 @@ impl ProtoArrayForkChoice {
         finalized_checkpoint: Checkpoint,
         justified_state_balances: &JustifiedBalances,
         proposer_boost_root: Hash256,
+        proposer_boost_parent_equivocating_balance: Option<u64>,
         equivocating_indices: &BTreeSet<u64>,
         current_slot: Slot,
         spec: &ChainSpec,
@@ -714,6 +715,7 @@ impl ProtoArrayForkChoice {
                 justified_checkpoint,
                 finalized_checkpoint,
                 proposer_boost_root,
+                proposer_boost_parent_equivocating_balance,
                 new_balances,
                 spec,
             )
@@ -1098,12 +1100,14 @@ impl ProtoArrayForkChoice {
         block_root: &Hash256,
         current_slot: Slot,
         proposer_boost_root: Hash256,
+        proposer_boost_parent_equivocating_balance: Option<u64>,
         spec: &ChainSpec,
     ) -> Result<PayloadStatus, Error> {
         self.proto_array.get_canonical_payload_status::<E>(
             *block_root,
             current_slot,
             proposer_boost_root,
+            proposer_boost_parent_equivocating_balance,
             &self.balances,
             spec,
         )
@@ -1153,7 +1157,7 @@ impl ProtoArrayForkChoice {
 
         let apply_proposer_boost = self
             .proto_array
-            .should_apply_proposer_boost::<E>(proposer_boost_root, justified_balances, spec)
+            .should_apply_proposer_boost::<E>(proposer_boost_root, None, justified_balances, spec)
             .map_err(|e| format!("should_apply_proposer_boost failed: {e:?}"))?;
 
         let mut leaves = Vec::new();

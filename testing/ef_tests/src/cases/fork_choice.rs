@@ -28,6 +28,7 @@ use ssz_types::VariableList;
 use state_processing::VerifySignatures;
 use state_processing::common::{attesting_indices_base, attesting_indices_electra};
 use state_processing::envelope_processing::verify_execution_payload_envelope;
+use state_processing::per_block_processing::errors::HeaderInvalid;
 use state_processing::per_block_processing::is_valid_indexed_payload_attestation;
 use state_processing::per_block_processing::verify_attester_slashing;
 use state_processing::state_advance::complete_state_advance;
@@ -841,7 +842,20 @@ impl<E: EthSpec> Tester<E> {
             )));
         }
 
-        if !valid && blobs.is_none() {
+        // Lighthouse's fork choice `on_block` is called with a post-state in production, so it
+        // must not re-run header checks that can be invalidated by operations in the same block.
+        // If block processing already failed before fork choice, the invalid-block expectation is
+        // satisfied without a direct `on_block` replay.
+        let rejected_before_fork_choice = matches!(
+            &result,
+            Err(beacon_chain::BlockError::PerBlockProcessingError(
+                state_processing::BlockProcessingError::HeaderInvalid {
+                    reason: HeaderInvalid::ProposerSlashed(_),
+                },
+            ))
+        );
+
+        if !valid && blobs.is_none() && !rejected_before_fork_choice {
             self.apply_invalid_block(&block)?;
         }
 

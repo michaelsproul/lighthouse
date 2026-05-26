@@ -9,7 +9,7 @@ use educe::Educe;
 use fixed_bytes::FixedBytesExtended;
 use fork_choice::ForkChoiceStore;
 use proto_array::JustifiedBalances;
-use safe_arith::ArithError;
+use safe_arith::{ArithError, SafeArith};
 use ssz_derive::{Decode, Encode};
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
@@ -17,8 +17,8 @@ use std::sync::Arc;
 use store::{Error as StoreError, HotColdDB, ItemStore};
 use superstruct::superstruct;
 use types::{
-    AbstractExecPayload, BeaconBlockRef, BeaconState, BeaconStateError, Checkpoint, Epoch, EthSpec,
-    Hash256, Slot,
+    AbstractExecPayload, BeaconBlockRef, BeaconState, BeaconStateError, ChainSpec, Checkpoint,
+    Epoch, EthSpec, Hash256, RelativeEpoch, Slot,
 };
 
 #[derive(Debug)]
@@ -376,6 +376,49 @@ where
 
     fn extend_equivocating_indices(&mut self, indices: impl IntoIterator<Item = u64>) {
         self.equivocating_indices.extend(indices);
+    }
+
+    fn equivocating_balance_for_slot(
+        &self,
+        state_root: Hash256,
+        slot: Slot,
+        spec: &ChainSpec,
+    ) -> Result<Option<u64>, Self::Error> {
+        if self.equivocating_indices.is_empty() {
+            return Ok(Some(0));
+        }
+
+        let update_cache = true;
+        let mut state = self
+            .store
+            .get_hot_state(&state_root, update_cache)
+            .map_err(Error::FailedToReadState)?
+            .ok_or(Error::MissingState(state_root))?;
+
+        let epoch = slot.epoch(E::slots_per_epoch());
+        let relative_epoch = RelativeEpoch::from_epoch(state.current_epoch(), epoch)
+            .map_err(BeaconStateError::from)?;
+        state.build_committee_cache(relative_epoch, spec)?;
+
+        let mut balance = 0u64;
+        for committee in state.get_beacon_committees_at_slot(slot)? {
+            for validator_index in committee.committee {
+                if self
+                    .equivocating_indices
+                    .contains(&(*validator_index as u64))
+                {
+                    balance.safe_add_assign(
+                        self.justified_balances
+                            .effective_balances
+                            .get(*validator_index)
+                            .copied()
+                            .unwrap_or(0),
+                    )?;
+                }
+            }
+        }
+
+        Ok(Some(balance))
     }
 }
 

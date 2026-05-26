@@ -1,7 +1,9 @@
 use proto_array::JustifiedBalances;
 use std::collections::BTreeSet;
 use std::fmt::Debug;
-use types::{AbstractExecPayload, BeaconBlockRef, BeaconState, Checkpoint, EthSpec, Hash256, Slot};
+use types::{
+    AbstractExecPayload, BeaconBlockRef, BeaconState, ChainSpec, Checkpoint, EthSpec, Hash256, Slot,
+};
 
 /// Approximates the `Store` in "Ethereum 2.0 Phase 0 -- Beacon Chain Fork Choice":
 ///
@@ -89,4 +91,18 @@ pub trait ForkChoiceStore<E: EthSpec>: Sized {
 
     /// Adds to the set of equivocating indices.
     fn extend_equivocating_indices(&mut self, indices: impl IntoIterator<Item = u64>);
+
+    /// Return the effective balance of equivocating validators in the committees for `slot`.
+    ///
+    /// This is used by the Gloas `is_head_weak` check for proposer boost. Store
+    /// implementations without state access can use the default zero value, in which case
+    /// proto-array falls back to its local approximation.
+    fn equivocating_balance_for_slot(
+        &self,
+        _state_root: Hash256,
+        _slot: Slot,
+        _spec: &ChainSpec,
+    ) -> Result<Option<u64>, Self::Error> {
+        Ok(None)
+    }
 }

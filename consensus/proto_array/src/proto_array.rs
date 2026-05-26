@@ -684,20 +684,13 @@ impl ProtoArray {
     }
 
     /// Spec: `is_head_weak`.
-    // TODO(gloas): the spec adds weight from equivocating validators in the
-    // head slot's *committees*, regardless of who they voted for. We approximate
-    // with `equivocating_attestation_score` which only tracks equivocating
-    // validators whose vote pointed at this block. This under-counts when an
-    // equivocating validator is in the committee but voted for a different fork,
-    // which could allow a re-org the spec wouldn't. In practice the deviation
-    // is small — it requires equivocating validators voting for competing forks
-    // AND the head weight to be exactly at the reorg threshold boundary.
-    // Fixing this properly requires committee computation from BeaconState,
-    // which is not available in proto_array. The fix would be to pass
-    // pre-computed equivocating committee weight from the beacon_chain caller.
+    // The full fork-choice path passes the spec-accurate equivocating committee
+    // balance from BeaconState. Standalone proto-array tests fall back to the
+    // local approximation tracked during score changes.
     fn is_head_weak<E: EthSpec>(
         &self,
         head_node: &ProtoNode,
+        equivocating_balance: Option<u64>,
         justified_balances: &JustifiedBalances,
         spec: &ChainSpec,
     ) -> bool {
@@ -705,9 +698,11 @@ impl ProtoArray {
             calculate_committee_fraction::<E>(justified_balances, spec.reorg_head_weight_threshold)
                 .unwrap_or(0);
 
+        let equivocating_attestation_score = equivocating_balance
+            .unwrap_or_else(|| head_node.equivocating_attestation_score().unwrap_or(0));
         let head_weight = head_node
             .attestation_score(PayloadStatus::Pending)
-            .saturating_add(head_node.equivocating_attestation_score().unwrap_or(0));
+            .saturating_add(equivocating_attestation_score);
 
         head_weight < reorg_threshold
     }
@@ -720,6 +715,7 @@ impl ProtoArray {
     pub(crate) fn should_apply_proposer_boost<E: EthSpec>(
         &self,
         proposer_boost_root: Hash256,
+        proposer_boost_parent_equivocating_balance: Option<u64>,
         justified_balances: &JustifiedBalances,
         spec: &ChainSpec,
     ) -> Result<bool, Error> {
@@ -750,7 +746,13 @@ impl ProtoArray {
         }
 
         // Apply proposer boost if `parent` is not weak
-        if !self.is_head_weak::<E>(parent, justified_balances, spec) {
+        let parent_is_weak = self.is_head_weak::<E>(
+            parent,
+            proposer_boost_parent_equivocating_balance,
+            justified_balances,
+            spec,
+        );
+        if !parent_is_weak {
             return Ok(true);
         }
 
@@ -1058,6 +1060,7 @@ impl ProtoArray {
         best_justified_checkpoint: Checkpoint,
         best_finalized_checkpoint: Checkpoint,
         proposer_boost_root: Hash256,
+        proposer_boost_parent_equivocating_balance: Option<u64>,
         justified_balances: &JustifiedBalances,
         spec: &ChainSpec,
     ) -> Result<(Hash256, PayloadStatus), Error> {
@@ -1089,6 +1092,7 @@ impl ProtoArray {
             best_justified_checkpoint,
             best_finalized_checkpoint,
             proposer_boost_root,
+            proposer_boost_parent_equivocating_balance,
             justified_balances,
             spec,
         )?;
@@ -1212,6 +1216,7 @@ impl ProtoArray {
         best_justified_checkpoint: Checkpoint,
         best_finalized_checkpoint: Checkpoint,
         proposer_boost_root: Hash256,
+        proposer_boost_parent_equivocating_balance: Option<u64>,
         justified_balances: &JustifiedBalances,
         spec: &ChainSpec,
     ) -> Result<IndexedForkChoiceNode, Error> {
@@ -1230,8 +1235,12 @@ impl ProtoArray {
         );
 
         // Compute once rather than per-child per-level.
-        let apply_proposer_boost =
-            self.should_apply_proposer_boost::<E>(proposer_boost_root, justified_balances, spec)?;
+        let apply_proposer_boost = self.should_apply_proposer_boost::<E>(
+            proposer_boost_root,
+            proposer_boost_parent_equivocating_balance,
+            justified_balances,
+            spec,
+        )?;
 
         loop {
             let children: Vec<_> = self
@@ -1281,6 +1290,7 @@ impl ProtoArray {
         root: Hash256,
         current_slot: Slot,
         proposer_boost_root: Hash256,
+        proposer_boost_parent_equivocating_balance: Option<u64>,
         justified_balances: &JustifiedBalances,
         spec: &ChainSpec,
     ) -> Result<PayloadStatus, Error> {
@@ -1310,8 +1320,12 @@ impl ProtoArray {
 
         // Matches the hoisting optimization in `find_head`: `get_weight`'s spec-level
         // `should_apply_proposer_boost` check is precomputed once.
-        let apply_proposer_boost =
-            self.should_apply_proposer_boost::<E>(proposer_boost_root, justified_balances, spec)?;
+        let apply_proposer_boost = self.should_apply_proposer_boost::<E>(
+            proposer_boost_root,
+            proposer_boost_parent_equivocating_balance,
+            justified_balances,
+            spec,
+        )?;
 
         let full_weight = self.get_weight::<E>(
             &full_fc,
@@ -1597,10 +1611,18 @@ impl ProtoArray {
             .ok_or(Error::InvalidNodeIndex(parent_index))?
             .root();
 
-        Ok((proto_node.payload_timeliness::<E>(true)?
-            && proto_node.payload_data_availability::<E>(true)?)
-            || proposer_boost_parent_root != fc_node.root
-            || proposer_boost_node.is_parent_node_full())
+        let payload_is_timely = proto_node.payload_timeliness::<E>(true)?;
+        let payload_data_is_available = proto_node.payload_data_availability::<E>(true)?;
+        let boost_parent_differs = proposer_boost_parent_root != fc_node.root;
+        let boost_parent_full = proposer_boost_node.is_parent_node_full();
+
+        // If the boosted block is a direct child of this root, its bid tells us
+        // whether it is extending the parent's full or empty payload branch.
+        if !boost_parent_differs {
+            return Ok(boost_parent_full);
+        }
+
+        Ok((payload_is_timely && payload_data_is_available) || boost_parent_differs)
     }
 
     /// Update the tree with new finalization information. The tree is only actually pruned if both

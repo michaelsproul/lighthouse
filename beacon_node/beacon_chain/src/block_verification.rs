@@ -84,6 +84,7 @@ use state_processing::{
     AllCaches, BlockProcessingError, BlockSignatureStrategy, ConsensusContext, SlotProcessingError,
     VerifyBlockRoot,
     block_signature_verifier::{BlockSignatureVerifier, Error as BlockSignatureVerifierError},
+    common::get_indexed_payload_attestation,
     per_block_processing, per_slot_processing,
     state_advance::partial_state_advance,
 };
@@ -1683,11 +1684,30 @@ impl<T: BeaconChainTypes> ExecutionPendingBlock<T> {
         // Register each payload attestation in the block with fork choice.
         if let Ok(payload_attestations) = block.message().body().payload_attestations() {
             for (i, payload_attestation) in payload_attestations.iter().enumerate() {
-                let indexed_payload_attestation = consensus_context
-                    .get_indexed_payload_attestation(&state, payload_attestation, &chain.spec)
-                    .map_err(|e| BlockError::PerBlockProcessingError(e.into_with_index(i)))?;
+                let attested_block_root = payload_attestation.data.beacon_block_root;
+                let Some(attested_block) = chain
+                    .get_blinded_block(&attested_block_root)
+                    .map_err(|e| BlockError::BeaconChainError(Box::new(e)))?
+                else {
+                    continue;
+                };
+                let update_cache = true;
+                let Some(attested_state) = chain
+                    .store
+                    .get_hot_state(&attested_block.state_root(), update_cache)
+                    .map_err(|e| BlockError::from(BeaconChainError::DBError(e)))?
+                else {
+                    continue;
+                };
 
-                let ptc = state
+                let indexed_payload_attestation = get_indexed_payload_attestation(
+                    &attested_state,
+                    payload_attestation,
+                    &chain.spec,
+                )
+                .map_err(|e| BlockError::PerBlockProcessingError(e.into_with_index(i)))?;
+
+                let ptc = attested_state
                     .get_ptc(indexed_payload_attestation.data.slot, &chain.spec)
                     .map_err(|e| BlockError::BeaconChainError(Box::new(e.into())))?;
 
@@ -1695,7 +1715,7 @@ impl<T: BeaconChainTypes> ExecutionPendingBlock<T> {
                 // regular attestations — the block may be old).
                 if let Err(e) = fork_choice.on_payload_attestation(
                     current_slot,
-                    indexed_payload_attestation,
+                    &indexed_payload_attestation,
                     AttestationFromBlock::True,
                     &ptc.0,
                 ) && !matches!(e, ForkChoiceError::InvalidPayloadAttestation(_))
