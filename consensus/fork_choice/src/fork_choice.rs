@@ -566,6 +566,48 @@ where
             .map_err(Error::ForkChoiceStoreError)
     }
 
+    fn post_import_canonical_proposer_index(
+        &mut self,
+        current_slot: Slot,
+        block_root: Hash256,
+        block_state: &BeaconState<E>,
+        fallback_proposer_index: u64,
+        spec: &ChainSpec,
+    ) -> Result<u64, Error<T::Error>> {
+        let justified_checkpoint = *self.fc_store.justified_checkpoint();
+        let finalized_checkpoint = *self.fc_store.finalized_checkpoint();
+        let proposer_boost_root = self.fc_store.proposer_boost_root();
+        let proposer_boost_parent_equivocating_balance =
+            self.proposer_boost_parent_equivocating_balance(spec)?;
+
+        let (head_root, _) = self.proto_array.find_head::<E>(
+            justified_checkpoint,
+            finalized_checkpoint,
+            self.fc_store.justified_balances(),
+            proposer_boost_root,
+            proposer_boost_parent_equivocating_balance,
+            self.fc_store.equivocating_indices(),
+            current_slot,
+            spec,
+        )?;
+
+        if head_root == block_root {
+            block_state
+                .get_beacon_proposer_index(current_slot, spec)
+                .map(|index| index as u64)
+                .map_err(Error::BeaconStateError)
+        } else {
+            let head = self
+                .proto_array
+                .get_block(&head_root)
+                .ok_or(Error::MissingProtoArrayBlock(head_root))?;
+            self.fc_store
+                .proposer_index_at_slot(head.state_root, current_slot, spec)
+                .map_err(Error::ForkChoiceStoreError)
+                .map(|maybe_index| maybe_index.unwrap_or(fallback_proposer_index))
+        }
+    }
+
     /// Run the fork choice rule to determine the head.
     ///
     /// ## Specification
@@ -918,20 +960,13 @@ where
 
         let attestation_threshold = spec.get_attestation_due::<E>(block.slot());
 
-        // Add proposer score boost if the block is the first timely block for this slot and its
-        // proposer matches the expected proposer on the canonical chain (per spec
-        // `update_proposer_boost_root`, introduced in v1.7.0-alpha.5).
+        // Record whether this block is eligible for proposer boost. The proposer check itself is
+        // performed after the block has been added to fork choice, matching spec
+        // `update_proposer_boost_root`.
         let is_before_attesting_interval = block_delay < attestation_threshold;
-
+        let is_timely_for_proposer_boost =
+            current_slot == block.slot() && is_before_attesting_interval;
         let is_first_block = self.fc_store.proposer_boost_root().is_zero();
-        let is_canonical_proposer = block.proposer_index() == canonical_head_proposer_index;
-        if current_slot == block.slot()
-            && is_before_attesting_interval
-            && is_first_block
-            && is_canonical_proposer
-        {
-            self.fc_store.set_proposer_boost_root(block_root);
-        }
 
         // Update store with checkpoints if necessary
         self.update_checkpoints(
@@ -1083,6 +1118,19 @@ where
             spec,
             block_delay,
         )?;
+
+        if is_timely_for_proposer_boost && is_first_block {
+            let canonical_proposer_index = self.post_import_canonical_proposer_index(
+                current_slot,
+                block_root,
+                state,
+                canonical_head_proposer_index,
+                spec,
+            )?;
+            if block.proposer_index() == canonical_proposer_index {
+                self.fc_store.set_proposer_boost_root(block_root);
+            }
+        }
 
         Ok(())
     }

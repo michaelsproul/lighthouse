@@ -105,4 +105,17 @@ pub trait ForkChoiceStore<E: EthSpec>: Sized {
     ) -> Result<Option<u64>, Self::Error> {
         Ok(None)
     }
+
+    /// Return the beacon proposer index for `slot` using the state identified by `state_root`.
+    ///
+    /// Store implementations without state access can return `None`, in which case callers may
+    /// fall back to a locally available proposer index.
+    fn proposer_index_at_slot(
+        &self,
+        _state_root: Hash256,
+        _slot: Slot,
+        _spec: &ChainSpec,
+    ) -> Result<Option<u64>, Self::Error> {
+        Ok(None)
+    }
 }

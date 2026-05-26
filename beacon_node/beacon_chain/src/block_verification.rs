@@ -1648,38 +1648,13 @@ impl<T: BeaconChainTypes> ExecutionPendingBlock<T> {
         }
 
         /*
-         * Apply the block's attestations to fork choice.
+         * Apply the block's payload attestations to fork choice.
          *
-         * We're running in parallel with the payload verification at this point, so this is
-         * free real estate.
+         * Regular attestations and attester slashings are applied after `ForkChoice::on_block`,
+         * so they cannot influence proposer boost for the block that contains them.
          */
         let current_slot = chain.slot()?;
         let mut fork_choice = chain.canonical_head.fork_choice_write_lock();
-
-        // Register each attester slashing in the block with fork choice.
-        for attester_slashing in block.message().body().attester_slashings() {
-            fork_choice.on_attester_slashing(attester_slashing);
-        }
-
-        // Register each attestation in the block with fork choice.
-        for (i, attestation) in block.message().body().attestations().enumerate() {
-            let indexed_attestation = consensus_context
-                .get_indexed_attestation(&state, attestation)
-                .map_err(|e| BlockError::PerBlockProcessingError(e.into_with_index(i)))?;
-
-            match fork_choice.on_attestation(
-                current_slot,
-                indexed_attestation,
-                AttestationFromBlock::True,
-                &chain.spec,
-            ) {
-                Ok(()) => Ok(()),
-                // Ignore invalid attestations whilst importing attestations from a block. The
-                // block might be very old and therefore the attestations useless to fork choice.
-                Err(ForkChoiceError::InvalidAttestation(_)) => Ok(()),
-                Err(e) => Err(BlockError::BeaconChainError(Box::new(e.into()))),
-            }?;
-        }
 
         // Register each payload attestation in the block with fork choice.
         if let Ok(payload_attestations) = block.message().body().payload_attestations() {

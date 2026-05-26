@@ -125,7 +125,8 @@ use state_processing::{
     epoch_cache::initialize_epoch_cache,
     per_block_processing,
     per_block_processing::{
-        VerifySignatures, apply_parent_execution_payload, errors::AttestationValidationError,
+        VerifySignatures, apply_parent_execution_payload,
+        errors::{AttestationValidationError, IntoWithIndex},
         get_expected_withdrawals, verify_attestation_for_block_inclusion,
     },
     per_slot_processing,
@@ -4305,9 +4306,8 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         let cached_head = self.canonical_head.cached_head();
         let old_head_slot = cached_head.head_slot();
 
-        // Compute the expected proposer for `current_slot` on the canonical chain. This is used by
-        // `on_block` to gate proposer boost on the block's proposer matching the canonical proposer
-        // (per spec `update_proposer_boost_root` added in v1.7.0-alpha.5).
+        // Compute the expected proposer for `current_slot` on the cached head. Fork choice uses
+        // this as a fallback when it cannot compute the proposer from the post-import head state.
         let canonical_head_proposer_index =
             self.canonical_head_proposer_index(current_slot, &cached_head)?;
 
@@ -4317,6 +4317,18 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         if fork_choice_reader.contains_block(&block_root) {
             return Err(BlockError::DuplicateFullyImported(block_root));
         }
+
+        let block_indexed_attestations = block
+            .body()
+            .attestations()
+            .enumerate()
+            .map(|(i, attestation)| {
+                consensus_context
+                    .get_indexed_attestation(&state, attestation)
+                    .map(|indexed_attestation| indexed_attestation.clone_as_indexed_attestation())
+                    .map_err(|e| BlockError::PerBlockProcessingError(e.into_with_index(i)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Take an exclusive write-lock on fork choice. It's very important to prevent deadlocks by
         // avoiding taking other locks whilst holding this lock.
@@ -4347,6 +4359,13 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 )
                 .map_err(|e| BlockError::BeaconChainError(Box::new(e.into())))?;
         }
+
+        self.import_block_apply_attestations_to_fork_choice(
+            &mut fork_choice,
+            block,
+            &block_indexed_attestations,
+            current_slot,
+        );
 
         // If the block is recent enough and it was not optimistically imported, check to see if it
         // becomes the head block. If so, apply it to the early attester cache. This will allow
@@ -4546,6 +4565,42 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         );
 
         Ok(block_root)
+    }
+
+    fn import_block_apply_attestations_to_fork_choice(
+        &self,
+        fork_choice: &mut BeaconForkChoice<T>,
+        block: BeaconBlockRef<T::EthSpec>,
+        indexed_attestations: &[IndexedAttestation<T::EthSpec>],
+        current_slot: Slot,
+    ) {
+        // Register each attester slashing in the block with fork choice after proposer boost has
+        // been evaluated for this block.
+        for attester_slashing in block.body().attester_slashings() {
+            fork_choice.on_attester_slashing(attester_slashing);
+        }
+
+        // Register each attestation in the block with fork choice after proposer boost has been
+        // evaluated for this block. The consensus spec's `on_block` does not let regular
+        // attestations from the block affect `update_proposer_boost_root`.
+        for indexed_attestation in indexed_attestations {
+            let result = fork_choice.on_attestation(
+                current_slot,
+                indexed_attestation.to_ref(),
+                AttestationFromBlock::True,
+                &self.spec,
+            );
+            match result {
+                Ok(()) => {}
+                // Ignore invalid attestations whilst importing attestations from a block. The
+                // block might be very old and therefore the attestations useless to fork choice.
+                Err(ForkChoiceError::InvalidAttestation(_)) => {}
+                Err(e) => debug!(
+                    error = ?e,
+                    "Failed to apply block attestation to fork choice"
+                ),
+            }
+        }
     }
 
     fn handle_import_block_db_write_error(
@@ -5094,8 +5149,8 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     ///
     /// Uses the beacon proposer cache to avoid recomputing the shuffling on every block import.
     ///
-    /// This is used by `update_proposer_boost_root` to gate proposer boost on the block's proposer
-    /// matching the canonical proposer, per consensus-specs v1.7.0-alpha.5.
+    /// This is used as a fallback while applying spec `update_proposer_boost_root` when fork choice
+    /// cannot compute the proposer from the post-import head state.
     ///
     /// This function should never error unless there is some corruption of the head state. If a
     /// state advance is needed, it will be handled by the proposer cache.

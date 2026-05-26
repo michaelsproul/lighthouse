@@ -11,6 +11,7 @@ use fork_choice::ForkChoiceStore;
 use proto_array::JustifiedBalances;
 use safe_arith::{ArithError, SafeArith};
 use ssz_derive::{Decode, Encode};
+use state_processing::state_advance;
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -28,6 +29,7 @@ pub enum Error {
     FailedToReadState(StoreError),
     MissingState(Hash256),
     BeaconStateError(BeaconStateError),
+    StateAdvanceError(state_advance::Error),
     UnalignedCheckpoint { block_slot: Slot, state_slot: Slot },
     Arith(ArithError),
 }
@@ -419,6 +421,30 @@ where
         }
 
         Ok(Some(balance))
+    }
+
+    fn proposer_index_at_slot(
+        &self,
+        state_root: Hash256,
+        slot: Slot,
+        spec: &ChainSpec,
+    ) -> Result<Option<u64>, Self::Error> {
+        let update_cache = true;
+        let mut state = self
+            .store
+            .get_hot_state(&state_root, update_cache)
+            .map_err(Error::FailedToReadState)?
+            .ok_or(Error::MissingState(state_root))?;
+
+        if state.slot() < slot {
+            state_advance::complete_state_advance(&mut state, Some(state_root), slot, spec)
+                .map_err(Error::StateAdvanceError)?;
+        }
+
+        state
+            .get_beacon_proposer_index(slot, spec)
+            .map(|index| Some(index as u64))
+            .map_err(Error::BeaconStateError)
     }
 }
 
