@@ -733,14 +733,14 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // sync): the state-advance timer won't have cached the head state FCR needs, so running
         // it would force an expensive load+advance under the fork-choice lock.
         if let Some(ref fcr_mutex) = self.canonical_head.fast_confirmation
-            && new_head_proto_block.slot.as_u64() + MAX_ADVANCE_DISTANCE
-                >= self.slot().unwrap_or(current_slot).as_u64()
+            && new_head_proto_block.slot + MAX_ADVANCE_DISTANCE >= current_slot
         {
             let mut fcr = fcr_mutex.lock();
             let _fcr_timer = metrics::start_timer(&fcr_metrics::FCR_TIMES);
             let old_confirmed = fcr.confirmed_root;
 
             let head_root = new_view.head_block_root;
+            let head_block_state_root = new_head_proto_block.state_root;
             let finalized_cp = fork_choice_read_lock.finalized_checkpoint();
             let unrealized_justified_cp = fork_choice_read_lock.unrealized_justified_checkpoint();
             let proto_array = fork_choice_read_lock.proto_array().core_proto_array();
@@ -753,11 +753,16 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             // Feeding that to FCR rotates its tracking variables a slot early, skewing the
             // epoch-boundary observed-justified snapshot and preventing bootstrap. Use the
             // wall-clock slot instead.
-            let fcr_current_slot = self.slot().unwrap_or(current_slot);
+            // FIXME(sproul): remove comment above
+            let fcr_current_slot = current_slot;
 
             // The current head's pulled-up state (spec `get_pulled_up_head_state`). FCR errors
             // must never affect consensus, so on failure we log and skip it this tick.
-            let fcr_head_state = match self.fcr_pulled_up_head_state(head_root, fcr_current_slot) {
+            let fcr_head_state = match self.fcr_pulled_up_head_state(
+                head_root,
+                head_block_state_root,
+                fcr_current_slot,
+            ) {
                 Ok(Some(state)) => Some(state),
                 Ok(None) => {
                     warn!("FCR: no head state cached, skipping tick");
@@ -1032,11 +1037,12 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     fn fcr_pulled_up_head_state(
         &self,
         head_root: Hash256,
+        head_block_state_root: Hash256,
         slot: Slot,
     ) -> Result<Option<BeaconState<T::EthSpec>>, Error> {
-        let Some((state_root, mut state)) = self
-            .store
-            .get_advanced_hot_state_from_cache(head_root, slot)
+        let Some((state_root, mut state)) =
+            self.store
+                .get_advanced_hot_state(head_root, slot, head_block_state_root)?
         else {
             return Ok(None);
         };
