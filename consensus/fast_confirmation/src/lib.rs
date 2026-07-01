@@ -978,14 +978,18 @@ impl FastConfirmationRule {
                 continue;
             };
             let vote_root = vote.current_root();
-            if !vote_root.is_zero() && !equivocating_indices.contains(&(val_idx as u64)) && {
-                // Spec: get_checkpoint_for_block(store, latest_messages[i].root,
-                //        get_latest_message_epoch(latest_messages[i]))
-                let vote_epoch = vote.latest_message_slot().epoch(E::slots_per_epoch());
-                memo.get_or_try_insert_with((vote_root, vote_epoch), || {
-                    get_checkpoint_for_block::<E>(vote_root, vote_epoch, proto_array)
-                })? == target
-            } {
+            if vote.latest_message_slot() != 0
+                && !vote_root.is_zero()
+                && !equivocating_indices.contains(&(val_idx as u64))
+                && {
+                    // Spec: get_checkpoint_for_block(store, latest_messages[i].root,
+                    //        get_latest_message_epoch(latest_messages[i]))
+                    let vote_epoch = vote.latest_message_slot().epoch(E::slots_per_epoch());
+                    memo.get_or_try_insert_with((vote_root, vote_epoch), || {
+                        get_checkpoint_for_block::<E>(vote_root, vote_epoch, proto_array)
+                    })? == target
+                }
+            {
                 score = score.safe_add(self.head_balance_source.balance(val_idx))?;
             }
         }
