@@ -777,12 +777,7 @@ impl<E: EthSpec + TypeName> Handler for FastConfirmationHandler<E> {
 
     fn is_enabled_for_fork(&self, fork_name: ForkName) -> bool {
         // FCR vectors are generated for altair through fulu (no phase0/base, no gloas yet).
-        fork_name != ForkName::Base && cfg!(not(feature = "fake_crypto"))
-    }
-
-    fn disabled_forks(&self) -> Vec<ForkName> {
-        // TODO(gloas): remove once we have Gloas fast confirmation tests
-        vec![ForkName::Gloas]
+        fork_name != ForkName::Base && cfg!(feature = "fake_crypto")
     }
 }
 
