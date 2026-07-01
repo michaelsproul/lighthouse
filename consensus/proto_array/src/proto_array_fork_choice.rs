@@ -1025,6 +1025,7 @@ impl ProtoArrayForkChoice {
     pub fn should_extend_payload<E: EthSpec>(
         &self,
         block_root: &Hash256,
+        current_slot: Slot,
         proposer_boost_root: Hash256,
     ) -> Result<bool, String> {
         let block_index = self
@@ -1043,7 +1044,7 @@ impl ProtoArrayForkChoice {
             payload_status: proto_node.get_parent_payload_status(),
         };
         self.proto_array
-            .should_extend_payload::<E>(&fc_node, proto_node, proposer_boost_root)
+            .should_extend_payload::<E>(&fc_node, proto_node, current_slot, proposer_boost_root)
             .map_err(|e| format!("{e:?}"))
     }
 
