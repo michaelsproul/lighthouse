@@ -1,4 +1,4 @@
-use crate::hdiff::HierarchyConfig;
+use crate::hdiff::{HDiffAlgorithm, HierarchyConfig};
 use crate::{DBColumn, Error, StoreItem};
 use serde::{Deserialize, Serialize};
 use ssz::{Decode, Encode};
@@ -57,6 +57,11 @@ pub struct StoreConfig {
     pub backend: DatabaseBackend,
     /// State diff hierarchy.
     pub hierarchy_config: HierarchyConfig,
+    /// Algorithm to use for computing state diffs.
+    ///
+    /// NOTE: not yet written to disk, so switching algorithm on an existing database will result
+    /// in errors when diffs of the old flavour are loaded.
+    pub hdiff_algorithm: HDiffAlgorithm,
     /// Whether to prune blobs older than the blob data availability boundary.
     pub prune_blobs: bool,
     /// Frequency of blob pruning in epochs. Default: 1 (every epoch).
@@ -117,6 +122,7 @@ impl Default for StoreConfig {
             prune_payloads: true,
             backend: DEFAULT_BACKEND,
             hierarchy_config: HierarchyConfig::default(),
+            hdiff_algorithm: HDiffAlgorithm::default(),
             prune_blobs: true,
             epochs_per_blob_prune: DEFAULT_EPOCHS_PER_BLOB_PRUNE,
             blob_prune_margin_epochs: DEFAULT_BLOB_PUNE_MARGIN_EPOCHS,

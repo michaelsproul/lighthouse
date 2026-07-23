@@ -4,7 +4,7 @@ use rand::Rng;
 use ssz::Decode;
 use store::{
     StoreConfig,
-    hdiff::{HDiff, HDiffBuffer},
+    hdiff::{HDiff, HDiffAlgorithm, HDiffBuffer},
 };
 use types::{BeaconState, Epoch, Eth1Data, EthSpec, MainnetEthSpec as E, Validator};
 
@@ -56,8 +56,8 @@ fn bench_against_states(
 ) {
     let slot_diff = target_state.slot() - source_state.slot();
     let config = StoreConfig::default();
-    let source = HDiffBuffer::from_state(source_state);
-    let target = HDiffBuffer::from_state(target_state);
+    let source = HDiffBuffer::from_state(source_state, HDiffAlgorithm::Xdelta3);
+    let target = HDiffBuffer::from_state(target_state, HDiffAlgorithm::Xdelta3);
     let diff = HDiff::compute(&source, &target, &config).unwrap();
     println!(
         "state slot diff {slot_diff} - diff size {id} {}",

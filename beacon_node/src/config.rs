@@ -434,6 +434,10 @@ pub fn get_config<E: EthSpec>(
         client_config.store.hierarchy_config = hierarchy_config;
     }
 
+    if let Some(hdiff_algorithm) = clap_utils::parse_optional(cli_args, "hdiff-algorithm")? {
+        client_config.store.hdiff_algorithm = hdiff_algorithm;
+    }
+
     if let Some(epochs_per_migration) =
         clap_utils::parse_optional(cli_args, "epochs-per-migration")?
     {

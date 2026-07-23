@@ -169,6 +169,11 @@ Options:
       --graffiti <GRAFFITI>
           Specify your custom graffiti to be included in blocks. Defaults to the
           current version and commit, truncated to fit in 32 bytes.
+      --hdiff-algorithm <ALGORITHM>
+          EXPERIMENTAL. The algorithm used to compute hierarchical state diffs.
+          The eth-state-diff algorithm is experimental and switching algorithm
+          on an existing database is not supported. [default: xdelta3] [possible
+          values: xdelta3, eth-state-diff]
       --hdiff-buffer-cache-size <SIZE>
           Number of cold hierarchical diff (hdiff) buffers to cache in memory.
           Each buffer is around the size of a BeaconState so you should be

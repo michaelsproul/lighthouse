@@ -2,7 +2,7 @@
 use crate::{DBColumn, StoreConfig, StoreItem, metrics};
 use bls::PublicKeyBytes;
 use itertools::Itertools;
-use milhouse::List;
+use milhouse::{List, Vector};
 use serde::{Deserialize, Serialize};
 use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
@@ -10,9 +10,14 @@ use std::cmp::Ordering;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::sync::LazyLock;
+use strum::{Display, EnumString, VariantNames};
 use superstruct::superstruct;
+use typenum::Unsigned;
 use types::state::HistoricalSummary;
-use types::{BeaconState, ChainSpec, Epoch, EthSpec, Hash256, Slot, Validator};
+use types::{
+    BeaconState, ChainSpec, Epoch, EthSpec, ForkName, Hash256, PendingConsolidation,
+    PendingDeposit, PendingPartialWithdrawal, Slot, Validator,
+};
 
 static EMPTY_PUBKEY: LazyLock<PublicKeyBytes> = LazyLock::new(PublicKeyBytes::empty);
 
@@ -25,8 +30,50 @@ pub enum Error {
     BalancesIncompleteChunk,
     Compression(std::io::Error),
     InvalidSszState(ssz::DecodeError),
+    InvalidSszBytes(ssz::DecodeError),
     InvalidBalancesLength,
     LessThanStart(Slot, Slot),
+    MilhouseError(milhouse::Error),
+    Rkyv(String),
+    /// The variant of the diff does not match the variant of the buffer it is applied to, or the
+    /// two buffers used to compute a diff have different variants.
+    IncompatibleDiffVariant,
+    /// The diff being applied was computed from a different base slot than the buffer's slot.
+    WrongDiffBaseSlot {
+        buffer_slot: u64,
+        diff_base_slot: u64,
+    },
+}
+
+impl From<milhouse::Error> for Error {
+    fn from(e: milhouse::Error) -> Self {
+        Self::MilhouseError(e)
+    }
+}
+
+/// Algorithm used to compute hierarchical state diffs.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Display,
+    EnumString,
+    VariantNames,
+)]
+#[strum(serialize_all = "kebab-case")]
+pub enum HDiffAlgorithm {
+    /// The original scheme: xdelta3 for the bulk of the state, plus bespoke diffs for balances,
+    /// inactivity scores, validators and historical roots/summaries.
+    #[default]
+    #[strum(serialize = "xdelta3")]
+    Xdelta3,
+    /// Experimental scheme using the `eth-state-diff` crate.
+    EthStateDiff,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
@@ -94,14 +141,57 @@ pub enum StorageStrategy {
 }
 
 /// Hierarchical diff output and working buffer.
+///
+/// Each variant corresponds to an `HDiff` variant: `V0` buffers are diffed with `HDiffV0`
+/// (xdelta3-based) and `V1` buffers with `HDiffV1` (`eth-state-diff`-based).
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct HDiffBuffer {
+pub enum HDiffBuffer {
+    V0(HDiffBufferV0),
+    V1(HDiffBufferV1),
+}
+
+/// Working buffer for the original (xdelta3) diff scheme.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct HDiffBufferV0 {
     state: Vec<u8>,
     balances: Vec<u64>,
     inactivity_scores: Vec<u64>,
     validators: Vec<Validator>,
     historical_roots: Vec<Hash256>,
     historical_summaries: Vec<HistoricalSummary>,
+}
+
+/// Working buffer for the `eth-state-diff` scheme.
+///
+/// The state is flattened into the representations expected by the `eth_state_diff` crate:
+/// contiguous SSZ bytes or primitive arrays for each specially-diffed field, plus a "scalar
+/// header" containing the SSZ serialization of the rest of the state (with the extracted fields
+/// emptied/zeroed so that they compress away to nothing).
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct HDiffBufferV1 {
+    slot: u64,
+    slots_per_epoch: u64,
+    /// Fork of the state, in the `eth_state_diff` crate's terms. Informational only: it is
+    /// stored in computed deltas but never used to alter the diff logic.
+    fork: eth_state_diff::ForkName,
+    /// SSZ bytes of the state with all the fields below reset to empty/zeroed values.
+    header: Vec<u8>,
+    balances: Vec<u64>,
+    /// SSZ bytes of `previous_epoch_participation` (empty pre-Altair).
+    previous_participation: Vec<u8>,
+    /// Contiguous SSZ bytes of the validator registry (121 bytes per validator).
+    validators: Vec<u8>,
+    block_roots: Vec<[u8; 32]>,
+    state_roots: Vec<[u8; 32]>,
+    randao_mixes: Vec<[u8; 32]>,
+    slashings: Vec<u64>,
+    inactivity_scores: Vec<u64>,
+    /// SSZ bytes of `eth1_data_votes`.
+    eth1_data_votes: Vec<u8>,
+    /// SSZ bytes of the Electra pending operation queues (empty pre-Electra).
+    pending_deposits: Vec<u8>,
+    pending_partial_withdrawals: Vec<u8>,
+    pending_consolidations: Vec<u8>,
 }
 
 /// Hierarchical state diff.
@@ -119,24 +209,28 @@ pub struct HDiffBuffer {
 ///   automatically. xdelta3 algorithm showed diff compute and apply times of ~200 ms on a mainnet
 ///   state from Apr 2023 (570k indexes), and a 92kB diff size.
 #[superstruct(
-    variants(V0),
+    variants(V0, V1),
     variant_attributes(derive(Debug, PartialEq, Encode, Decode))
 )]
 #[derive(Debug, PartialEq, Encode, Decode)]
 #[ssz(enum_behaviour = "union")]
 pub struct HDiff {
+    #[superstruct(only(V0))]
     state_diff: BytesDiff,
+    #[superstruct(only(V0))]
     balances_diff: CompressedU64Diff,
     /// inactivity_scores are small integers that change slowly epoch to epoch. And are 0 for all
     /// participants unless there's non-finality. Computing the diff and compressing the result is
     /// much faster than running them through a binary patch algorithm. In the default case where
     /// all values are 0 it should also result in a tiny output.
+    #[superstruct(only(V0))]
     inactivity_scores_diff: CompressedU64Diff,
     /// The validators array represents the vast majority of data in a BeaconState. Due to its big
     /// size we have seen the performance of xdelta3 degrade. Comparing each entry of the
     /// validators array manually significantly speeds up the computation of the diff (+10x faster)
     /// and result in the same minimal diff. As the `Validator` record is unlikely to change,
     /// maintaining this extra complexity should be okay.
+    #[superstruct(only(V0))]
     validators_diff: ValidatorsDiff,
     /// `historical_roots` is an unbounded forever growing (after Capella it's
     /// historical_summaries) list of unique roots. This data is pure entropy so there's no point
@@ -144,9 +238,17 @@ pub struct HDiff {
     /// list of new entries. The size of `historical_roots` and `historical_summaries` in
     /// non-trivial ~10 MB so throwing it to xdelta3 adds CPU cycles. With a bit of extra complexity
     /// we can save those completely.
+    #[superstruct(only(V0))]
     historical_roots: AppendOnlyDiff<Hash256>,
     /// See historical_roots
+    #[superstruct(only(V0))]
     historical_summaries: AppendOnlyDiff<HistoricalSummary>,
+    /// Slot of the target state, required to replay ring-buffer writes when applying the diff.
+    #[superstruct(only(V1))]
+    target_slot: u64,
+    /// zstd-compressed rkyv serialization of an `eth_state_diff::BeaconStateDelta`.
+    #[superstruct(only(V1))]
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq, Encode, Decode)]
@@ -170,6 +272,32 @@ pub struct AppendOnlyDiff<T: Encode + Decode> {
 }
 
 impl HDiffBuffer {
+    pub fn from_state<E: EthSpec>(beacon_state: BeaconState<E>, algorithm: HDiffAlgorithm) -> Self {
+        match algorithm {
+            HDiffAlgorithm::Xdelta3 => HDiffBuffer::V0(HDiffBufferV0::from_state(beacon_state)),
+            HDiffAlgorithm::EthStateDiff => {
+                HDiffBuffer::V1(HDiffBufferV1::from_state(beacon_state))
+            }
+        }
+    }
+
+    pub fn as_state<E: EthSpec>(&self, spec: &ChainSpec) -> Result<BeaconState<E>, Error> {
+        match self {
+            HDiffBuffer::V0(buffer) => buffer.as_state(spec),
+            HDiffBuffer::V1(buffer) => buffer.as_state(spec),
+        }
+    }
+
+    /// Byte size of this instance
+    pub fn size(&self) -> usize {
+        match self {
+            HDiffBuffer::V0(buffer) => buffer.size(),
+            HDiffBuffer::V1(buffer) => buffer.size(),
+        }
+    }
+}
+
+impl HDiffBufferV0 {
     pub fn from_state<E: EthSpec>(mut beacon_state: BeaconState<E>) -> Self {
         let _t = metrics::start_timer(&metrics::STORE_BEACON_HDIFF_BUFFER_FROM_STATE_TIME);
         // Set state.balances to empty list, and then serialize state as ssz
@@ -197,7 +325,7 @@ impl HDiffBuffer {
         let state = beacon_state.as_ssz_bytes();
         let balances = balances_list.to_vec();
 
-        HDiffBuffer {
+        HDiffBufferV0 {
             state,
             balances,
             inactivity_scores,
@@ -245,10 +373,190 @@ impl HDiffBuffer {
     }
 }
 
+/// Map a Lighthouse fork name to the `eth_state_diff` fork enum.
+///
+/// Forks unknown to `eth_state_diff` map to the latest fork it knows about. This is safe because
+/// the fork recorded in a delta is informational in our integration: it never alters the diff
+/// or apply logic.
+fn fork_name_to_eth_state_diff(fork: ForkName) -> eth_state_diff::ForkName {
+    match fork {
+        ForkName::Base => eth_state_diff::ForkName::Phase0,
+        ForkName::Altair => eth_state_diff::ForkName::Altair,
+        ForkName::Bellatrix => eth_state_diff::ForkName::Bellatrix,
+        ForkName::Capella => eth_state_diff::ForkName::Capella,
+        ForkName::Deneb => eth_state_diff::ForkName::Deneb,
+        ForkName::Electra => eth_state_diff::ForkName::Electra,
+        ForkName::Fulu | ForkName::Gloas => eth_state_diff::ForkName::Fulu,
+    }
+}
+
+/// Extract a ring buffer of roots as flat arrays, leaving a zeroed vector in its place.
+fn take_root_vector<N: Unsigned>(vector: &mut Vector<Hash256, N>) -> Vec<[u8; 32]> {
+    let taken = std::mem::take(vector);
+    taken.iter().map(|root| root.0).collect()
+}
+
+impl HDiffBufferV1 {
+    pub fn from_state<E: EthSpec>(mut beacon_state: BeaconState<E>) -> Self {
+        let _t = metrics::start_timer(&metrics::STORE_BEACON_HDIFF_BUFFER_FROM_STATE_TIME);
+
+        let slot = beacon_state.slot().as_u64();
+        let fork = fork_name_to_eth_state_diff(beacon_state.fork_name_unchecked());
+
+        let balances = std::mem::take(beacon_state.balances_mut()).to_vec();
+        let inactivity_scores = if let Ok(inactivity_scores) = beacon_state.inactivity_scores_mut()
+        {
+            std::mem::take(inactivity_scores).to_vec()
+        } else {
+            // Pre-Altair, mirroring `HDiffBufferV0`.
+            vec![]
+        };
+        let previous_participation =
+            if let Ok(participation) = beacon_state.previous_epoch_participation_mut() {
+                std::mem::take(participation).as_ssz_bytes()
+            } else {
+                vec![]
+            };
+        let validators = std::mem::take(beacon_state.validators_mut()).as_ssz_bytes();
+        let block_roots = take_root_vector(beacon_state.block_roots_mut());
+        let state_roots = take_root_vector(beacon_state.state_roots_mut());
+        let randao_mixes = take_root_vector(beacon_state.randao_mixes_mut());
+        let slashings = std::mem::take(beacon_state.slashings_mut()).to_vec();
+        let eth1_data_votes = std::mem::take(beacon_state.eth1_data_votes_mut()).as_ssz_bytes();
+        let pending_deposits = if let Ok(deposits) = beacon_state.pending_deposits_mut() {
+            std::mem::take(deposits).as_ssz_bytes()
+        } else {
+            vec![]
+        };
+        let pending_partial_withdrawals =
+            if let Ok(withdrawals) = beacon_state.pending_partial_withdrawals_mut() {
+                std::mem::take(withdrawals).as_ssz_bytes()
+            } else {
+                vec![]
+            };
+        let pending_consolidations =
+            if let Ok(consolidations) = beacon_state.pending_consolidations_mut() {
+                std::mem::take(consolidations).as_ssz_bytes()
+            } else {
+                vec![]
+            };
+
+        let header = beacon_state.as_ssz_bytes();
+
+        HDiffBufferV1 {
+            slot,
+            slots_per_epoch: E::slots_per_epoch(),
+            fork,
+            header,
+            balances,
+            previous_participation,
+            validators,
+            block_roots,
+            state_roots,
+            randao_mixes,
+            slashings,
+            inactivity_scores,
+            eth1_data_votes,
+            pending_deposits,
+            pending_partial_withdrawals,
+            pending_consolidations,
+        }
+    }
+
+    pub fn as_state<E: EthSpec>(&self, spec: &ChainSpec) -> Result<BeaconState<E>, Error> {
+        let _t = metrics::start_timer(&metrics::STORE_BEACON_HDIFF_BUFFER_INTO_STATE_TIME);
+        let mut state =
+            BeaconState::from_ssz_bytes(&self.header, spec).map_err(Error::InvalidSszState)?;
+
+        *state.balances_mut() = List::try_from_iter(self.balances.iter().copied())?;
+        if let Ok(inactivity_scores) = state.inactivity_scores_mut() {
+            *inactivity_scores = List::try_from_iter(self.inactivity_scores.iter().copied())?;
+        }
+        if let Ok(participation) = state.previous_epoch_participation_mut() {
+            *participation = List::from_ssz_bytes(&self.previous_participation)
+                .map_err(Error::InvalidSszBytes)?;
+        }
+        *state.validators_mut() =
+            List::from_ssz_bytes(&self.validators).map_err(Error::InvalidSszBytes)?;
+        *state.block_roots_mut() =
+            Vector::try_from_iter(self.block_roots.iter().copied().map(Hash256::from))?;
+        *state.state_roots_mut() =
+            Vector::try_from_iter(self.state_roots.iter().copied().map(Hash256::from))?;
+        *state.randao_mixes_mut() =
+            Vector::try_from_iter(self.randao_mixes.iter().copied().map(Hash256::from))?;
+        *state.slashings_mut() = Vector::try_from_iter(self.slashings.iter().copied())?;
+        *state.eth1_data_votes_mut() =
+            List::from_ssz_bytes(&self.eth1_data_votes).map_err(Error::InvalidSszBytes)?;
+        if let Ok(deposits) = state.pending_deposits_mut() {
+            *deposits =
+                List::from_ssz_bytes(&self.pending_deposits).map_err(Error::InvalidSszBytes)?;
+        }
+        if let Ok(withdrawals) = state.pending_partial_withdrawals_mut() {
+            *withdrawals = List::from_ssz_bytes(&self.pending_partial_withdrawals)
+                .map_err(Error::InvalidSszBytes)?;
+        }
+        if let Ok(consolidations) = state.pending_consolidations_mut() {
+            *consolidations = List::from_ssz_bytes(&self.pending_consolidations)
+                .map_err(Error::InvalidSszBytes)?;
+        }
+
+        Ok(state)
+    }
+
+    /// Byte size of this instance
+    pub fn size(&self) -> usize {
+        self.header.len()
+            + self.balances.len() * std::mem::size_of::<u64>()
+            + self.previous_participation.len()
+            + self.validators.len()
+            + (self.block_roots.len() + self.state_roots.len() + self.randao_mixes.len()) * 32
+            + self.slashings.len() * std::mem::size_of::<u64>()
+            + self.inactivity_scores.len() * std::mem::size_of::<u64>()
+            + self.eth1_data_votes.len()
+            + self.pending_deposits.len()
+            + self.pending_partial_withdrawals.len()
+            + self.pending_consolidations.len()
+    }
+}
+
 impl HDiff {
     pub fn compute(
         source: &HDiffBuffer,
         target: &HDiffBuffer,
+        config: &StoreConfig,
+    ) -> Result<Self, Error> {
+        match (source, target) {
+            (HDiffBuffer::V0(source), HDiffBuffer::V0(target)) => {
+                Ok(HDiff::V0(HDiffV0::compute(source, target, config)?))
+            }
+            (HDiffBuffer::V1(source), HDiffBuffer::V1(target)) => {
+                Ok(HDiff::V1(HDiffV1::compute(source, target, config)?))
+            }
+            _ => Err(Error::IncompatibleDiffVariant),
+        }
+    }
+
+    pub fn apply(&self, source: &mut HDiffBuffer, config: &StoreConfig) -> Result<(), Error> {
+        match (self, source) {
+            (HDiff::V0(diff), HDiffBuffer::V0(source)) => diff.apply(source, config),
+            (HDiff::V1(diff), HDiffBuffer::V1(source)) => diff.apply(source, config),
+            _ => Err(Error::IncompatibleDiffVariant),
+        }
+    }
+
+    /// Byte size of this instance
+    pub fn size(&self) -> usize {
+        match self {
+            HDiff::V0(diff) => diff.sizes().iter().sum(),
+            HDiff::V1(diff) => diff.size(),
+        }
+    }
+}
+
+impl HDiffV0 {
+    pub fn compute(
+        source: &HDiffBufferV0,
+        target: &HDiffBufferV0,
         config: &StoreConfig,
     ) -> Result<Self, Error> {
         let state_diff = BytesDiff::compute(&source.state, &target.state)?;
@@ -265,45 +573,296 @@ impl HDiff {
         let historical_summaries =
             AppendOnlyDiff::compute(&source.historical_summaries, &target.historical_summaries)?;
 
-        Ok(HDiff::V0(HDiffV0 {
+        Ok(HDiffV0 {
             state_diff,
             balances_diff,
             inactivity_scores_diff,
             validators_diff,
             historical_roots,
             historical_summaries,
-        }))
+        })
     }
 
-    pub fn apply(&self, source: &mut HDiffBuffer, config: &StoreConfig) -> Result<(), Error> {
+    pub fn apply(&self, source: &mut HDiffBufferV0, config: &StoreConfig) -> Result<(), Error> {
         let source_state = std::mem::take(&mut source.state);
-        self.state_diff().apply(&source_state, &mut source.state)?;
-        self.balances_diff().apply(&mut source.balances, config)?;
-        self.inactivity_scores_diff()
+        self.state_diff.apply(&source_state, &mut source.state)?;
+        self.balances_diff.apply(&mut source.balances, config)?;
+        self.inactivity_scores_diff
             .apply(&mut source.inactivity_scores, config)?;
-        self.validators_diff()
-            .apply(&mut source.validators, config)?;
-        self.historical_roots().apply(&mut source.historical_roots);
-        self.historical_summaries()
+        self.validators_diff.apply(&mut source.validators, config)?;
+        self.historical_roots.apply(&mut source.historical_roots);
+        self.historical_summaries
             .apply(&mut source.historical_summaries);
+
+        Ok(())
+    }
+
+    pub fn sizes(&self) -> Vec<usize> {
+        vec![
+            self.state_diff.size(),
+            self.balances_diff.size(),
+            self.inactivity_scores_diff.size(),
+            self.validators_diff.size(),
+            self.historical_roots.size(),
+            self.historical_summaries.size(),
+        ]
+    }
+}
+
+/// First slot whose write must be replayed into a root ring buffer of length `capacity`.
+///
+/// The slots written between the base and target states are `[base_slot, target_slot)`. If that
+/// span exceeds the ring capacity, only the last `capacity` writes survive, so earlier writes
+/// need not be recorded. This must be computed identically by `compute` and `apply`.
+fn ring_diff_base_slot(base_slot: u64, target_slot: u64, capacity: u64) -> u64 {
+    std::cmp::max(base_slot, target_slot.saturating_sub(capacity))
+}
+
+/// First slot whose epoch's RANDAO mix must be recorded.
+///
+/// `eth_state_diff` records the mixes for epochs `[base_epoch, target_epoch]` inclusive, so with
+/// a ring of `capacity` epochs only the last `capacity` epochs need recording.
+fn randao_diff_base_slot(
+    base_slot: u64,
+    target_slot: u64,
+    capacity: u64,
+    slots_per_epoch: u64,
+) -> u64 {
+    let base_epoch = base_slot / slots_per_epoch;
+    let target_epoch = target_slot / slots_per_epoch;
+    let effective_base_epoch =
+        std::cmp::max(base_epoch, (target_epoch + 1).saturating_sub(capacity));
+    effective_base_epoch * slots_per_epoch
+}
+
+/// Compute a FIFO queue diff, falling back to a full replacement if the crate's heuristic
+/// (which assumes `target.len() >= base.len()` implies pure append) does not reconstruct the
+/// target exactly. This can happen when items are consumed from the front *and* enough new items
+/// are appended within the diff window.
+fn checked_fifo_diff(
+    base: &[u8],
+    target: &[u8],
+    item_size: usize,
+) -> eth_state_diff::types::FifoQueueDiff {
+    let candidate = eth_state_diff::fifo_queue::diff_fifo_queue(base, target, item_size);
+
+    // Simulate `apply_fifo_queue` to check that the candidate reconstructs the target.
+    let drained = (candidate.consumed_count as usize).saturating_mul(item_size);
+    let kept: &[u8] = base.get(drained..).unwrap_or(&[]);
+    let reconstructs = kept.len() + candidate.appended_items.len() == target.len()
+        && target[..kept.len()] == *kept
+        && target[kept.len()..] == candidate.appended_items[..];
+
+    if reconstructs {
+        candidate
+    } else {
+        eth_state_diff::types::FifoQueueDiff {
+            consumed_count: (base.len() / item_size) as u32,
+            appended_items: target.to_vec(),
+        }
+    }
+}
+
+impl HDiffV1 {
+    pub fn compute(
+        source: &HDiffBufferV1,
+        target: &HDiffBufferV1,
+        config: &StoreConfig,
+    ) -> Result<Self, Error> {
+        use eth_state_diff as esd;
+
+        debug_assert_eq!(
+            <Validator as Decode>::ssz_fixed_len(),
+            esd::types::VALIDATOR_SSZ_SIZE
+        );
+
+        let base_slot = source.slot;
+        let target_slot = target.slot;
+        let slots_per_epoch = target.slots_per_epoch;
+
+        let balances = esd::balances::diff_balances(&source.balances, &target.balances);
+        let previous_participation = esd::participation::diff_participation(
+            &source.previous_participation,
+            &target.previous_participation,
+        );
+        let validators = esd::validators::diff_validators(&source.validators, &target.validators);
+        let inactivity_scores = esd::inactivity_scores::diff_inactivity(
+            &source.inactivity_scores,
+            &target.inactivity_scores,
+        );
+
+        let roots_base_slot =
+            ring_diff_base_slot(base_slot, target_slot, target.block_roots.len() as u64);
+        let block_roots =
+            esd::recent_roots::diff_roots(roots_base_slot, target_slot, &target.block_roots);
+        let state_roots =
+            esd::recent_roots::diff_roots(roots_base_slot, target_slot, &target.state_roots);
+        let randao_base_slot = randao_diff_base_slot(
+            base_slot,
+            target_slot,
+            target.randao_mixes.len() as u64,
+            slots_per_epoch,
+        );
+        let randao_mixes = esd::randao_mixes::diff_randao(
+            randao_base_slot,
+            target_slot,
+            &target.randao_mixes,
+            slots_per_epoch,
+        );
+        // The slashings entry for the base state's current epoch may be modified *after*
+        // `base_slot` (slashings are accumulated into `slashings[current_epoch % N]` throughout
+        // the epoch), but `diff_slashings` only inspects epochs strictly greater than the base
+        // epoch. Move the base back one epoch so the base state's epoch is inspected too.
+        let slashings = esd::slashings::diff_slashings(
+            base_slot.saturating_sub(slots_per_epoch),
+            target_slot,
+            &source.slashings,
+            &target.slashings,
+            slots_per_epoch,
+        );
+
+        // The crate's `diff_eth1_votes` assumes a longer target list means "pure append", which
+        // is wrong if the vote list was reset (and regrew) within the diff window. Only use the
+        // append encoding when the base list really is a prefix of the target list.
+        let eth1_data_votes = if target.eth1_data_votes.starts_with(&source.eth1_data_votes) {
+            esd::types::Eth1DataVotesDiff::Append(
+                target.eth1_data_votes[source.eth1_data_votes.len()..].to_vec(),
+            )
+        } else {
+            esd::types::Eth1DataVotesDiff::ResetAndAppend(target.eth1_data_votes.clone())
+        };
+
+        let pending_deposits = checked_fifo_diff(
+            &source.pending_deposits,
+            &target.pending_deposits,
+            <PendingDeposit as Decode>::ssz_fixed_len(),
+        );
+        let pending_partial_withdrawals = checked_fifo_diff(
+            &source.pending_partial_withdrawals,
+            &target.pending_partial_withdrawals,
+            <PendingPartialWithdrawal as Decode>::ssz_fixed_len(),
+        );
+        let pending_consolidations = checked_fifo_diff(
+            &source.pending_consolidations,
+            &target.pending_consolidations,
+            <PendingConsolidation as Decode>::ssz_fixed_len(),
+        );
+
+        let delta = esd::BeaconStateDelta {
+            fork: target.fork.clone(),
+            base_slot,
+            scalar_header: target.header.clone(),
+            balances,
+            previous_participation,
+            validators,
+            block_roots,
+            state_roots,
+            randao_mixes,
+            slashings,
+            inactivity_scores,
+            eth1_data_votes,
+            pending_deposits,
+            pending_partial_withdrawals,
+            pending_consolidations,
+        };
+
+        let rkyv_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&delta)
+            .map_err(|e| Error::Rkyv(e.to_string()))?;
+        let bytes = config
+            .compress_bytes(&rkyv_bytes)
+            .map_err(Error::Compression)?;
+
+        Ok(HDiffV1 { target_slot, bytes })
+    }
+
+    pub fn apply(&self, source: &mut HDiffBufferV1, config: &StoreConfig) -> Result<(), Error> {
+        use eth_state_diff as esd;
+
+        let raw = config
+            .decompress_bytes(&self.bytes)
+            .map_err(Error::Compression)?;
+        // rkyv requires aligned bytes for zero-copy access.
+        let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(raw.len());
+        aligned.extend_from_slice(&raw);
+        let delta = rkyv::access::<esd::ArchivedBeaconStateDelta, rkyv::rancor::Error>(&aligned)
+            .map_err(|e| Error::Rkyv(e.to_string()))?;
+
+        let base_slot = source.slot;
+        let diff_base_slot = delta.base_slot.to_native();
+        if diff_base_slot != base_slot {
+            return Err(Error::WrongDiffBaseSlot {
+                buffer_slot: base_slot,
+                diff_base_slot,
+            });
+        }
+        let target_slot = self.target_slot;
+        let slots_per_epoch = source.slots_per_epoch;
+
+        source.header = delta.scalar_header.as_slice().to_vec();
+        esd::balances::apply_balances(&mut source.balances, &delta.balances);
+        esd::participation::apply_participation(
+            &mut source.previous_participation,
+            &delta.previous_participation,
+        );
+        esd::validators::apply_validators(&mut source.validators, &delta.validators);
+
+        let roots_base_slot =
+            ring_diff_base_slot(base_slot, target_slot, source.block_roots.len() as u64);
+        esd::recent_roots::apply_roots(
+            roots_base_slot,
+            &mut source.block_roots,
+            &delta.block_roots,
+        );
+        esd::recent_roots::apply_roots(
+            roots_base_slot,
+            &mut source.state_roots,
+            &delta.state_roots,
+        );
+        let randao_base_slot = randao_diff_base_slot(
+            base_slot,
+            target_slot,
+            source.randao_mixes.len() as u64,
+            slots_per_epoch,
+        );
+        esd::randao_mixes::apply_randao(
+            randao_base_slot,
+            &mut source.randao_mixes,
+            &delta.randao_mixes,
+            slots_per_epoch,
+        );
+        esd::slashings::apply_slashings(&mut source.slashings, &delta.slashings);
+        esd::inactivity_scores::apply_inactivity(
+            &mut source.inactivity_scores,
+            &delta.inactivity_scores,
+        );
+        esd::eth1_data_votes::apply_eth1_votes(&mut source.eth1_data_votes, &delta.eth1_data_votes);
+        esd::fifo_queue::apply_fifo_queue(
+            &mut source.pending_deposits,
+            &delta.pending_deposits,
+            <PendingDeposit as Decode>::ssz_fixed_len(),
+        );
+        esd::fifo_queue::apply_fifo_queue(
+            &mut source.pending_partial_withdrawals,
+            &delta.pending_partial_withdrawals,
+            <PendingPartialWithdrawal as Decode>::ssz_fixed_len(),
+        );
+        esd::fifo_queue::apply_fifo_queue(
+            &mut source.pending_consolidations,
+            &delta.pending_consolidations,
+            <PendingConsolidation as Decode>::ssz_fixed_len(),
+        );
+
+        source.slot = target_slot;
+        // NOTE: `source.fork` is intentionally not updated. It is informational and only read
+        // when the buffer is used as the *target* of a diff computation, which always uses a
+        // freshly-created buffer.
 
         Ok(())
     }
 
     /// Byte size of this instance
     pub fn size(&self) -> usize {
-        self.sizes().iter().sum()
-    }
-
-    pub fn sizes(&self) -> Vec<usize> {
-        vec![
-            self.state_diff().size(),
-            self.balances_diff().size(),
-            self.inactivity_scores_diff().size(),
-            self.validators_diff().size(),
-            self.historical_roots().size(),
-            self.historical_summaries().size(),
-        ]
+        std::mem::size_of::<u64>() + self.bytes.len()
     }
 }
 
@@ -965,22 +1524,22 @@ mod tests {
         let pre_historical_summaries = vec![HistoricalSummary::default()];
         let post_historical_summaries = pre_historical_summaries.clone();
 
-        let pre_buffer = HDiffBuffer {
+        let pre_buffer = HDiffBuffer::V0(HDiffBufferV0 {
             state: vec![0, 1, 2, 3, 3, 2, 1, 0],
             balances: pre_balances,
             inactivity_scores: pre_inactivity_scores,
             validators: pre_validators,
             historical_roots: pre_historical_roots,
             historical_summaries: pre_historical_summaries,
-        };
-        let post_buffer = HDiffBuffer {
+        });
+        let post_buffer = HDiffBuffer::V0(HDiffBufferV0 {
             state: vec![0, 1, 3, 2, 2, 3, 1, 1],
             balances: post_balances,
             inactivity_scores: post_inactivity_scores,
             validators: post_validators,
             historical_roots: post_historical_roots,
             historical_summaries: post_historical_summaries,
-        };
+        });
 
         let config = StoreConfig::default();
         let hdiff = HDiff::compute(&pre_buffer, &post_buffer, &config).unwrap();
@@ -1011,6 +1570,71 @@ mod tests {
                 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 238, 4, 0, 0, 0
             ]
         );
+    }
+
+    // Check that computing and applying an eth-state-diff (V1) diff recovers the target state
+    // exactly, and that the SSZ union selector for V1 is 1.
+    #[test]
+    fn hdiff_v1_roundtrip() {
+        use types::{Eth1Data, MainnetEthSpec};
+
+        let spec = MainnetEthSpec::default_spec();
+        let mut rng = SmallRng::seed_from_u64(0xffeeccdd00aa);
+
+        let mut pre_state = BeaconState::<MainnetEthSpec>::new(0, Eth1Data::default(), &spec);
+        for _ in 0..10 {
+            pre_state
+                .validators_mut()
+                .push(rand_validator(&mut rng))
+                .unwrap();
+            pre_state.balances_mut().push(32_000_000_000).unwrap();
+        }
+
+        let mut post_state = pre_state.clone();
+        *post_state.slot_mut() = Slot::new(96);
+        for i in 0..5 {
+            *post_state.balances_mut().get_mut(i).unwrap() += 1_000_000 * (i as u64 + 1);
+        }
+        *post_state.balances_mut().get_mut(7).unwrap() = 0;
+        post_state.validators_mut().get_mut(3).unwrap().exit_epoch = Epoch::new(10);
+        post_state
+            .validators_mut()
+            .get_mut(3)
+            .unwrap()
+            .withdrawable_epoch = Epoch::new(10 + 256);
+        post_state
+            .validators_mut()
+            .push(rand_validator(&mut rng))
+            .unwrap();
+        post_state.balances_mut().push(16_000_000_000).unwrap();
+
+        let algorithm = HDiffAlgorithm::EthStateDiff;
+        let config = StoreConfig::default();
+
+        let pre_buffer = HDiffBuffer::from_state(pre_state, algorithm);
+        let target_buffer = HDiffBuffer::from_state(post_state.clone(), algorithm);
+
+        let diff = HDiff::compute(&pre_buffer, &target_buffer, &config).unwrap();
+
+        // SSZ union selector for V1 should be 1, and the diff should roundtrip.
+        let diff_ssz = diff.as_ssz_bytes();
+        assert_eq!(diff_ssz[0], 1);
+        assert_eq!(HDiff::from_ssz_bytes(&diff_ssz).unwrap(), diff);
+
+        // Applying the diff to the pre-state buffer should recover the target buffer and state.
+        let mut buffer = pre_buffer.clone();
+        diff.apply(&mut buffer, &config).unwrap();
+        assert_eq!(buffer, target_buffer);
+
+        let state_out = buffer.as_state::<MainnetEthSpec>(&spec).unwrap();
+        assert_eq!(state_out.as_ssz_bytes(), post_state.as_ssz_bytes());
+
+        // Applying a V1 diff to a V0 buffer should fail cleanly.
+        let mut wrong_buffer = HDiffBuffer::from_state(post_state, HDiffAlgorithm::Xdelta3);
+        assert!(matches!(
+            diff.apply(&mut wrong_buffer, &config),
+            Err(Error::IncompatibleDiffVariant)
+        ));
     }
 
     // Test that the diffs and snapshots required for storage of split states are retained in the

@@ -13,6 +13,7 @@ redb = ["dep:redb"]
 bls = { workspace = true }
 db-key = "0.0.5"
 directory = { workspace = true }
+eth-state-diff = { workspace = true }
 ethereum_ssz = { workspace = true }
 ethereum_ssz_derive = { workspace = true }
 fixed_bytes = { workspace = true }
@@ -24,6 +25,7 @@ metrics = { workspace = true }
 milhouse = { workspace = true }
 parking_lot = { workspace = true }
 redb = { version = "2.1.3", optional = true }
+rkyv = { workspace = true }
 safe_arith = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }

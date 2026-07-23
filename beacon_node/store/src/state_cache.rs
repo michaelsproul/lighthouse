@@ -1,4 +1,4 @@
-use crate::hdiff::HDiffBuffer;
+use crate::hdiff::{HDiffAlgorithm, HDiffBuffer};
 use crate::{
     Error,
     metrics::{self, HOT_METRIC},
@@ -43,6 +43,7 @@ pub struct StateCache<E: EthSpec> {
     states: LruCache<Hash256, (Hash256, BeaconState<E>)>,
     block_map: BlockMap,
     hdiff_buffers: HotHDiffBufferCache,
+    hdiff_algorithm: HDiffAlgorithm,
     max_epoch: Epoch,
     head_block_root: Hash256,
     headroom: NonZeroUsize,
@@ -83,12 +84,14 @@ impl<E: EthSpec> StateCache<E> {
         state_capacity: NonZeroUsize,
         headroom: NonZeroUsize,
         hdiff_capacity: NonZeroUsize,
+        hdiff_algorithm: HDiffAlgorithm,
     ) -> Self {
         StateCache {
             finalized_state: None,
             states: LruCache::new(state_capacity.get()),
             block_map: BlockMap::default(),
             hdiff_buffers: HotHDiffBufferCache::new(hdiff_capacity.get()),
+            hdiff_algorithm,
             max_epoch: Epoch::new(0),
             head_block_root: Hash256::ZERO,
             headroom,
@@ -170,7 +173,7 @@ impl<E: EthSpec> StateCache<E> {
                 // useful buffers.
                 let slot = state.slot();
                 if pre_finalized_slots_to_retain.contains(&slot) {
-                    let hdiff_buffer = HDiffBuffer::from_state(state);
+                    let hdiff_buffer = HDiffBuffer::from_state(state, self.hdiff_algorithm);
                     self.hdiff_buffers.put(state_root, slot, hdiff_buffer);
                 }
             }
@@ -226,7 +229,7 @@ impl<E: EthSpec> StateCache<E> {
                 // caller's responsibility to not feed us garbage) as we don't want to thread the
                 // hierarchy config through here. So any state received is converted to an
                 // HDiffBuffer and saved.
-                let hdiff_buffer = HDiffBuffer::from_state(state.clone());
+                let hdiff_buffer = HDiffBuffer::from_state(state.clone(), self.hdiff_algorithm);
                 self.hdiff_buffers
                     .put(state_root, state.slot(), hdiff_buffer);
                 return Ok(PutStateOutcome::PreFinalizedHDiffBuffer);
@@ -303,7 +306,7 @@ impl<E: EthSpec> StateCache<E> {
         }
         if let Some(buffer) = self
             .get_by_state_root(state_root)
-            .map(HDiffBuffer::from_state)
+            .map(|state| HDiffBuffer::from_state(state, self.hdiff_algorithm))
         {
             metrics::inc_counter_vec(&metrics::STORE_BEACON_HDIFF_BUFFER_CACHE_HIT, HOT_METRIC);
             return Some(buffer);
