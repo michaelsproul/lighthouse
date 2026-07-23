@@ -759,6 +759,18 @@ pub fn cli_app() -> Command {
                 .display_order(0)
         )
         .arg(
+            Arg::new("hdiff-algorithm")
+                .long("hdiff-algorithm")
+                .value_name("ALGORITHM")
+                .help("EXPERIMENTAL. The algorithm used to compute hierarchical state diffs. \
+                       The eth-state-diff algorithm is experimental and switching algorithm on \
+                       an existing database is not supported.")
+                .value_parser(["xdelta3", "eth-state-diff"])
+                .default_value("xdelta3")
+                .action(ArgAction::Set)
+                .display_order(0)
+        )
+        .arg(
             Arg::new("epochs-per-migration")
                 .long("epochs-per-migration")
                 .value_name("N")

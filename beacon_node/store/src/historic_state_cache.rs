@@ -1,4 +1,4 @@
-use crate::hdiff::{Error, HDiffBuffer};
+use crate::hdiff::{Error, HDiffAlgorithm, HDiffBuffer};
 use crate::metrics;
 use hashlink::lru_cache::LruCache;
 use types::{BeaconState, ChainSpec, EthSpec, Slot};
@@ -14,6 +14,7 @@ use types::{BeaconState, ChainSpec, EthSpec, Slot};
 pub struct HistoricStateCache<E: EthSpec> {
     hdiff_buffers: LruCache<Slot, HDiffBuffer>,
     states: LruCache<Slot, BeaconState<E>>,
+    hdiff_algorithm: HDiffAlgorithm,
 }
 
 #[derive(Debug, Default)]
@@ -24,10 +25,15 @@ pub struct Metrics {
 }
 
 impl<E: EthSpec> HistoricStateCache<E> {
-    pub fn new(hdiff_buffer_cache_size: usize, state_cache_size: usize) -> Self {
+    pub fn new(
+        hdiff_buffer_cache_size: usize,
+        state_cache_size: usize,
+        hdiff_algorithm: HDiffAlgorithm,
+    ) -> Self {
         Self {
             hdiff_buffers: LruCache::new(hdiff_buffer_cache_size),
             states: LruCache::new(state_cache_size),
+            hdiff_algorithm,
         }
     }
 
@@ -39,7 +45,7 @@ impl<E: EthSpec> HistoricStateCache<E> {
             );
             Some(buffer_ref.clone())
         } else if let Some(state) = self.states.get(&slot) {
-            let buffer = HDiffBuffer::from_state(state.clone());
+            let buffer = HDiffBuffer::from_state(state.clone(), self.hdiff_algorithm);
             let _timer = metrics::start_timer_vec(
                 &metrics::BEACON_HDIFF_BUFFER_CLONE_TIME,
                 metrics::COLD_METRIC,
