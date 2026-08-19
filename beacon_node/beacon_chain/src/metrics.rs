@@ -552,7 +552,7 @@ pub static FORK_CHOICE_REORG_COUNT: LazyLock<Result<IntCounter>> = LazyLock::new
 pub static FORK_CHOICE_REORG_DISTANCE: LazyLock<Result<IntGauge>> = LazyLock::new(|| {
     try_create_int_gauge(
         "beacon_fork_choice_reorg_distance",
-        "The distance of each re-org of the fork choice algorithm",
+        "The depth of each re-org of the fork choice algorithm: the number of blocks orphaned",
     )
 });
 pub static FORK_CHOICE_REORG_COUNT_INTEROP: LazyLock<Result<IntCounter>> = LazyLock::new(|| {

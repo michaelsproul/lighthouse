@@ -223,18 +223,18 @@ async fn iterators() {
     );
 }
 
-fn find_reorg_slot(
+fn find_reorg_slot_and_depth(
     chain: &BeaconChain<EphemeralHarnessType<MinimalEthSpec>>,
     new_state: &BeaconState<MinimalEthSpec>,
     new_block_root: Hash256,
-) -> Slot {
+) -> (Slot, u64) {
     let (old_state, old_block_root) = {
         let head = chain.canonical_head.cached_head();
         let old_state = head.snapshot.beacon_state.clone();
         let old_block_root = head.head_block_root();
         (old_state, old_block_root)
     };
-    beacon_chain::canonical_head::find_reorg_slot(
+    beacon_chain::canonical_head::find_reorg_slot_and_depth(
         &old_state,
         old_block_root,
         new_state,
@@ -268,27 +268,31 @@ async fn find_reorgs() {
         .unwrap();
 
     // because genesis is more than `SLOTS_PER_HISTORICAL_ROOT` away, this should return with the
-    // finalized slot.
+    // finalized slot. The approximate depth is the number of blocks within
+    // `SLOTS_PER_HISTORICAL_ROOT` of the old head, i.e. all of them.
     assert_eq!(
-        find_reorg_slot(
+        find_reorg_slot_and_depth(
             &harness.chain,
             &genesis_state,
             harness.chain.genesis_block_root
         ),
-        head_state
-            .finalized_checkpoint()
-            .epoch
-            .start_slot(MinimalEthSpec::slots_per_epoch())
+        (
+            head_state
+                .finalized_checkpoint()
+                .epoch
+                .start_slot(MinimalEthSpec::slots_per_epoch()),
+            num_blocks_produced as u64
+        )
     );
 
     // test head
     assert_eq!(
-        find_reorg_slot(
+        find_reorg_slot_and_depth(
             &harness.chain,
             head_state,
             harness.chain.head_beacon_block().canonical_root()
         ),
-        head_slot
+        (head_slot, 0)
     );
 
     // Re-org back to the slot prior to the head.
@@ -303,8 +307,85 @@ async fn find_reorgs() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        find_reorg_slot(&harness.chain, &prev_state, prev_block_root),
-        prev_slot
+        find_reorg_slot_and_depth(&harness.chain, &prev_state, prev_block_root),
+        (prev_slot, 1)
+    );
+}
+
+/// Test that re-org depth counts orphaned blocks rather than slots.
+#[tokio::test]
+async fn find_reorg_depth_counts_blocks_not_slots() {
+    let harness = get_harness(VALIDATOR_COUNT);
+    let spec = &harness.chain.spec;
+
+    // Build a short chain ending in block A.
+    harness
+        .extend_chain(
+            2,
+            BlockStrategy::OnCanonicalHead,
+            // No need to produce attestations for this test.
+            AttestationStrategy::SomeValidators(vec![]),
+        )
+        .await;
+
+    let head = harness.chain.head_snapshot();
+    let state_a = head.beacon_state.clone();
+    let slot_a = state_a.slot();
+
+    // Block B builds on A at the next slot.
+    let ((block_b, blobs_b), state_b) = harness.make_block(state_a.clone(), slot_a + 1).await;
+    let root_b = block_b.canonical_root();
+
+    // Import B so that the mock execution layer learns of its payload, which is required in order
+    // to build block D upon it below.
+    harness
+        .process_block(slot_a + 1, root_b, (block_b.clone(), blobs_b))
+        .await
+        .unwrap();
+
+    // Block C also builds on A, but one slot after B (block B's slot is skipped on C's chain).
+    let ((block_c, _), state_c) = harness.make_block(state_a.clone(), slot_a + 2).await;
+    let root_c = block_c.canonical_root();
+
+    // Re-orging from B to C orphans a single block (B).
+    assert_eq!(
+        beacon_chain::canonical_head::find_reorg_slot_and_depth(
+            &state_b, root_b, &state_c, root_c, spec,
+        )
+        .unwrap(),
+        (slot_a, 1)
+    );
+
+    // Re-orging back from C to B also orphans a single block (C), even though the common
+    // ancestor A is 2 slots below C.
+    assert_eq!(
+        beacon_chain::canonical_head::find_reorg_slot_and_depth(
+            &state_c, root_c, &state_b, root_b, spec,
+        )
+        .unwrap(),
+        (slot_a, 1)
+    );
+
+    // Block D builds on B, with multiple skipped slots in between.
+    let ((block_d, _), state_d) = harness.make_block(state_b.clone(), slot_a + 4).await;
+    let root_d = block_d.canonical_root();
+
+    // Re-orging from D to C orphans two blocks (B and D), spread over 4 slots.
+    assert_eq!(
+        beacon_chain::canonical_head::find_reorg_slot_and_depth(
+            &state_d, root_d, &state_c, root_c, spec,
+        )
+        .unwrap(),
+        (slot_a, 2)
+    );
+
+    // Re-orging from C to D orphans a single block (C).
+    assert_eq!(
+        beacon_chain::canonical_head::find_reorg_slot_and_depth(
+            &state_c, root_c, &state_d, root_d, spec,
+        )
+        .unwrap(),
+        (slot_a, 1)
     );
 }
 

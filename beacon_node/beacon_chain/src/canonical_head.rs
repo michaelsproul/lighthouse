@@ -1175,7 +1175,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .update_head_block_root(new_cached_head.head_block_root());
 
         // Detect and potentially report any re-orgs.
-        let reorg_distance = detect_reorg(
+        let reorg_depth = detect_reorg(
             &old_snapshot.beacon_state,
             old_snapshot.beacon_block_root,
             &new_snapshot.beacon_state,
@@ -1228,13 +1228,13 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             &self.spec,
         );
 
-        if is_epoch_transition || reorg_distance.is_some() {
+        if is_epoch_transition || reorg_depth.is_some() {
             self.persist_fork_choice()?;
             self.op_pool.prune_attestations(self.epoch()?);
         }
 
         // Register a server-sent-event for a reorg (if necessary).
-        if let Some(depth) = reorg_distance
+        if let Some(depth) = reorg_depth
             && let Some(event_handler) = self
                 .event_handler
                 .as_ref()
@@ -1242,7 +1242,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         {
             event_handler.register(EventKind::ChainReorg(SseChainReorg {
                 slot: head_slot,
-                depth: depth.as_u64(),
+                depth,
                 old_head_block: old_snapshot.beacon_block_root,
                 old_head_state: old_snapshot.beacon_state_root(),
                 new_head_block: new_snapshot.beacon_block_root,
@@ -1572,6 +1572,9 @@ fn spawn_execution_layer_updates<T: BeaconChainTypes>(
 /// Attempt to detect if the new head is not on the same chain as the previous block
 /// (i.e., a re-org).
 ///
+/// Returns the re-org depth: the number of blocks from the old chain which were orphaned by the
+/// re-org. See `find_reorg_slot_and_depth` for details.
+///
 /// Note: this will declare a re-org if we skip `SLOTS_PER_HISTORICAL_ROOT` blocks
 /// between calls to fork choice without swapping between chains. This seems like an
 /// extreme-enough scenario that a warning is fine.
@@ -1581,79 +1584,101 @@ fn detect_reorg<E: EthSpec>(
     new_state: &BeaconState<E>,
     new_block_root: Hash256,
     spec: &ChainSpec,
-) -> Option<Slot> {
+) -> Option<u64> {
     let is_reorg = new_state
         .get_block_root(old_state.slot())
         .map_or(true, |root| *root != old_block_root);
 
     if is_reorg {
-        let reorg_distance =
-            match find_reorg_slot(old_state, old_block_root, new_state, new_block_root, spec) {
-                Ok(slot) => old_state.slot().saturating_sub(slot),
-                Err(e) => {
-                    warn!(error = ?e, "Could not find re-org depth");
-                    return None;
-                }
-            };
+        let reorg_depth = match find_reorg_slot_and_depth(
+            old_state,
+            old_block_root,
+            new_state,
+            new_block_root,
+            spec,
+        ) {
+            Ok((_, depth)) => depth,
+            Err(e) => {
+                warn!(error = ?e, "Could not find re-org depth");
+                return None;
+            }
+        };
 
         metrics::inc_counter(&metrics::FORK_CHOICE_REORG_COUNT);
         metrics::inc_counter(&metrics::FORK_CHOICE_REORG_COUNT_INTEROP);
-        metrics::set_gauge(
-            &metrics::FORK_CHOICE_REORG_DISTANCE,
-            reorg_distance.as_u64() as i64,
-        );
+        metrics::set_gauge(&metrics::FORK_CHOICE_REORG_DISTANCE, reorg_depth as i64);
         info!(
             previous_head = ?old_block_root,
             previous_slot = %old_state.slot(),
             new_head = ?new_block_root,
             new_slot = %new_state.slot(),
-            %reorg_distance,
+            %reorg_depth,
             "Beacon chain re-org"
         );
 
-        Some(reorg_distance)
+        Some(reorg_depth)
     } else {
         None
     }
 }
 
-/// Iterate through the current chain to find the slot intersecting with the given beacon state.
+/// Find the point at which the `block_roots` of `new_state` and `old_state` diverge, and use this
+/// to calculate the re-org depth: the number of blocks from the old chain which were orphaned by
+/// the re-org.
+///
+/// The depth counts blocks rather than slots, so skipped slots on the old chain do not contribute
+/// to it. E.g. if blocks B and C both build upon block A, then re-orging from B to C and
+/// re-orging back from C to B both have a depth of 1, regardless of the slots involved.
+///
 /// The maximum depth this will search is `SLOTS_PER_HISTORICAL_ROOT`, and if that depth is reached
-/// and no intersection is found, the finalized slot will be returned.
-pub fn find_reorg_slot<E: EthSpec>(
+/// and no intersection is found, the finalized slot and an approximate depth will be returned.
+pub fn find_reorg_slot_and_depth<E: EthSpec>(
     old_state: &BeaconState<E>,
     old_block_root: Hash256,
     new_state: &BeaconState<E>,
     new_block_root: Hash256,
     spec: &ChainSpec,
-) -> Result<Slot, Error> {
+) -> Result<(Slot, u64), Error> {
     // The earliest slot for which the two chains may have a common history.
     let lowest_slot = std::cmp::min(new_state.slot(), old_state.slot());
 
-    // Create an iterator across `$state`, assuming that the block at `$state.slot` has the
-    // block root of `$block_root`.
-    //
-    // The iterator will be skipped until the next value returns `lowest_slot`.
-    //
-    // This is a macro instead of a function or closure due to the complex types invloved
-    // in all the iterator wrapping.
-    macro_rules! aligned_roots_iter {
-        ($state: ident, $block_root: ident) => {
-            std::iter::once(Ok(($state.slot(), $block_root)))
-                .chain($state.rev_iter_block_roots(spec))
-                .skip_while(|result| result.as_ref().is_ok_and(|(slot, _)| *slot > lowest_slot))
+    // Iterator across the new chain's block roots, assuming that the block at `new_state.slot()`
+    // has the block root of `new_block_root`. The iterator is skipped until the next value
+    // returns `lowest_slot`.
+    let mut new_roots = std::iter::once(Ok((new_state.slot(), new_block_root)))
+        .chain(new_state.rev_iter_block_roots(spec))
+        .skip_while(|result| result.as_ref().is_ok_and(|(slot, _)| *slot > lowest_slot));
+
+    // Iterator across the old chain's block roots, starting from the old head. Unlike the new
+    // chain's iterator, entries above `lowest_slot` are visited rather than skipped, so that
+    // blocks there are counted towards the re-org depth.
+    let old_roots = std::iter::once(Ok((old_state.slot(), old_block_root)))
+        .chain(old_state.rev_iter_block_roots(spec));
+
+    // The number of distinct block roots seen on the old chain, including (once found) the
+    // common ancestor. Skipped slots repeat the most recent block root and are de-duplicated,
+    // so this counts blocks rather than slots.
+    let mut old_block_count: u64 = 0;
+    let mut last_old_root = None;
+
+    for maybe_old in old_roots {
+        let (old_slot, old_root) = maybe_old?;
+
+        if last_old_root != Some(old_root) {
+            old_block_count = old_block_count.saturating_add(1);
+            last_old_root = Some(old_root);
+        }
+
+        // Entries above `lowest_slot` cannot be the common ancestor, as they do not exist on the
+        // new chain.
+        if old_slot > lowest_slot {
+            continue;
+        }
+
+        let Some(maybe_new) = new_roots.next() else {
+            break;
         };
-    }
-
-    // Create iterators across old/new roots where iterators both start at the same slot.
-    let mut new_roots = aligned_roots_iter!(new_state, new_block_root);
-    let mut old_roots = aligned_roots_iter!(old_state, old_block_root);
-
-    // Whilst *both* of the iterators are still returning values, try and find a common
-    // ancestor between them.
-    while let (Some(old), Some(new)) = (old_roots.next(), new_roots.next()) {
-        let (old_slot, old_root) = old?;
-        let (new_slot, new_root) = new?;
+        let (new_slot, new_root) = maybe_new?;
 
         // Sanity check to detect programming errors.
         if old_slot != new_slot {
@@ -1661,8 +1686,9 @@ pub fn find_reorg_slot<E: EthSpec>(
         }
 
         if old_root == new_root {
-            // A common ancestor has been found.
-            return Ok(old_slot);
+            // A common ancestor has been found. It is included in `old_block_count`, so subtract
+            // it to obtain the number of orphaned blocks.
+            return Ok((old_slot, old_block_count.saturating_sub(1)));
         }
     }
 
@@ -1674,11 +1700,16 @@ pub fn find_reorg_slot<E: EthSpec>(
     // *higher*.
     //
     // We provide this potentially-inaccurate-but-safe information to avoid onerous
-    // database reads during times of deep reorgs.
-    Ok(old_state
-        .finalized_checkpoint()
-        .epoch
-        .start_slot(E::slots_per_epoch()))
+    // database reads during times of deep reorgs. Similarly, the depth returned here is the
+    // number of old chain blocks within `SLOTS_PER_HISTORICAL_ROOT` of the old head, which may
+    // slightly undercount the blocks orphaned by a very deep re-org.
+    Ok((
+        old_state
+            .finalized_checkpoint()
+            .epoch
+            .start_slot(E::slots_per_epoch()),
+        old_block_count,
+    ))
 }
 
 fn observe_head_block_delays<E: EthSpec, S: SlotClock>(
