@@ -677,6 +677,10 @@ impl<E: EthSpec> Tester<E> {
             .fork_choice_write_lock()
             .update_time(slot)
             .unwrap();
+
+        let chain = self.harness.chain.clone();
+        self.block_on_dangerous(chain.recompute_head_at_slot(slot))
+            .unwrap();
     }
 
     pub fn process_block_and_columns(
@@ -1051,7 +1055,6 @@ impl<E: EthSpec> Tester<E> {
                     block_delay,
                     &state,
                     PayloadVerificationStatus::Irrelevant,
-                    block.message().proposer_index(),
                     &self.harness.chain.spec,
                 );
 

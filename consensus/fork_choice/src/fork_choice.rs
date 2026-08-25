@@ -841,7 +841,6 @@ where
         block_delay: Duration,
         state: &BeaconState<E>,
         payload_verification_status: PayloadVerificationStatus,
-        canonical_head_proposer_index: u64,
         spec: &ChainSpec,
     ) -> Result<(), Error<T::Error>> {
         let _timer = metrics::start_timer(&metrics::FORK_CHOICE_ON_BLOCK_TIMES);
@@ -960,13 +959,36 @@ where
 
         let attestation_threshold = spec.get_attestation_due::<E>(block.slot());
 
-        // Record whether this block is eligible for proposer boost. The proposer check itself is
-        // performed after the block has been added to fork choice, matching spec
-        // `update_proposer_boost_root`.
+        // Record whether this block is eligible for proposer boost. Gloas uses the pre-import
+        // head's proposer shuffling decision root rather than a post-import proposer index.
         let is_before_attesting_interval = block_delay < attestation_threshold;
         let is_timely_for_proposer_boost =
             current_slot == block.slot() && is_before_attesting_interval;
         let is_first_block = self.fc_store.proposer_boost_root().is_zero();
+        let block_is_gloas = spec.fork_name_at_slot::<E>(block.slot()).gloas_enabled();
+        let pre_import_head_root = if is_timely_for_proposer_boost && is_first_block {
+            // Run fork choice before processing the block. This gives proposer-boost logic a
+            // pre-import head that reflects slot/epoch-boundary updates.
+            Some(self.get_head(current_slot, spec)?.0)
+        } else {
+            None
+        };
+        let gloas_proposer_boost_decision_roots_match =
+            if let Some(pre_import_head_root) = pre_import_head_root.filter(|_| block_is_gloas) {
+                let block_epoch = block.slot().epoch(E::slots_per_epoch());
+                let pre_import_head_block = self
+                    .proto_array
+                    .get_block(&pre_import_head_root)
+                    .ok_or(Error::MissingProtoArrayBlock(pre_import_head_root))?;
+                let head_shuffling_decision_root = pre_import_head_block
+                    .proposer_shuffling_root_for_child_block(block_epoch, spec);
+                let block_shuffling_decision_root =
+                    parent_block.proposer_shuffling_root_for_child_block(block_epoch, spec);
+
+                head_shuffling_decision_root == block_shuffling_decision_root
+            } else {
+                false
+            };
 
         // Update store with checkpoints if necessary
         self.update_checkpoints(
@@ -1120,15 +1142,30 @@ where
         )?;
 
         if is_timely_for_proposer_boost && is_first_block {
-            let canonical_proposer_index = self.post_import_canonical_proposer_index(
-                current_slot,
-                block_root,
-                state,
-                canonical_head_proposer_index,
-                spec,
-            )?;
-            if block.proposer_index() == canonical_proposer_index {
-                self.fc_store.set_proposer_boost_root(block_root);
+            if block_is_gloas {
+                if gloas_proposer_boost_decision_roots_match {
+                    self.fc_store.set_proposer_boost_root(block_root);
+                }
+            } else if let Some(pre_import_head_root) = pre_import_head_root {
+                let pre_import_head_block = self
+                    .proto_array
+                    .get_block(&pre_import_head_root)
+                    .ok_or(Error::MissingProtoArrayBlock(pre_import_head_root))?;
+                let fallback_proposer_index = self
+                    .fc_store
+                    .proposer_index_at_slot(pre_import_head_block.state_root, current_slot, spec)
+                    .map_err(Error::ForkChoiceStoreError)?
+                    .unwrap_or_else(|| block.proposer_index());
+                let canonical_proposer_index = self.post_import_canonical_proposer_index(
+                    current_slot,
+                    block_root,
+                    state,
+                    fallback_proposer_index,
+                    spec,
+                )?;
+                if block.proposer_index() == canonical_proposer_index {
+                    self.fc_store.set_proposer_boost_root(block_root);
+                }
             }
         }
 
