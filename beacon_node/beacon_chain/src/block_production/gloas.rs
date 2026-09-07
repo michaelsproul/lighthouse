@@ -182,13 +182,63 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             "Producing Gloas block"
         );
 
-        let parent_root = if state.slot() > 0 {
-            *state
-                .get_block_root(state.slot() - 1)
-                .map_err(|_| BlockProductionError::UnableToGetBlockRootFromState)?
-        } else {
-            state.latest_block_header().canonical_root()
-        };
+        // The store can return the parent's post-state before the state advance timer has run.
+        // In that case block_roots[slot - 1] refers to an older block, and the latest header
+        // still has a zero state root. Resolve the parent from the header and its state root,
+        // handling both advanced and unadvanced states. Hashing belongs on a blocking thread.
+        let chain = self.clone();
+        let (state, parent_root, parent_payload_status, parent_envelope) = self
+            .task_executor
+            .spawn_blocking_handle(
+                move || {
+                    let mut state = state;
+                    let state_root = if state.latest_block_header().state_root.is_zero() {
+                        match state_root_opt {
+                            Some(root) => root,
+                            None => state.update_tree_hash_cache()?,
+                        }
+                    } else {
+                        Hash256::ZERO
+                    };
+                    let parent_root = state.get_latest_block_root(state_root);
+                    // With no viable descendants, fork choice can return its justified root's
+                    // Pending node. Resolve its execution branch before asking whether to extend
+                    // it, just as for a normal Full/Empty head.
+                    let (parent_payload_status, parent_envelope) =
+                        if parent_payload_status == PayloadStatus::Pending {
+                            let status = chain
+                                .canonical_head
+                                .fork_choice_read_lock()
+                                .get_canonical_payload_status(&parent_root, &chain.spec)?;
+                            let envelope = if status == PayloadStatus::Full {
+                                chain
+                                    .store
+                                    .get_payload_envelope(&parent_root)
+                                    .map_err(|e| {
+                                        BlockProductionError::BeaconChain(Box::new(
+                                            BeaconChainError::DBError(e),
+                                        ))
+                                    })?
+                                    .map(Arc::new)
+                            } else {
+                                None
+                            };
+                            (status, envelope)
+                        } else {
+                            (parent_payload_status, parent_envelope)
+                        };
+                    Ok::<_, BlockProductionError>((
+                        state,
+                        parent_root,
+                        parent_payload_status,
+                        parent_envelope,
+                    ))
+                },
+                "gloas_production_parent_root",
+            )
+            .ok_or(BlockProductionError::ShuttingDown)?
+            .await
+            .map_err(BlockProductionError::TokioJoin)??;
 
         let should_build_on_full = self
             .canonical_head
@@ -217,11 +267,11 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .get_graffiti(graffiti_settings)
             .await;
         let parent_execution_requests_ref = parent_execution_requests.clone();
-        let (partial_beacon_block, state) = self
+        let (partial_beacon_block, state, bid_validation_state) = self
             .task_executor
             .spawn_blocking_handle(
                 move || {
-                    chain.produce_partial_beacon_block_gloas(
+                    let (partial_beacon_block, state) = chain.produce_partial_beacon_block_gloas(
                         state,
                         state_root_opt,
                         produce_at_slot,
@@ -229,7 +279,24 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                         graffiti,
                         &parent_execution_requests_ref,
                         should_build_on_full,
-                    )
+                    )?;
+                    // Bid eligibility is checked after the parent's deferred requests in the
+                    // state transition. For example, a builder can exit in those requests even
+                    // though it was active when its bid arrived. Keep the production state
+                    // unchanged so the final transition applies these effects exactly once.
+                    let mut bid_validation_state = state.clone();
+                    if should_build_on_full {
+                        apply_parent_execution_payload(
+                            &mut bid_validation_state,
+                            &parent_execution_requests_ref,
+                            &chain.spec,
+                        )?;
+                    }
+                    Ok::<_, BlockProductionError>((
+                        partial_beacon_block,
+                        state,
+                        bid_validation_state,
+                    ))
                 },
                 "produce_partial_beacon_block_gloas",
             )
@@ -291,7 +358,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             ctx,
             &builder_config,
             proposer_preferences.as_deref(),
-            &state,
+            &bid_validation_state,
         );
         let local_fut = self.clone().produce_execution_payload_bid(
             &state,
