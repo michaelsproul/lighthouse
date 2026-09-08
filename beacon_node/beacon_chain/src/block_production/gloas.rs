@@ -182,9 +182,17 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             "Producing Gloas block"
         );
 
+        let parent_root = if state.slot() > 0 {
+            *state
+                .get_block_root(state.slot() - 1)
+                .map_err(|_| BlockProductionError::UnableToGetBlockRootFromState)?
+        } else {
+            state.latest_block_header().canonical_root()
+        };
+
         // Part 1/3 (blocking)
         //
-        // Resolve the parent, advance the state, and pack the block.
+        // Resolve the parent payload status, advance the state, and pack the block.
         let chain = self.clone();
         let graffiti = self
             .graffiti_calculator
@@ -201,18 +209,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .task_executor
             .spawn_blocking_handle(
                 move || {
-                    let mut state = state;
-                    // An unadvanced post-state's block_roots omit the parent itself.
-                    // Resolve its root from the latest header and the loaded state root.
-                    let state_root = if state.latest_block_header().state_root.is_zero() {
-                        match state_root_opt {
-                            Some(root) => root,
-                            None => state.update_tree_hash_cache()?,
-                        }
-                    } else {
-                        Hash256::ZERO
-                    };
-                    let parent_root = state.get_latest_block_root(state_root);
                     // With no viable descendants, fork choice can return its justified root's
                     // Pending node. Resolve its execution branch before asking whether to extend
                     // it, just as for a normal Full/Empty head.
@@ -294,7 +290,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .ok_or(BlockProductionError::ShuttingDown)?
             .await
             .map_err(BlockProductionError::TokioJoin)??;
-        let parent_root = partial_beacon_block.parent_root;
 
         // Part 2/3 (async)
         //
