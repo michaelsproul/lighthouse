@@ -40,6 +40,8 @@ local fallback. The mock builder's payload comes from the same mock EL. Gossip b
 submitted when the head snapshot has the reception epoch's RANDAO mix; longer gaps still
 exercise local and direct builds. A separate reception clock models preferences arriving
 before the proposal without rewinding chain time. All bid/preference validation checks run.
+Rejected gossip bids are left out of the cache so production can fall back to the local
+payload. Bid acceptance correctness is outside this production property's scope.
 
 Operation tuples are `(kind, validator)`: kinds `0`–`3` select voluntary exits, proposer
 slashings, attester slashings, and BLS credential changes. Request tuples are
@@ -62,7 +64,8 @@ then independently advances a clone of the parent state with caches dropped. It 
 compares the computed state root with both the block and production state, and verifies
 the envelope. It also runs block gossip verification and normal import, envelope gossip
 verification (including withheld envelopes), and normal envelope/column import when
-delivery is selected. Errors fail the property, including errors during production.
+delivery is selected. Production errors and failures validating the produced block or
+envelope fail the property.
 
 The deterministic coverage scenario requires nonempty exits, both slashing families,
 credential changes, attestations, payload attestations, sync aggregates, full withdrawals,

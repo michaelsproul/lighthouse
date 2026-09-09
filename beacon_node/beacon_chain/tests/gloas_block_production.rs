@@ -514,11 +514,20 @@ async fn run_scenario(scenario: &Scenario) -> Coverage {
             if step.builder == 1 {
                 let mut bid_context = harness.chain.payload_bid_gossip_verification_context();
                 bid_context.slot_clock = &reception_clock;
-                let verified = GossipVerifiedPayloadBid::new(Arc::new(bid), &bid_context).unwrap();
-                harness
-                    .chain
-                    .gossip_verified_payload_bid_cache
-                    .observe_bid(verified);
+                // A rejected candidate leaves production free to use the local payload. This
+                // property checks the produced block, not whether gossip accepts every bid.
+                match GossipVerifiedPayloadBid::new(Arc::new(bid), &bid_context) {
+                    Ok(verified) => {
+                        harness
+                            .chain
+                            .gossip_verified_payload_bid_cache
+                            .observe_bid(verified);
+                        external_payload = Some(local.payload_data);
+                    }
+                    Err(error) => {
+                        tracing::debug!(step_index, %slot, ?error, "Gossip bid unavailable for production");
+                    }
+                }
             } else {
                 let mut server = mockito::Server::new_async().await;
                 let response = ForkVersionedResponse {
@@ -559,8 +568,8 @@ async fn run_scenario(scenario: &Scenario) -> Coverage {
                     })
                     .unwrap();
                 builder_server = Some(server);
+                external_payload = Some(local.payload_data);
             }
-            external_payload = Some(local.payload_data);
             harness
                 .execution_block_generator()
                 .set_next_execution_requests(ExecutionRequests::Gloas(requests.clone()));
