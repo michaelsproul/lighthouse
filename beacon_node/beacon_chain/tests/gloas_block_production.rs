@@ -572,16 +572,21 @@ async fn run_scenario(scenario: &Scenario) -> Coverage {
         }
         if step.cache_advanced_state {
             // Simulate the state advance timer winning the race with the block request.
-            let mut advanced_state = pre_state.clone();
-            let root = advanced_state.update_tree_hash_cache().unwrap();
-            advanced_state.apply_pending_mutations().unwrap();
-            harness
-                .chain
-                .store
-                .state_cache
-                .lock()
-                .put_state(root, parent_root, &advanced_state)
-                .unwrap();
+            // Persist every intermediate state so finalization pruning can follow the state
+            // summary chain across skipped slots and retain the canonical blocks.
+            let mut advanced_state = parent_state.clone();
+            while advanced_state.slot() < slot {
+                let next_slot = advanced_state.slot() + 1;
+                complete_state_advance(&mut advanced_state, None, next_slot, None, &harness.spec)
+                    .unwrap();
+                let root = advanced_state.update_tree_hash_cache().unwrap();
+                advanced_state.apply_pending_mutations().unwrap();
+                harness
+                    .chain
+                    .store
+                    .put_state(&root, &advanced_state)
+                    .unwrap();
+            }
             coverage.advanced_states += 1;
         } else {
             coverage.unadvanced_states += 1;
