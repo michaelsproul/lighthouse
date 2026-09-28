@@ -178,6 +178,8 @@ impl ForkChoiceTestDefinition {
         .expect("should create fork choice struct");
         let equivocating_indices = BTreeSet::new();
         let mut last_current_slot = Slot::new(0);
+        let mut last_justified_checkpoint = self.justified_checkpoint;
+        let mut last_finalized_checkpoint = self.finalized_checkpoint;
 
         for (op_index, op) in self.operations.into_iter().enumerate() {
             match op.clone() {
@@ -222,12 +224,16 @@ impl ForkChoiceTestDefinition {
                         &fork_choice,
                         &head,
                         current_slot,
+                        justified_checkpoint,
+                        finalized_checkpoint,
                         Hash256::zero(),
                         &spec,
                         payload_status,
                         op_index,
                     );
                     last_current_slot = current_slot;
+                    last_justified_checkpoint = justified_checkpoint;
+                    last_finalized_checkpoint = finalized_checkpoint;
                     assert_eq!(fork_choice.balances, justified_balances);
                     check_bytes_round_trip(&fork_choice);
                 }
@@ -264,11 +270,16 @@ impl ForkChoiceTestDefinition {
                         &fork_choice,
                         &head,
                         Slot::new(0),
+                        justified_checkpoint,
+                        finalized_checkpoint,
                         proposer_boost_root,
                         &spec,
                         payload_status,
                         op_index,
                     );
+                    last_current_slot = Slot::new(0);
+                    last_justified_checkpoint = justified_checkpoint;
+                    last_finalized_checkpoint = finalized_checkpoint;
                     check_bytes_round_trip(&fork_choice);
                 }
                 Operation::InvalidFindHead {
@@ -607,6 +618,8 @@ impl ForkChoiceTestDefinition {
                         .get_canonical_payload_status::<MainnetEthSpec>(
                             &block_root,
                             current_slot.unwrap_or(last_current_slot),
+                            last_justified_checkpoint,
+                            last_finalized_checkpoint,
                             proposer_boost_root.unwrap_or_else(Hash256::zero),
                             &spec,
                         )
@@ -667,10 +680,13 @@ fn get_checkpoint(i: u64) -> Checkpoint {
 
 /// Checks that `get_canonical_payload_status` agrees with the `payload_status`
 /// returned by `find_head` for the head block.
+#[allow(clippy::too_many_arguments)]
 fn assert_canonical_payload_status_matches_find_head(
     fork_choice: &ProtoArrayForkChoice,
     head: &Hash256,
     current_slot: Slot,
+    justified_checkpoint: Checkpoint,
+    finalized_checkpoint: Checkpoint,
     proposer_boost_root: Hash256,
     spec: &ChainSpec,
     expected: PayloadStatus,
@@ -679,6 +695,8 @@ fn assert_canonical_payload_status_matches_find_head(
     match fork_choice.get_canonical_payload_status::<MainnetEthSpec>(
         head,
         current_slot,
+        justified_checkpoint,
+        finalized_checkpoint,
         proposer_boost_root,
         spec,
     ) {

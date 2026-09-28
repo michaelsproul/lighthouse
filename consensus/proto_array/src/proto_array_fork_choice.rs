@@ -1085,16 +1085,21 @@ impl ProtoArrayForkChoice {
 
     /// Returns the canonical payload status of a block, matching the decision
     /// `get_head` would make between `(root, FULL)` and `(root, EMPTY)`.
+    #[allow(clippy::too_many_arguments)]
     pub fn get_canonical_payload_status<E: EthSpec>(
         &self,
         block_root: &Hash256,
         current_slot: Slot,
+        justified_checkpoint: Checkpoint,
+        finalized_checkpoint: Checkpoint,
         proposer_boost_root: Hash256,
         spec: &ChainSpec,
     ) -> Result<PayloadStatus, Error> {
         self.proto_array.get_canonical_payload_status::<E>(
             *block_root,
             current_slot,
+            justified_checkpoint,
+            finalized_checkpoint,
             proposer_boost_root,
             &self.balances,
             spec,

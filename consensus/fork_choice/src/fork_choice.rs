@@ -1704,6 +1704,8 @@ where
                 .get_canonical_payload_status::<E>(
                     block_root,
                     current_slot,
+                    self.justified_checkpoint(),
+                    self.finalized_checkpoint(),
                     proposer_boost_root,
                     spec,
                 )

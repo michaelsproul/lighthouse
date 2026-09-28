@@ -17,6 +17,9 @@ use types::{
     Slot,
 };
 
+#[cfg(test)]
+mod tests;
+
 // Define a "legacy" implementation of `Option<usize>` which uses four bytes for encoding the union
 // selector.
 four_byte_option_impl!(four_byte_option_usize, usize);
@@ -1129,64 +1132,50 @@ impl ProtoArray {
         Ok(())
     }
 
-    /// Spec: `get_filtered_block_tree`.
+    /// Spec: `get_filtered_node_tree` and `filter_node_tree`.
     ///
-    /// Returns the set of node indices on viable branches — those with at least
-    /// one leaf descendant with correct justified/finalized checkpoints.
-    fn get_filtered_block_tree<E: EthSpec>(
+    /// Viability is tracked separately for each payload-status variant. A variant with
+    /// children is viable only if one of those children is viable; a childless variant
+    /// must itself pass the justified/finalized checks.
+    ///
+    /// Children always have higher proto-array indices than their parents, so a reverse
+    /// pass implements the spec's post-order traversal without recursion (required to
+    /// survive long periods of non-finality). Within each block we visit EMPTY and FULL
+    /// before their PENDING parent.
+    fn get_filtered_node_tree<E: EthSpec>(
         &self,
         start_index: usize,
         current_slot: Slot,
         best_justified_checkpoint: Checkpoint,
         best_finalized_checkpoint: Checkpoint,
-    ) -> Result<HashSet<usize>, Error> {
-        let mut viable = HashSet::new();
-        self.filter_block_tree::<E>(
-            start_index,
-            current_slot,
-            best_justified_checkpoint,
-            best_finalized_checkpoint,
-            &mut viable,
-        )?;
-        Ok(viable)
-    }
-
-    /// Spec: `filter_block_tree`.
-    ///
-    /// Proto_array stores nodes in insertion order — children always have higher
-    /// indices than their parents. A single reverse pass therefore processes every
-    /// child before its parent, matching the spec's recursive post-order semantics
-    /// without recursion (required to survive 500k+ blocks of non-finality).
-    ///
-    /// The spec removes execution-invalid blocks (and their entire subtrees) from
-    /// `store.blocks` before running. We replicate that here with a forward pass
-    /// propagating `excluded` from parent to child — V29 children of an invalidated
-    /// V17 ancestor are excluded transitively, since V29 nodes carry no
-    /// `execution_status` of their own.
-    fn filter_block_tree<E: EthSpec>(
-        &self,
-        start_index: usize,
-        current_slot: Slot,
-        best_justified_checkpoint: Checkpoint,
-        best_finalized_checkpoint: Checkpoint,
-        viable: &mut HashSet<usize>,
-    ) -> Result<(), Error> {
-        // Forward pass: a node is "excluded" if it (or any ancestor down to
-        // `start_index`) has an invalid execution status.
-        let mut excluded = vec![false; self.nodes.len()];
-        for i in (start_index + 1)..self.nodes.len() {
-            let node = self.nodes.get(i).ok_or(Error::InvalidNodeIndex(i))?;
-            let parent_excluded = match node.parent() {
-                Some(p) => *excluded.get(p).ok_or(Error::InvalidNodeIndex(p))?,
-                None => false,
+    ) -> Result<HashSet<(usize, PayloadStatus)>, Error> {
+        // Only visit the requested subtree, normally rooted at the justified checkpoint.
+        // Execution-invalid blocks and their descendants are absent from the spec's store.
+        // FULL variants and their descendants are unreachable until the payload is received.
+        let mut reachable = vec![false; self.nodes.len()];
+        for (i, node) in self.nodes.iter().enumerate().skip(start_index) {
+            let parent_reachable = if i == start_index {
+                true
+            } else if let Some(parent_index) = node.parent() {
+                let parent = self
+                    .nodes
+                    .get(parent_index)
+                    .ok_or(Error::InvalidNodeIndex(parent_index))?;
+                *reachable
+                    .get(parent_index)
+                    .ok_or(Error::InvalidNodeIndex(parent_index))?
+                    && (node.get_parent_payload_status() == PayloadStatus::Empty
+                        || parent.payload_received().is_ok_and(|received| received))
+            } else {
+                false
             };
-            let self_invalid = node.execution_status().is_ok_and(|s| s.is_invalid());
-            excluded[i] = parent_excluded || self_invalid;
+            *reachable.get_mut(i).ok_or(Error::InvalidNodeIndex(i))? =
+                parent_reachable && !node.execution_status().is_ok_and(|s| s.is_invalid());
         }
 
+        let mut viable = HashSet::new();
         for node_index in (start_index..self.nodes.len()).rev() {
-            // Spec: invalid subtree removed from `store.blocks` — skip entirely.
-            if *excluded
+            if !*reachable
                 .get(node_index)
                 .ok_or(Error::InvalidNodeIndex(node_index))?
             {
@@ -1196,39 +1185,55 @@ impl ProtoArray {
                 .nodes
                 .get(node_index)
                 .ok_or(Error::InvalidNodeIndex(node_index))?;
-
-            // Spec: children = [root for root in blocks if blocks[root].parent_root == block_root]
-            let valid_children: Vec<usize> = self
+            let children = self
                 .children
                 .get(node_index)
-                .ok_or(Error::InvalidNodeIndex(node_index))?
-                .iter()
-                .copied()
-                .filter_map(|i| match excluded.get(i) {
-                    Some(false) => Some(Ok(i)),
-                    Some(true) => None,
-                    None => Some(Err(Error::InvalidNodeIndex(i))),
-                })
-                .collect::<Result<_, _>>()?;
+                .ok_or(Error::InvalidNodeIndex(node_index))?;
+            let mut leaf_is_viable = None;
 
-            if !valid_children.is_empty() {
-                // Spec: if any(children): if any(filter_block_tree_result): blocks[block_root] = block
-                if valid_children.iter().any(|c| viable.contains(c)) {
-                    viable.insert(node_index);
+            for status in [PayloadStatus::Empty, PayloadStatus::Full] {
+                if status == PayloadStatus::Full
+                    && !node.payload_received().is_ok_and(|received| received)
+                {
+                    continue;
                 }
-            } else {
-                // Spec: leaf — check correct_justified and correct_finalized
-                if self.node_is_viable_for_head::<E>(
-                    node,
-                    current_slot,
-                    best_justified_checkpoint,
-                    best_finalized_checkpoint,
-                ) {
-                    viable.insert(node_index);
+
+                let mut has_children = false;
+                let mut has_viable_child = false;
+                for &child_index in children {
+                    let child = self
+                        .nodes
+                        .get(child_index)
+                        .ok_or(Error::InvalidNodeIndex(child_index))?;
+                    if *reachable
+                        .get(child_index)
+                        .ok_or(Error::InvalidNodeIndex(child_index))?
+                        && child.get_parent_payload_status() == status
+                    {
+                        has_children = true;
+                        has_viable_child |= viable.contains(&(child_index, PayloadStatus::Pending));
+                    }
+                }
+
+                let status_is_viable = if has_children {
+                    has_viable_child
+                } else {
+                    *leaf_is_viable.get_or_insert_with(|| {
+                        self.node_is_viable_for_head::<E>(
+                            node,
+                            current_slot,
+                            best_justified_checkpoint,
+                            best_finalized_checkpoint,
+                        )
+                    })
+                };
+                if status_is_viable {
+                    viable.insert((node_index, status));
+                    viable.insert((node_index, PayloadStatus::Pending));
                 }
             }
         }
-        Ok(())
+        Ok(viable)
     }
 
     /// Spec: `get_head`.
@@ -1249,28 +1254,31 @@ impl ProtoArray {
             payload_status: PayloadStatus::Pending,
         };
 
-        // Spec: `get_filtered_block_tree`.
-        let viable_nodes = self.get_filtered_block_tree::<E>(
+        // Spec: `get_filtered_node_tree`.
+        let viable_nodes = self.get_filtered_node_tree::<E>(
             start_index,
             current_slot,
             best_justified_checkpoint,
             best_finalized_checkpoint,
         )?;
 
+        // Gloas must never return the PENDING seed, even when the filtered tree is empty.
+        if viable_nodes.is_empty() {
+            return Ok(head.with_status(PayloadStatus::Empty));
+        }
+
         // Compute once rather than per-child per-level.
         let apply_proposer_boost =
             self.should_apply_proposer_boost::<E>(proposer_boost_root, justified_balances, spec)?;
 
         loop {
-            let children: Vec<_> = if head.payload_status == PayloadStatus::Pending {
-                // Spec: `get_node_children` does not consult `get_filtered_block_tree` for PENDING.
-                self.get_node_children(&head)?
-            } else {
-                self.get_node_children(&head)?
-                    .into_iter()
-                    .filter(|(fc_node, _)| viable_nodes.contains(&fc_node.proto_node_index))
-                    .collect()
-            };
+            let children: Vec<_> = self
+                .get_node_children(&head)?
+                .into_iter()
+                .filter(|(child, _)| {
+                    viable_nodes.contains(&(child.proto_node_index, child.payload_status))
+                })
+                .collect();
 
             if children.is_empty() {
                 return Ok(head);
@@ -1306,12 +1314,12 @@ impl ProtoArray {
         }
     }
 
-    /// Returns every leaf node in the filtered block tree, along with its fork-choice weight.
+    /// Returns every leaf node in the filtered node tree, along with its fork-choice weight.
     ///
     /// This is similar to `find_head_walk`, except it walks every viable branch instead of taking
     /// the maximum child at each step. Only used in fork choice compliance tests.
     #[allow(clippy::too_many_arguments)]
-    pub fn filtered_block_tree_leaves_and_weights<E: EthSpec>(
+    pub fn filtered_node_tree_leaves_and_weights<E: EthSpec>(
         &self,
         justified_root: &Hash256,
         current_slot: Slot,
@@ -1327,7 +1335,7 @@ impl ProtoArray {
             .copied()
             .ok_or(Error::NodeUnknown(*justified_root))?;
 
-        let viable_nodes = self.get_filtered_block_tree::<E>(
+        let viable_nodes = self.get_filtered_node_tree::<E>(
             start_index,
             current_slot,
             justified_checkpoint,
@@ -1350,14 +1358,13 @@ impl ProtoArray {
                 .get(fc_node.proto_node_index)
                 .ok_or(Error::InvalidNodeIndex(fc_node.proto_node_index))?;
 
-            let children: Vec<_> = if fc_node.payload_status == PayloadStatus::Pending {
-                self.get_node_children(&fc_node)?
-            } else {
-                self.get_node_children(&fc_node)?
-                    .into_iter()
-                    .filter(|(child, _)| viable_nodes.contains(&child.proto_node_index))
-                    .collect()
-            };
+            let children: Vec<_> = self
+                .get_node_children(&fc_node)?
+                .into_iter()
+                .filter(|(child, _)| {
+                    viable_nodes.contains(&(child.proto_node_index, child.payload_status))
+                })
+                .collect();
 
             if children.is_empty() {
                 let leaf_node = if proto_node.payload_received().is_err() {
@@ -1385,10 +1392,13 @@ impl ProtoArray {
 
     /// Returns the canonical payload status of a block, matching the decision
     /// `get_head` would make between `(root, FULL)` and `(root, EMPTY)`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn get_canonical_payload_status<E: EthSpec>(
         &self,
         root: Hash256,
         current_slot: Slot,
+        justified_checkpoint: Checkpoint,
+        finalized_checkpoint: Checkpoint,
         proposer_boost_root: Hash256,
         justified_balances: &JustifiedBalances,
         spec: &ChainSpec,
@@ -1404,6 +1414,19 @@ impl ProtoArray {
             .map_err(|_| Error::InvalidNodeVariant { block_root: root })?
         {
             return Ok(PayloadStatus::Empty);
+        }
+
+        let viable_nodes = self.get_filtered_node_tree::<E>(
+            proto_node_index,
+            current_slot,
+            justified_checkpoint,
+            finalized_checkpoint,
+        )?;
+        if !viable_nodes.contains(&(proto_node_index, PayloadStatus::Full)) {
+            return Ok(PayloadStatus::Empty);
+        }
+        if !viable_nodes.contains(&(proto_node_index, PayloadStatus::Empty)) {
+            return Ok(PayloadStatus::Full);
         }
 
         let full_fc = IndexedForkChoiceNode {
@@ -1821,12 +1844,8 @@ impl ProtoArray {
         Ok(())
     }
 
-    /// This is the equivalent to the `filter_block_tree` function in the eth2 spec:
-    ///
-    /// https://github.com/ethereum/eth2.0-specs/blob/v0.10.0/specs/phase0/fork-choice.md#filter_block_tree
-    ///
-    /// Any node that has a different finalized or justified epoch should not be viable for the
-    /// head.
+    /// The FFG checks for a leaf in the spec's `filter_node_tree`. These are shared
+    /// by all payload-status variants of a block.
     fn node_is_viable_for_head<E: EthSpec>(
         &self,
         node: &ProtoNode,
