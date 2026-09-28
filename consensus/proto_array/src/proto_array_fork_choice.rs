@@ -1499,6 +1499,9 @@ fn compute_deltas(
 }
 
 #[cfg(test)]
+mod test_optimistic_reset;
+
+#[cfg(test)]
 mod test_compute_deltas {
     use super::*;
     use fixed_bytes::FixedBytesExtended;

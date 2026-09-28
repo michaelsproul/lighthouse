@@ -13,7 +13,10 @@ use execution_layer::{
     ExecutionLayer, ForkchoiceState, PayloadAttributes,
     json_structures::{JsonForkchoiceStateV1, JsonPayloadAttributes, JsonPayloadAttributesV1},
 };
-use fork_choice::{Error as ForkChoiceError, InvalidationOperation, PayloadVerificationStatus};
+use fork_choice::{
+    Error as ForkChoiceError, ForkChoice, ForkChoiceStore, InvalidationOperation,
+    PayloadVerificationStatus, ResetPayloadStatuses,
+};
 use proto_array::{Error as ProtoArrayError, ExecutionStatus, ExecutionVerdict};
 use slot_clock::SlotClock;
 use std::collections::{BTreeSet, HashMap};
@@ -1379,6 +1382,162 @@ async fn recover_from_invalid_head_after_persist_and_reboot() {
             .is_optimistic(),
         "the invalid block should have become optimistic"
     );
+}
+
+#[tokio::test]
+async fn optimistic_reset_recovers_persisted_pending_votes_and_slashings() {
+    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled() || f.gloas_enabled()) {
+        return;
+    }
+    type TestForkChoice = ForkChoice<
+        beacon_chain::BeaconForkChoiceStore<E, store::MemoryStore, store::MemoryStore>,
+        E,
+    >;
+
+    let mut rig = InvalidPayloadRig::new();
+    let common_root = rig.import_block(Payload::Valid).await;
+    let common_state = rig.harness.chain.head_snapshot().beacon_state.clone();
+    let invalid_parent = rig.import_block(Payload::Syncing).await;
+    let invalid_leaf = rig.import_block(Payload::Syncing).await;
+
+    // Build a competing branch from the valid common ancestor, skipping the
+    // blocks that will be invalidated. Import without automatically adding votes.
+    let fork_slot = Slot::new(4);
+    let (fork_contents, _) = rig.harness.make_block(common_state, fork_slot).await;
+    let fork_root = fork_contents.0.canonical_root();
+    rig.harness
+        .process_block(fork_slot, fork_root, fork_contents)
+        .await
+        .unwrap();
+    rig.validate_manually(fork_root);
+
+    let current_slot = Slot::new(6);
+    rig.harness.set_current_slot(current_slot);
+    let slashing = rig.harness.make_attester_slashing(vec![0, 1]);
+    let invalid_hash = rig.block_hash(invalid_parent);
+    let equivocators = BTreeSet::from([0, 1]);
+    let expected_weights;
+    {
+        let mut fork_choice = rig.harness.chain.canonical_head.fork_choice_write_lock();
+        let balances = fork_choice.fc_store().justified_balances().clone();
+        let balance = *balances.effective_balances.first().unwrap();
+        assert!(balance > 0);
+        assert!(
+            balances
+                .effective_balances
+                .iter()
+                .take(5)
+                .all(|b| *b == balance)
+        );
+        for (validator, block_root) in [
+            invalid_leaf,
+            invalid_leaf,
+            invalid_leaf,
+            invalid_parent,
+            fork_root,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            fork_choice
+                .proto_array_mut()
+                .process_attestation(validator, block_root, Slot::new(4), false)
+                .unwrap();
+        }
+        assert_eq!(
+            fork_choice
+                .get_head(current_slot, &rig.harness.spec)
+                .unwrap()
+                .root(),
+            invalid_leaf
+        );
+        assert_eq!(
+            fork_choice.get_block_weight(&invalid_parent),
+            Some(4 * balance)
+        );
+
+        // Persist after recording the vote move and slashings, before get_head
+        // has settled either. The equivocators still have non-zero balances.
+        fork_choice
+            .proto_array_mut()
+            .process_attestation(2, fork_root, Slot::new(5), false)
+            .unwrap();
+        fork_choice.on_attester_slashing(slashing.to_ref());
+        fork_choice
+            .on_invalid_execution_payload(&InvalidationOperation::InvalidateOne {
+                head_hash: invalid_hash,
+            })
+            .unwrap();
+        assert!(fork_choice.queued_attestations().is_empty());
+        assert_eq!(fork_choice.fc_store().equivocating_indices(), &equivocators);
+        assert_eq!(
+            fork_choice.get_block_weight(&invalid_parent),
+            Some(4 * balance)
+        );
+        assert!(
+            fork_choice
+                .get_block(&invalid_parent)
+                .unwrap()
+                .execution_status
+                .is_invalid()
+        );
+
+        expected_weights = [
+            (fork_choice.finalized_checkpoint().root, 3 * balance),
+            (common_root, 3 * balance),
+            (invalid_parent, balance),
+            (invalid_leaf, 0),
+            (fork_root, 2 * balance),
+        ];
+
+        // Check the restoration boundary before get_head can remove a slashed
+        // vote that reset should never have replayed in the first place.
+        let restored = TestForkChoice::proto_array_from_persisted(
+            fork_choice.to_persisted().proto_array,
+            balances,
+            ResetPayloadStatuses::OnlyWithInvalidPayload,
+            fork_choice.fc_store().equivocating_indices(),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.core_proto_array().nodes.len(),
+            expected_weights.len()
+        );
+        for (block_root, weight) in expected_weights {
+            assert_eq!(restored.get_weight(&block_root), Some(weight));
+        }
+    }
+
+    rig.harness.chain.persist_fork_choice().unwrap();
+    let resumed = BeaconChainHarness::builder(E::default())
+        .spec(rig.harness.spec.clone())
+        .deterministic_keypairs(VALIDATOR_COUNT)
+        .resumed_ephemeral_store(rig.harness.chain.store.clone())
+        .mock_execution_layer()
+        .testing_slot_clock(rig.harness.chain.slot_clock.clone())
+        .build();
+    drop(rig);
+
+    assert_eq!(resumed.head_block_root(), fork_root);
+    let mut fork_choice = resumed.chain.canonical_head.fork_choice_write_lock();
+    assert_eq!(fork_choice.fc_store().equivocating_indices(), &equivocators);
+    for block_root in [common_root, invalid_parent, invalid_leaf, fork_root] {
+        assert!(is_optimistic(
+            fork_choice.get_block(&block_root).unwrap().execution_status
+        ));
+    }
+    for _ in 0..2 {
+        for (block_root, weight) in expected_weights {
+            assert_eq!(fork_choice.get_block_weight(&block_root), Some(weight));
+        }
+        assert_eq!(
+            fork_choice
+                .get_head(current_slot, &resumed.spec)
+                .unwrap()
+                .root(),
+            fork_root
+        );
+    }
 }
 
 #[tokio::test]
