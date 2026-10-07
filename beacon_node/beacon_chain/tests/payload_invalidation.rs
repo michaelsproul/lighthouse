@@ -430,6 +430,7 @@ impl InvalidPayloadRig {
                 EnvelopeError::ExecutionPayloadError(inner) => {
                     BlockError::ExecutionPayloadError(inner)
                 }
+                EnvelopeError::BeaconChainError(inner) => BlockError::BeaconChainError(inner),
                 other => BlockError::EnvelopeError(Box::new(other)),
             },
             other => other,
@@ -553,11 +554,7 @@ async fn immediate_forkchoice_update_payload_invalid_terminal_block() {
 /// Ensure the client tries to exit when the justified checkpoint is invalidated.
 #[tokio::test]
 async fn justified_checkpoint_becomes_invalid() {
-    // Pre-Gloas only. In Gloas the justified block's payload being invalid does not make the
-    // checkpoint invalid, but the node shuts down anyway, so the error arrives wrapped as
-    // `EnvelopeError(BeaconChainError(JustifiedPayloadInvalid))`. Re-enable once an invalid
-    // payload stops being treated as an invalid block.
-    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled() || f.gloas_enabled()) {
+    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled()) {
         return;
     }
     let mut rig = InvalidPayloadRig::new().enable_attestations();
@@ -572,16 +569,26 @@ async fn justified_checkpoint_becomes_invalid() {
         .unwrap()
         .unwrap()
         .parent_root();
-    let parent_hash_of_justified = rig.block_hash(parent_root_of_justified);
+    // A Gloas checkpoint has executed its parent's payload, not its own. Condemn that
+    // payload too, so the checkpoint is invalid even on its EMPTY node.
+    let latest_valid_root = if fork_name_from_env().is_some_and(|f| f.gloas_enabled()) {
+        rig.harness
+            .get_block(parent_root_of_justified.into())
+            .unwrap()
+            .parent_root()
+    } else {
+        parent_root_of_justified
+    };
+    let latest_valid_hash = rig.block_hash(latest_valid_root);
 
     // No service should have triggered a shutdown, yet.
     assert!(rig.harness.shutdown_reasons().is_empty());
 
     // Import a block that will invalidate the justified checkpoint.
     let is_valid = Payload::Invalid {
-        latest_valid_hash: Some(parent_hash_of_justified),
+        latest_valid_hash: Some(latest_valid_hash),
     };
-    rig.import_block_parametric(is_valid, is_valid, None, |error| match error {
+    rig.import_block_parametric(is_valid, Payload::Syncing, None, |error| match error {
         BlockError::BeaconChainError(e) => {
             matches!(e.as_ref(), BeaconChainError::JustifiedPayloadInvalid { .. })
         }
@@ -598,14 +605,10 @@ async fn justified_checkpoint_becomes_invalid() {
     );
 }
 
-/// Ensure that a `latest_valid_hash` for a pre-finality block only reverts a single block.
+/// A pre-finality `latest_valid_hash` rejects the new payload without invalidating ancestors.
 #[tokio::test]
 async fn pre_finalized_latest_valid_hash() {
-    // Pre-Gloas only. Under Gloas the invalidation reaches the justified block, and
-    // `BeaconChain::process_invalid_execution_payload` reads its raw block status, so the node
-    // declares the justified checkpoint invalid and shuts down. Re-enable once an invalid payload
-    // stops being treated as an invalid block.
-    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled() || f.gloas_enabled()) {
+    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled()) {
         return;
     }
     let num_blocks = E::slots_per_epoch() * 4;
@@ -624,14 +627,43 @@ async fn pre_finalized_latest_valid_hash() {
     // No service should have triggered a shutdown, yet.
     assert!(rig.harness.shutdown_reasons().is_empty());
 
-    // Import a pre-finalized block.
-    rig.import_block(Payload::Invalid {
-        latest_valid_hash: Some(pre_finalized_block_hash),
-    })
-    .await;
+    // Reject only newPayload. In Gloas, rejecting every forkchoiceUpdated as well would
+    // separately condemn the parent payload selected by the new block's EMPTY node.
+    let rejected_payload_root = rig
+        .import_block_parametric(
+            Payload::Invalid {
+                latest_valid_hash: Some(pre_finalized_block_hash),
+            },
+            Payload::Syncing,
+            None,
+            |error| {
+                matches!(
+                    error,
+                    BlockError::ExecutionPayloadError(
+                        ExecutionPayloadError::RejectedByExecutionEngine { .. }
+                    )
+                )
+            },
+        )
+        .await;
 
-    // The latest imported block should be the head.
-    assert_eq!(rig.harness.head_block_root(), *blocks.last().unwrap());
+    let previous_head_root = *blocks.last().unwrap();
+    assert_eq!(
+        rig.head_payload_hash(),
+        Some(rig.block_hash(previous_head_root))
+    );
+    if fork_name_from_env().is_some_and(|f| f.gloas_enabled()) {
+        assert_eq!(rig.harness.head_block_root(), rejected_payload_root);
+        assert_eq!(
+            rig.cached_head().head_payload_status(),
+            proto_array::PayloadStatus::Empty
+        );
+        assert!(is_not_yet_revealed(
+            rig.execution_status(rejected_payload_root)
+        ));
+    } else {
+        assert_eq!(rig.harness.head_block_root(), previous_head_root);
+    }
 
     // The beacon chain should *not* have triggered a shutdown.
     assert_eq!(rig.harness.shutdown_reasons(), vec![]);
@@ -708,9 +740,7 @@ async fn latest_valid_hash_will_not_validate() {
 /// Check behaviour when the `latest_valid_hash` is a junk value.
 #[tokio::test]
 async fn latest_valid_hash_is_junk() {
-    // Pre-Gloas only, for the same reason as `pre_finalized_latest_valid_hash`: the junk hash
-    // invalidates through the justified block and the node shuts down.
-    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled() || f.gloas_enabled()) {
+    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled()) {
         return;
     }
     let num_blocks = E::slots_per_epoch() * 5;
@@ -727,13 +757,42 @@ async fn latest_valid_hash_is_junk() {
     assert!(rig.harness.shutdown_reasons().is_empty());
 
     let junk_hash = ExecutionBlockHash::repeat_byte(42);
-    rig.import_block(Payload::Invalid {
-        latest_valid_hash: Some(junk_hash),
-    })
-    .await;
+    // As above, only the new payload is rejected; forkchoiceUpdated does not judge ancestors.
+    let rejected_payload_root = rig
+        .import_block_parametric(
+            Payload::Invalid {
+                latest_valid_hash: Some(junk_hash),
+            },
+            Payload::Syncing,
+            None,
+            |error| {
+                matches!(
+                    error,
+                    BlockError::ExecutionPayloadError(
+                        ExecutionPayloadError::RejectedByExecutionEngine { .. }
+                    )
+                )
+            },
+        )
+        .await;
 
-    // The latest imported block should be the head.
-    assert_eq!(rig.harness.head_block_root(), *blocks.last().unwrap());
+    let previous_head_root = *blocks.last().unwrap();
+    assert_eq!(
+        rig.head_payload_hash(),
+        Some(rig.block_hash(previous_head_root))
+    );
+    if fork_name_from_env().is_some_and(|f| f.gloas_enabled()) {
+        assert_eq!(rig.harness.head_block_root(), rejected_payload_root);
+        assert_eq!(
+            rig.cached_head().head_payload_status(),
+            proto_array::PayloadStatus::Empty
+        );
+        assert!(is_not_yet_revealed(
+            rig.execution_status(rejected_payload_root)
+        ));
+    } else {
+        assert_eq!(rig.harness.head_block_root(), previous_head_root);
+    }
 
     // The beacon chain should *not* have triggered a shutdown.
     assert_eq!(rig.harness.shutdown_reasons(), vec![]);
@@ -1136,9 +1195,7 @@ async fn payload_preparation() {
 
 #[tokio::test]
 async fn invalid_parent() {
-    // Pre-Gloas only. In Gloas gossip does not check the parent payload, and
-    // `gloas_invalid_payload_rejects_only_full_children` covers import and fork choice.
-    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled() || f.gloas_enabled()) {
+    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled()) {
         return;
     }
     let mut rig = InvalidPayloadRig::new();
@@ -1164,12 +1221,26 @@ async fn invalid_parent() {
     rig.invalidate_manually(rig.block_hash(parent_root)).await;
     assert!(rig.execution_status(parent_root).is_invalid());
 
-    // Ensure the block built atop an invalid payload is invalid for gossip.
-    assert!(matches!(
-        rig.harness.chain.clone().verify_block_for_gossip(block.clone()).await,
-        Err(BlockError::ParentExecutionPayloadInvalid { parent_root: invalid_root })
-        if invalid_root == parent_root
-    ));
+    let gossip_result = rig
+        .harness
+        .chain
+        .clone()
+        .verify_block_for_gossip(block.clone())
+        .await;
+    if fork_name_from_env().is_some_and(|f| f.gloas_enabled()) {
+        // Gloas gossip validation does not check the execution status of the parent payload.
+        gossip_result.expect("Gloas gossip accepts a block building on an invalid payload");
+        assert_eq!(
+            block.payload_bid_parent_block_hash().unwrap(),
+            rig.block_hash(parent_root)
+        );
+    } else {
+        assert!(matches!(
+            gossip_result,
+            Err(BlockError::ParentExecutionPayloadInvalid { parent_root: invalid_root })
+            if invalid_root == parent_root
+        ));
+    }
 
     // Ensure the block built atop an invalid payload is invalid for import.
     let lookup_block = LookupBlock::new(block.clone());
@@ -1369,7 +1440,18 @@ impl InvalidHeadSetup {
             .chain
             .state_at_slot(parent_slot, StateSkipConfig::WithStateRoots)
             .unwrap();
-        let (fork_block_tuple, _) = rig.harness.make_block(parent_state, fork_block_slot).await;
+        // Under Gloas the head must lose its executed parent payload to become wholly
+        // invalid. Its sibling can recover by building on the parent's EMPTY node.
+        let is_gloas = fork_name_from_env().is_some_and(|f| f.gloas_enabled());
+        let parent_payload_status = if is_gloas {
+            proto_array::PayloadStatus::Empty
+        } else {
+            proto_array::PayloadStatus::Full
+        };
+        let (fork_block_tuple, _, _) = rig
+            .harness
+            .make_block_with_envelope_on(parent_state, fork_block_slot, parent_payload_status)
+            .await;
         let fork_block = fork_block_tuple.0;
 
         let invalid_head = rig.cached_head();
@@ -1385,9 +1467,16 @@ impl InvalidHeadSetup {
         rig.harness
             .set_current_slot(new_wall_clock_epoch.start_slot(slots_per_epoch));
 
-        // Invalidate the head block.
-        rig.invalidate_manually(invalid_head.head_hash().unwrap())
-            .await;
+        let invalid_payload_hash = if is_gloas {
+            rig.block_hash(invalid_head.snapshot.beacon_block.parent_root())
+        } else {
+            rig.block_hash(invalid_head.head_block_root())
+        };
+        rig.invalidate_manually(invalid_payload_hash).await;
+        assert!(
+            rig.execution_status(invalid_head.head_block_root())
+                .is_invalid()
+        );
 
         // Ensure the justified root is the head. This is the spec-correct choice of head when
         // all leaves are ineligible.
@@ -1408,9 +1497,7 @@ impl InvalidHeadSetup {
 
 #[tokio::test]
 async fn recover_from_invalid_head_by_importing_blocks() {
-    // Pre-Gloas only: in Gloas an invalid payload leaves its block head on `EMPTY`, so
-    // invalidating the head's payload does not strand the chain.
-    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled() || f.gloas_enabled()) {
+    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled()) {
         return;
     }
     let InvalidHeadSetup {
@@ -1453,8 +1540,7 @@ async fn recover_from_invalid_head_by_importing_blocks() {
 
 #[tokio::test]
 async fn recover_from_invalid_head_after_persist_and_reboot() {
-    // Pre-Gloas only, for the same reason as `recover_from_invalid_head_by_importing_blocks`.
-    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled() || f.gloas_enabled()) {
+    if fork_name_from_env().is_some_and(|f| !f.bellatrix_enabled()) {
         return;
     }
     let InvalidHeadSetup {
@@ -1571,6 +1657,40 @@ async fn weights_after_resetting_optimistic_status() {
     for _ in 0..E::slots_per_epoch() * 4 {
         rig.import_block(Payload::Valid).await;
     }
+}
+
+/// Invalidating the justified block's own payload leaves its checkpoint viable on EMPTY.
+#[tokio::test]
+async fn gloas_invalid_justified_payload_keeps_checkpoint_viable() {
+    if !fork_name_from_env().is_some_and(|f| f.gloas_enabled()) {
+        return;
+    }
+    let mut rig = InvalidPayloadRig::new().enable_attestations();
+    rig.import_block(Payload::Valid).await;
+    rig.move_to_first_justification(Payload::Syncing).await;
+
+    let justified_checkpoint = rig.harness.justified_checkpoint();
+    assert!(rig.harness.shutdown_reasons().is_empty());
+    rig.invalidate_manually(rig.block_hash(justified_checkpoint.root))
+        .await;
+
+    assert!(rig.execution_status(justified_checkpoint.root).is_invalid());
+    assert_eq!(rig.harness.justified_checkpoint(), justified_checkpoint);
+    assert_eq!(rig.harness.head_block_root(), justified_checkpoint.root);
+    assert_eq!(
+        rig.cached_head().head_payload_status(),
+        proto_array::PayloadStatus::Empty
+    );
+    assert!(rig.harness.shutdown_reasons().is_empty());
+    assert_eq!(
+        rig.harness
+            .chain
+            .canonical_head
+            .fork_choice_read_lock()
+            .inherited_execution_status(&justified_checkpoint.root)
+            .unwrap(),
+        Some(ExecutionVerdict::Optimistic),
+    );
 }
 
 /// A VALID forkchoiceUpdated for a head on `(X, EMPTY)` vouches for the head hash, which is the
