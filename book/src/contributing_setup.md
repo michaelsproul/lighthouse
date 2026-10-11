@@ -23,6 +23,8 @@ you can run them locally and avoid CI failures:
 
 - `$ make cargo-fmt`: (fast) runs a Rust code formatting check.
 - `$ make lint`: (fast) runs a Rust code linter.
+- `$ make lint-async-hygiene`: checks for blocking calls from async code across all
+  workspace targets, including tests and benchmarks.
 - `$ make test`: (medium) runs unit tests across the whole project using nextest.
 - `$ make test-ef`: (medium) runs the Ethereum Foundation test vectors.
 - `$ make test-full`: (slow) runs the full test suite (including all previous
@@ -30,6 +32,29 @@ you can run them locally and avoid CI failures:
  that is required to pass CI.
 
 _The lighthouse test suite is quite extensive, running the whole suite may take 30+ minutes._
+
+### Async hygiene lint
+
+`make lint-async-hygiene` runs
+[async-hygiene-lint](https://github.com/michaelsproul/async-hygiene-lint).
+It requires Python 3.11 or newer, Git, and rustup in addition to the normal build
+dependencies. The target installs pinned Dylint tools, checks out a pinned lint
+revision, and installs its required nightly compiler and components. The first
+run builds the lint and recompiles Lighthouse's dependencies with MIR enabled;
+later runs reuse the build cache under `target/async-hygiene`.
+
+The workspace's `dylint.toml` raises the analysis limits for Lighthouse's call
+graph. These settings apply to both local runs and CI. They do not change the
+linter's hard-coded recursion and aggregate-nesting limits.
+
+Use `TEST_FEATURES` to select additional features, for example
+`make lint-async-hygiene TEST_FEATURES=portable,spec-minimal`. As with other Cargo
+checks, code behind inactive features or target configurations is not analyzed.
+
+Local runs and CI reject blocking-call findings with
+`DYLINT_RUSTFLAGS=-Ddisallowed_from_async`. Incomplete-analysis diagnostics remain
+warnings because some dynamic calls and dependency bodies cannot be resolved by
+the lint.
 
 ## Testing
 

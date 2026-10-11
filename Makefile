@@ -15,6 +15,11 @@ BUILD_PATH_RISCV64 = "target/$(RISCV64_TAG)/release"
 
 PINNED_NIGHTLY ?= nightly
 
+# Keep the lint and its compiler-facing tools in sync when updating.
+ASYNC_HYGIENE_LINT_REV = 1e09417d9f69f7ca079120322cdc542165b8bf7c
+ASYNC_HYGIENE_LINT_DIR = $(CURDIR)/target/async-hygiene-lint/$(ASYNC_HYGIENE_LINT_REV)
+DYLINT_VERSION = 6.1.0
+
 # List of features to use when cross-compiling. Can be overridden via the environment.
 CROSS_FEATURES ?= gnosis,slasher-lmdb,slasher-mdbx,slasher-redb,beacon-node-leveldb,beacon-node-redb
 
@@ -315,6 +320,25 @@ lint-full:
 # Lint the code when compiled using the minimal preset.
 lint-spec-minimal:
 	TEST_FEATURES="spec-minimal,$(TEST_FEATURES)" $(MAKE) lint-full
+
+# Check async entry points across all workspace targets, including optimized-only tests.
+# Requires Python 3.11+ and rustup. The upstream runner supplies the pinned nightly
+# and MIR flags needed to follow blocking calls through dependency crates.
+.PHONY: lint-async-hygiene install-async-hygiene-lint
+lint-async-hygiene: install-async-hygiene-lint
+	CARGO_TARGET_DIR="$(CURDIR)/target/async-hygiene" \
+	RUSTFLAGS="-C debug-assertions=no $(RUSTFLAGS)" \
+	DYLINT_RUSTFLAGS="$(DYLINT_RUSTFLAGS) -Ddisallowed_from_async" \
+	python3 "$(ASYNC_HYGIENE_LINT_DIR)/scripts/lint.py" \
+		--locked --workspace --all-targets --features "$(TEST_FEATURES)"
+
+install-async-hygiene-lint:
+	cargo +stable install --locked cargo-dylint dylint-link --version $(DYLINT_VERSION)
+	@if [ ! -d "$(ASYNC_HYGIENE_LINT_DIR)/.git" ]; then \
+		git clone --no-checkout https://github.com/michaelsproul/async-hygiene-lint "$(ASYNC_HYGIENE_LINT_DIR)"; \
+	fi
+	git -C "$(ASYNC_HYGIENE_LINT_DIR)" checkout --detach $(ASYNC_HYGIENE_LINT_REV)
+	cd "$(ASYNC_HYGIENE_LINT_DIR)" && rustup show
 
 # Runs the makefile in the `ef_tests` repo.
 #

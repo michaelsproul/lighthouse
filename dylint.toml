@@ -1,0 +1,4 @@
+[async_hygiene]
+# Lighthouse's call graph exceeds the defaults of 10,000 instances and 100 iterations.
+max-instances = 100_000
+max-iterations = 1_000
