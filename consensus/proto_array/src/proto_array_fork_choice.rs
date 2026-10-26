@@ -789,8 +789,8 @@ impl ProtoArrayForkChoice {
             &self.proto_array.indices,
             &node_slots,
             &mut self.votes,
-            &old_balances.effective_balances,
-            &new_balances.effective_balances,
+            old_balances.effective_balances(),
+            new_balances.effective_balances(),
             equivocating_indices,
         )
         .map_err(|e| format!("find_head compute_deltas failed: {:?}", e))?;
@@ -799,9 +799,10 @@ impl ProtoArrayForkChoice {
             .apply_score_changes::<E>(deltas)
             .map_err(|e| format!("find_head apply_score_changes failed: {:?}", e))?;
 
-        if old_balances != new_balances {
-            *old_balances = new_balances.clone();
-        }
+        // Always adopt the new snapshot, which only increments a reference count. Comparing the
+        // two first would cost O(validators), and an equal snapshot in a separate allocation would
+        // then be kept and compared again on every later call.
+        *old_balances = new_balances.clone();
 
         self.proto_array
             .find_head::<E>(
@@ -977,8 +978,8 @@ impl ProtoArrayForkChoice {
             &self.proto_array.indices,
             &node_slots,
             &mut self.votes,
-            &self.balances.effective_balances,
-            &self.balances.effective_balances,
+            self.balances.effective_balances(),
+            self.balances.effective_balances(),
             equivocating_indices,
         )
         .map_err(|e| format!("optimistic reset settle compute_deltas failed: {:?}", e))?;
@@ -1026,7 +1027,7 @@ impl ProtoArrayForkChoice {
             &node_slots,
             &mut self.votes,
             &[],
-            &self.balances.effective_balances,
+            self.balances.effective_balances(),
             equivocating_indices,
         )
         .map_err(|e| format!("optimistic reset replay compute_deltas failed: {:?}", e))?;
@@ -2486,6 +2487,8 @@ mod test_find_head {
     use super::*;
     use types::MainnetEthSpec;
 
+    /// `find_head` adopts the snapshot it is given, after applying the vote deltas: proto-array's
+    /// snapshot then shares its allocation with the caller's.
     #[test]
     fn justified_balances_updates() {
         let spec = MainnetEthSpec::default_spec();
@@ -2511,59 +2514,57 @@ mod test_find_head {
         .unwrap();
         let mut balances = JustifiedBalances::from_effective_balances(vec![32, 32]).unwrap();
         let equivocating_indices = BTreeSet::new();
+        let find_head = |fork_choice: &mut ProtoArrayForkChoice, balances: &JustifiedBalances| {
+            let head = fork_choice
+                .find_head::<MainnetEthSpec>(
+                    checkpoint,
+                    checkpoint,
+                    balances,
+                    Hash256::zero(),
+                    &equivocating_indices,
+                    Slot::new(1),
+                    &spec,
+                )
+                .unwrap();
+            assert_eq!(
+                head,
+                ForkChoiceNode::new(checkpoint.root, PayloadStatus::Empty)
+            );
+        };
 
-        // Each call adds a vote with the same balances, so skipping the copy must still apply votes.
+        // Each call adds a vote with the same balances, which must still be applied.
         for validator_index in 0..2 {
             fork_choice
                 .process_attestation(validator_index, checkpoint.root, Slot::new(1), false)
                 .unwrap();
-            let allocation = fork_choice.balances.effective_balances.as_ptr();
-            let head = fork_choice
-                .find_head::<MainnetEthSpec>(
-                    checkpoint,
-                    checkpoint,
-                    &balances,
-                    Hash256::zero(),
-                    &equivocating_indices,
-                    Slot::new(1),
-                    &spec,
-                )
-                .unwrap();
-            assert_eq!(
-                head,
-                ForkChoiceNode::new(checkpoint.root, PayloadStatus::Empty)
-            );
+            find_head(&mut fork_choice, &balances);
             assert_eq!(
                 fork_choice.get_weight(&checkpoint.root),
                 Some(32 * (validator_index as u64 + 1))
             );
-            assert_eq!(fork_choice.balances, balances);
-            if validator_index == 1 {
-                assert_eq!(fork_choice.balances.effective_balances.as_ptr(), allocation);
-            }
+            assert!(JustifiedBalances::ptr_eq(&fork_choice.balances, &balances));
         }
 
-        // Comparing only effective balances would leave stale metadata.
-        for (total_effective_balance, num_active_validators) in [(65, 2), (65, 3)] {
-            balances.total_effective_balance = total_effective_balance;
-            balances.num_active_validators = num_active_validators;
-            let head = fork_choice
-                .find_head::<MainnetEthSpec>(
-                    checkpoint,
-                    checkpoint,
-                    &balances,
-                    Hash256::zero(),
-                    &equivocating_indices,
-                    Slot::new(1),
-                    &spec,
-                )
-                .unwrap();
-            assert_eq!(
-                head,
-                ForkChoiceNode::new(checkpoint.root, PayloadStatus::Empty)
-            );
+        // An equal snapshot in a separate allocation is adopted too, so that later calls with it
+        // find the two sharing an allocation.
+        let equal_balances = JustifiedBalances::from_effective_balances(vec![32, 32]).unwrap();
+        assert_eq!(equal_balances, balances);
+        assert!(!JustifiedBalances::ptr_eq(&equal_balances, &balances));
+        find_head(&mut fork_choice, &equal_balances);
+        assert_eq!(fork_choice.get_weight(&checkpoint.root), Some(64));
+        assert!(JustifiedBalances::ptr_eq(
+            &fork_choice.balances,
+            &equal_balances
+        ));
+
+        // Changes to the metadata alone are adopted.
+        for (raw_total_unslashed_balance, num_unslashed_validators) in [(65, 2), (65, 3)] {
+            balances
+                .set_metadata_for_testing(raw_total_unslashed_balance, num_unslashed_validators);
+            find_head(&mut fork_choice, &balances);
             assert_eq!(fork_choice.get_weight(&checkpoint.root), Some(64));
             assert_eq!(fork_choice.balances, balances);
+            assert!(JustifiedBalances::ptr_eq(&fork_choice.balances, &balances));
         }
     }
 }

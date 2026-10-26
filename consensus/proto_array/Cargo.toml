@@ -24,9 +24,16 @@ types = { workspace = true }
 yaml_serde = { workspace = true }
 
 [dev-dependencies]
+bls = { workspace = true }
 criterion = { workspace = true }
 fixed_bytes = { workspace = true }
+proptest = { workspace = true }
+state_processing = { workspace = true }
 
 [[bench]]
 name = "find_head"
+harness = false
+
+[[bench]]
+name = "justified_balances"
 harness = false

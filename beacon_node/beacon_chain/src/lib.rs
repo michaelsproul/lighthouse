@@ -87,8 +87,8 @@ pub use self::errors::{BeaconChainError, BlockProductionError};
 pub use self::historical_blocks::HistoricalBlockError;
 pub use attestation_verification::Error as AttestationError;
 pub use beacon_fork_choice_store::{
-    BeaconForkChoiceStore, Error as ForkChoiceStoreError, PersistedForkChoiceStore,
-    PersistedForkChoiceStoreV28,
+    BalancesCache, BalancesCacheItem, BeaconForkChoiceStore, Error as ForkChoiceStoreError,
+    MAX_BALANCE_CACHE_SIZE, PersistedForkChoiceStore, PersistedForkChoiceStoreV28,
 };
 pub use block_verification::{
     BlockError, BlockErrorWithRoot, ExecutionPayloadError, ExecutionPendingBlock,

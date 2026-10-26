@@ -52,14 +52,15 @@ use eth2::types::{
     EventKind, SseChainReorg, SseFastConfirmation, SseFinalizedCheckpoint, SseHeadV2,
 };
 use fast_confirmation::{
-    Error as FastConfirmationError, FastConfirmationRule, metrics as fcr_metrics,
+    Error as FastConfirmationError, FastConfirmationRule, checkpoint_balances_from_state,
+    metrics as fcr_metrics,
 };
 use fork_choice::{
     ExecutionVerdict, ForkChoiceStore, ForkChoiceView, ForkchoiceUpdateParameters, PayloadStatus,
     ProtoBlock,
 };
 use itertools::process_results;
-use proto_array::PayloadBlockHash;
+use proto_array::{JustifiedBalances, PayloadBlockHash};
 
 use logging::crit;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
@@ -76,6 +77,7 @@ use std::time::{Duration, Instant};
 use store::{
     Error as StoreError, KeyValueStore, KeyValueStoreOp, StoreConfig, iter::StateRootsIterator,
 };
+use strum::IntoStaticStr;
 use task_executor::{JoinHandle, ShutdownReason};
 use tracing::{debug, error, info, instrument, warn};
 use types::*;
@@ -272,6 +274,27 @@ struct FcrOutcome {
     confirmed_slot: Slot,
     confirmed_block_hash: ExecutionBlockHash,
     new_update_slot: bool,
+    checkpoint_balances_lookup: Option<CheckpointBalancesLookup>,
+}
+
+/// What served the balances of an observed justified checkpoint to the fast confirmation rule, in
+/// the order they are tried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum CheckpointBalancesSource {
+    /// Fork choice's justified balances: the checkpoint is fork choice's justified checkpoint.
+    ForkChoiceJustified,
+    /// The entry of fork choice's balances cache for exactly this checkpoint.
+    BalancesCache,
+    /// The checkpoint state, loaded from the database.
+    StateLoad,
+}
+
+/// A lookup of the balances of an observed justified checkpoint for the fast confirmation rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckpointBalancesLookup {
+    pub checkpoint: Checkpoint,
+    pub source: CheckpointBalancesSource,
 }
 
 /// Provides a series of cached values from the last time `BeaconChain::recompute_head` was run.
@@ -478,6 +501,10 @@ pub struct CanonicalHead<T: BeaconChainTypes> {
 pub struct BeaconFastConfirmationRule {
     pub fcr: FastConfirmationRule,
     pub roots: FastConfirmationRoots,
+    /// The checkpoint balances that the latest FCR run looked up, or `None` if it needed none,
+    /// failed or was skipped. Before the first run, the lookup made to construct `fcr`. For tests
+    /// and debugging.
+    pub last_checkpoint_balances_lookup: Option<CheckpointBalancesLookup>,
 }
 
 /// The roots this node has sent its EL as the FCU safe block hash.
@@ -510,8 +537,8 @@ impl<T: BeaconChainTypes> CanonicalHead<T> {
                         && fork_choice
                             .is_finalized_checkpoint_or_descendant(roots.deepest_announced_root)
                 });
-            let fcr = <BeaconChain<T>>::new_fast_confirmation_rule(
-                fork_choice_view.finalized_checkpoint,
+            let (fcr, checkpoint_balances_lookup) = <BeaconChain<T>>::new_fast_confirmation_rule(
+                &fork_choice,
                 &snapshot,
                 persisted_roots.map(|roots| roots.announced_root),
                 store,
@@ -522,7 +549,11 @@ impl<T: BeaconChainTypes> CanonicalHead<T> {
                 announced_root: fcr.confirmed_root,
                 deepest_announced_root: fcr.confirmed_root,
             });
-            Some(Mutex::new(BeaconFastConfirmationRule { fcr, roots }))
+            Some(Mutex::new(BeaconFastConfirmationRule {
+                fcr,
+                roots,
+                last_checkpoint_balances_lookup: Some(checkpoint_balances_lookup),
+            }))
         } else {
             None
         };
@@ -932,7 +963,12 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // it would force an expensive load+advance under the fork-choice lock.
         if let Some(ref fcr_mutex) = self.canonical_head.fast_confirmation {
             let mut fcr_guard = fcr_mutex.lock();
-            let BeaconFastConfirmationRule { fcr, roots } = &mut *fcr_guard;
+            let BeaconFastConfirmationRule {
+                fcr,
+                roots,
+                last_checkpoint_balances_lookup,
+            } = &mut *fcr_guard;
+            *last_checkpoint_balances_lookup = None;
             // The safe block hash is FCR's confirmed root, or the finalized block when it has
             // none to give. Never the justified one.
             let finalized = (
@@ -957,7 +993,9 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                         confirmed_slot,
                         confirmed_block_hash,
                         new_update_slot,
+                        checkpoint_balances_lookup,
                     }) => {
+                        *last_checkpoint_balances_lookup = checkpoint_balances_lookup;
                         // Sample the settled-delay histogram only on the first recompute that
                         // advanced FCR's per-slot update, so intra-slot block-import recomputes
                         // don't bias it.
@@ -1364,13 +1402,19 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             ))
         })?;
 
-        // Load the checkpoint state if it will be required.
-        let checkpoint_state = fcr
-            .checkpoint_state_needed::<T::EthSpec>(current_slot)
+        // Look up the balances of the checkpoint that the rule rotates in, if it will need them.
+        let (checkpoint_balances, checkpoint_balances_lookup) = fcr
+            .checkpoint_balances_needed::<T::EthSpec>(current_slot)
             .map(|checkpoint| {
-                Self::load_fcr_checkpoint_state(store, builder_onboarding_cache, checkpoint)
+                Self::fcr_checkpoint_balances(
+                    fork_choice,
+                    store,
+                    builder_onboarding_cache,
+                    checkpoint,
+                )
             })
-            .transpose()?;
+            .transpose()?
+            .unzip();
 
         let old_update_slot = fcr.last_update_slot();
         fcr.on_fast_confirmation::<T::EthSpec>(
@@ -1382,7 +1426,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             votes,
             equivocating_indices,
             &head_state,
-            checkpoint_state.as_ref(),
+            checkpoint_balances,
             &store.spec,
         )?;
 
@@ -1408,56 +1452,92 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             confirmed_slot: confirmed_node.slot,
             confirmed_block_hash,
             new_update_slot: fcr.last_update_slot() != old_update_slot,
+            checkpoint_balances_lookup,
         })
     }
 
-    /// Build a `FastConfirmationRule` seeded from `finalized_checkpoint`, sourcing its balance
-    /// snapshots from the finalized checkpoint's state (spec: `store.checkpoint_states[checkpoint]`)
-    /// and its head-derived caches from the `snapshot` state.
+    /// Build a `FastConfirmationRule` seeded from fork choice's finalized checkpoint, with the
+    /// balances of the finalized checkpoint's state (spec: `store.checkpoint_states[checkpoint]`),
+    /// looked up as by `fcr_checkpoint_balances`, and its head-derived caches from the `snapshot`
+    /// state. Also returns that lookup.
     ///
-    /// When the head snapshot *is* the checkpoint state — same block root, state at the first slot
-    /// of the checkpoint's epoch, as at genesis or checkpoint-sync startup — it is reused directly;
-    /// otherwise the checkpoint state is loaded from the `store`.
+    /// At genesis or checkpoint-sync startup, the finalized checkpoint is fork choice's justified
+    /// checkpoint, so no state is loaded.
     fn new_fast_confirmation_rule(
-        finalized_checkpoint: Checkpoint,
+        fork_choice: &BeaconForkChoice<T>,
         snapshot: &BeaconSnapshot<T::EthSpec>,
         root_confirmed_before_restart: Option<Hash256>,
         store: &BeaconStore<T>,
         spec: &ChainSpec,
-    ) -> Result<FastConfirmationRule, FastConfirmationError> {
-        let target_slot = finalized_checkpoint
-            .epoch
-            .start_slot(T::EthSpec::slots_per_epoch());
-        let snapshot_is_checkpoint_state = snapshot.beacon_block_root == finalized_checkpoint.root
-            && snapshot.beacon_state.slot() == target_slot;
-        let loaded_checkpoint_state = if snapshot_is_checkpoint_state {
-            None
-        } else {
-            Some(Self::load_fcr_checkpoint_state(
-                store,
-                None,
-                finalized_checkpoint,
-            )?)
-        };
-        FastConfirmationRule::new(
+    ) -> Result<(FastConfirmationRule, CheckpointBalancesLookup), FastConfirmationError> {
+        let finalized_checkpoint = fork_choice.finalized_checkpoint();
+        let (checkpoint_balances, checkpoint_balances_lookup) =
+            Self::fcr_checkpoint_balances(fork_choice, store, None, finalized_checkpoint)?;
+        let fcr = FastConfirmationRule::new(
             snapshot.beacon_block_root,
             &snapshot.beacon_state,
             finalized_checkpoint,
-            loaded_checkpoint_state
-                .as_ref()
-                .unwrap_or(&snapshot.beacon_state),
+            checkpoint_balances,
             root_confirmed_before_restart,
             spec.confirmation_byzantine_threshold,
             spec.proposer_score_boost,
             spec,
-        )
+        )?;
+        Ok((fcr, checkpoint_balances_lookup))
+    }
+
+    /// The balances of the state of `checkpoint` (spec: `store.checkpoint_states[checkpoint]`),
+    /// for the fast confirmation rule, and what served them. Tries, in order:
+    ///
+    /// 1. Fork choice's justified balances, if `checkpoint` is fork choice's justified checkpoint.
+    /// 2. The entry of fork choice's balances cache for exactly `checkpoint`: each entry is the
+    ///    projection of its checkpoint state (see the invariant on `BalancesCache`).
+    /// 3. The checkpoint state, loaded from the `store`.
+    ///
+    /// The first two are the balances fork choice already holds, so in the steady state no state
+    /// is loaded.
+    fn fcr_checkpoint_balances(
+        fork_choice: &BeaconForkChoice<T>,
+        store: &BeaconStore<T>,
+        builder_onboarding_cache: Option<&OnboardBuildersCache>,
+        checkpoint: Checkpoint,
+    ) -> Result<(JustifiedBalances, CheckpointBalancesLookup), FastConfirmationError> {
+        let fc_store = fork_choice.fc_store();
+        // The store's justified checkpoint and balances are only ever assigned together, and
+        // `set_justified_checkpoint` leaves both unchanged if it fails, so the justified balances
+        // are always those of the justified checkpoint's state (see the invariant on
+        // `BeaconForkChoiceStore::justified_balances`).
+        let (balances, source) = if *fc_store.justified_checkpoint() == checkpoint {
+            (
+                fc_store.justified_balances().clone(),
+                CheckpointBalancesSource::ForkChoiceJustified,
+            )
+        } else if let Some(balances) = fc_store
+            .balances_cache()
+            .get(checkpoint.root, checkpoint.epoch)
+        {
+            (balances, CheckpointBalancesSource::BalancesCache)
+        } else {
+            let checkpoint_state =
+                Self::load_fcr_checkpoint_state(store, builder_onboarding_cache, checkpoint)?;
+            (
+                checkpoint_balances_from_state(&checkpoint_state, checkpoint)?,
+                CheckpointBalancesSource::StateLoad,
+            )
+        };
+        metrics::inc_counter_vec(
+            &fcr_metrics::FAST_CONFIRMATION_CHECKPOINT_BALANCES,
+            &[source.into()],
+        );
+        Ok((balances, CheckpointBalancesLookup { checkpoint, source }))
     }
 
     /// Load the state for `checkpoint` (spec: `store.checkpoint_states[checkpoint]`) — the
     /// checkpoint block's post-state advanced to the first slot of `checkpoint.epoch`.
     ///
-    /// No caches are built: FCR only iterates the validator set and reads `block_roots`
-    /// from this state.
+    /// No caches are built. FCR builds its balances from this state with
+    /// `JustifiedBalances::from_state`, which reads the caches the state already has if they are
+    /// valid, and otherwise its validator registry.
     fn load_fcr_checkpoint_state(
         store: &BeaconStore<T>,
         builder_onboarding_cache: Option<&OnboardBuildersCache>,
