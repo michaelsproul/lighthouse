@@ -114,6 +114,16 @@ pub struct BeaconForkChoiceStore<E: EthSpec, Hot: ItemStore, Cold: ItemStore> {
     time: Slot,
     finalized_checkpoint: Checkpoint,
     justified_checkpoint: Checkpoint,
+    /// The balances of the state for `justified_checkpoint`, which has root `justified_state_root`,
+    /// as built by `JustifiedBalances::from_justified_state` (possibly via the `BalancesCache`).
+    ///
+    /// Invariant: `justified_checkpoint`, `justified_state_root` and `justified_balances` always
+    /// describe the same checkpoint. They are only ever assigned together, by a constructor or by
+    /// `set_justified_checkpoint`, which leaves all three unchanged if it fails.
+    ///
+    /// The invariant also relies on callers of `set_justified_checkpoint` passing the root of the
+    /// checkpoint's own state, which is not checked. See the precondition on
+    /// `ForkChoiceStore::set_justified_checkpoint`.
     justified_balances: JustifiedBalances,
     justified_state_root: Hash256,
     unrealized_justified_checkpoint: Checkpoint,
@@ -338,20 +348,26 @@ where
         self.finalized_checkpoint = checkpoint
     }
 
+    /// Set the justified checkpoint, its state root and its balances.
+    ///
+    /// The new balances are obtained first, from the `BalancesCache` or by loading the state at
+    /// `justified_state_root`. The three fields are only assigned once that has succeeded, so on
+    /// error the store still describes the previous justified checkpoint (see the invariant on the
+    /// `justified_balances` field).
+    ///
+    /// `justified_state_root` must be the root of the checkpoint state for `checkpoint`. This is
+    /// not checked: a `BalancesCache` hit is keyed by `checkpoint` alone and stores
+    /// `justified_state_root` as given.
     fn set_justified_checkpoint(
         &mut self,
         checkpoint: Checkpoint,
         justified_state_root: Hash256,
     ) -> Result<(), Error> {
-        self.justified_checkpoint = checkpoint;
-        self.justified_state_root = justified_state_root;
-
-        if let Some(justified_balances) = self.balances_cache.get(
-            self.justified_checkpoint.root,
-            self.justified_checkpoint.epoch,
-        ) {
+        let justified_balances = if let Some(justified_balances) =
+            self.balances_cache.get(checkpoint.root, checkpoint.epoch)
+        {
             metrics::inc_counter(&metrics::BALANCES_CACHE_HITS);
-            self.justified_balances = justified_balances;
+            justified_balances
         } else {
             metrics::inc_counter(&metrics::BALANCES_CACHE_MISSES);
 
@@ -359,12 +375,16 @@ where
             let update_cache = true;
             let state = self
                 .store
-                .get_hot_state(&self.justified_state_root, update_cache)
+                .get_hot_state(&justified_state_root, update_cache)
                 .map_err(Error::FailedToReadState)?
-                .ok_or(Error::MissingState(self.justified_state_root))?;
+                .ok_or(Error::MissingState(justified_state_root))?;
 
-            self.justified_balances = JustifiedBalances::from_justified_state(&state)?;
-        }
+            JustifiedBalances::from_justified_state(&state)?
+        };
+
+        self.justified_checkpoint = checkpoint;
+        self.justified_state_root = justified_state_root;
+        self.justified_balances = justified_balances;
 
         Ok(())
     }
@@ -410,6 +430,11 @@ pub struct PersistedForkChoiceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{BeaconChainHarness, EphemeralHarnessType};
+    use state_processing::AllCaches;
+    use state_processing::state_advance::complete_state_advance;
+    use store::MemoryStore;
+    use store::hdiff::StorageStrategy;
     use types::{Spec, Validator};
 
     type E = Spec;
@@ -441,5 +466,162 @@ mod tests {
         assert_eq!(cached, expected);
         assert!(!cached.slashed_balances.is_empty());
         assert!(cache.get(block_root, state.current_epoch() + 1).is_none());
+    }
+
+    // >= 32 validators required for Gloas genesis under the mainnet preset (32 slots/epoch).
+    const VALIDATOR_COUNT: usize = 32;
+
+    /// The justified checkpoint, state root and balances of a store.
+    #[derive(PartialEq, Debug)]
+    struct Justified {
+        checkpoint: Checkpoint,
+        state_root: Hash256,
+        balances: JustifiedBalances,
+    }
+
+    /// A fork choice store whose justified checkpoint is the genesis checkpoint `A`, and a later
+    /// checkpoint `B` with different balances, which the store can't obtain yet.
+    struct JustifiedCheckpointTest {
+        harness: BeaconChainHarness<EphemeralHarnessType<E>>,
+        fc_store: BeaconForkChoiceStore<E, MemoryStore, MemoryStore>,
+        justified_a: Justified,
+        justified_b: Justified,
+        state_b: BeaconState<E>,
+    }
+
+    impl JustifiedCheckpointTest {
+        fn new() -> Self {
+            let harness = BeaconChainHarness::builder(E::default())
+                .default_spec()
+                .deterministic_keypairs(VALIDATOR_COUNT)
+                .fresh_ephemeral_store()
+                .build();
+            let genesis = (*harness.chain.head_snapshot()).clone();
+            let genesis_state_root = genesis.beacon_state_root();
+            let fc_store = BeaconForkChoiceStore::get_forkchoice_store(
+                harness.chain.store.clone(),
+                genesis.clone(),
+            )
+            .unwrap();
+
+            let justified_a = Justified {
+                checkpoint: Checkpoint {
+                    epoch: Epoch::new(0),
+                    root: genesis.beacon_block_root,
+                },
+                state_root: genesis_state_root,
+                balances: JustifiedBalances::from_justified_state(&genesis.beacon_state).unwrap(),
+            };
+
+            // B's state is the genesis state at a later epoch boundary, with a validator slashed
+            // so that its balances differ from A's. Use the first epoch boundary whose state the
+            // database stores, rather than replaying it from an earlier state, which would lose the
+            // slashing when the state is loaded from disk.
+            let epoch_b = (1..64)
+                .map(Epoch::new)
+                .find(|epoch| {
+                    let strategy = harness
+                        .chain
+                        .store
+                        .hot_storage_strategy(epoch.start_slot(E::slots_per_epoch()))
+                        .unwrap();
+                    !matches!(strategy, StorageStrategy::ReplayFrom(_))
+                })
+                .unwrap();
+            let mut state_b = genesis.beacon_state;
+            complete_state_advance(
+                &mut state_b,
+                Some(genesis_state_root),
+                epoch_b.start_slot(E::slots_per_epoch()),
+                None,
+                &harness.spec,
+            )
+            .unwrap();
+            state_b.validators_mut().get_mut(1).unwrap().slashed = true;
+            // Setting `slashed` directly bypasses `slash_validator`, so rebuild the caches to keep
+            // the `SlashingsCache` consistent with `validators()`.
+            state_b.drop_all_caches().unwrap();
+            state_b.build_all_caches(&harness.spec).unwrap();
+            assert!(state_b.slashings_cache().is_slashed(1));
+            let justified_b = Justified {
+                checkpoint: Checkpoint {
+                    epoch: epoch_b,
+                    root: genesis.beacon_block_root,
+                },
+                state_root: state_b.update_tree_hash_cache().unwrap(),
+                balances: JustifiedBalances::from_justified_state(&state_b).unwrap(),
+            };
+
+            let test = Self {
+                harness,
+                fc_store,
+                justified_a,
+                justified_b,
+                state_b,
+            };
+            assert_eq!(test.justified(), test.justified_a);
+            assert_ne!(test.justified_a.checkpoint, test.justified_b.checkpoint);
+            assert_ne!(test.justified_a.state_root, test.justified_b.state_root);
+            assert_ne!(test.justified_a.balances, test.justified_b.balances);
+            test
+        }
+
+        fn justified(&self) -> Justified {
+            Justified {
+                checkpoint: self.fc_store.justified_checkpoint,
+                state_root: self.fc_store.justified_state_root,
+                balances: self.fc_store.justified_balances.clone(),
+            }
+        }
+
+        fn set_justified_checkpoint_b(&mut self) -> Result<(), Error> {
+            self.fc_store
+                .set_justified_checkpoint(self.justified_b.checkpoint, self.justified_b.state_root)
+        }
+
+        /// Updating to B fails, because B's balances are neither cached nor loadable, and leaves
+        /// the store describing A.
+        fn assert_update_to_b_fails(&mut self) {
+            let result = self.set_justified_checkpoint_b();
+            assert!(
+                matches!(result, Err(Error::MissingState(root)) if root == self.justified_b.state_root),
+                "{result:?}"
+            );
+            assert_eq!(self.justified(), self.justified_a);
+        }
+
+        /// Updating to B succeeds, and the store describes B.
+        fn assert_update_to_b_succeeds(&mut self) {
+            self.set_justified_checkpoint_b().unwrap();
+            assert_eq!(self.justified(), self.justified_b);
+        }
+    }
+
+    /// Regression test: a failed update must not leave B's checkpoint with A's balances. A retry
+    /// succeeds once B's balances are in the `BalancesCache` (B's state is never stored).
+    #[test]
+    fn set_justified_checkpoint_is_atomic_with_balances_cache() {
+        let mut test = JustifiedCheckpointTest::new();
+        test.assert_update_to_b_fails();
+
+        test.fc_store
+            .balances_cache
+            .insert(test.justified_b.checkpoint.root, &test.state_b)
+            .unwrap();
+        test.assert_update_to_b_succeeds();
+    }
+
+    /// As above, but the retry succeeds once B's state is stored in the hot database.
+    #[test]
+    fn set_justified_checkpoint_is_atomic_with_hot_state() {
+        let mut test = JustifiedCheckpointTest::new();
+        test.assert_update_to_b_fails();
+
+        let state_root_b = test.justified_b.state_root;
+        let store = &test.harness.chain.store;
+        store.put_state(&state_root_b, &test.state_b).unwrap();
+        // Load B's state from disk, rather than from the state cache.
+        store.state_cache.lock().delete_state(&state_root_b);
+        test.assert_update_to_b_succeeds();
     }
 }
