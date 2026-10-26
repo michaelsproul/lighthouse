@@ -8,7 +8,7 @@ use crate::{BeaconSnapshot, metrics};
 use educe::Educe;
 use fixed_bytes::FixedBytesExtended;
 use fork_choice::ForkChoiceStore;
-use proto_array::JustifiedBalances;
+use proto_array::{FromStatePath, JustifiedBalances, StateCachesError};
 use safe_arith::ArithError;
 use ssz_derive::{Decode, Encode};
 use std::collections::BTreeSet;
@@ -30,6 +30,7 @@ pub enum Error {
     MissingState(Hash256),
     BeaconStateError(BeaconStateError),
     UnalignedCheckpoint { block_slot: Slot, state_slot: Slot },
+    UnalignedBalancesCacheState { state_slot: Slot },
     Arith(ArithError),
 }
 
@@ -46,36 +47,128 @@ impl From<ArithError> for Error {
 }
 
 /// The number of validator balance sets that are cached within `BalancesCache`.
-const MAX_BALANCE_CACHE_SIZE: usize = 4;
+pub const MAX_BALANCE_CACHE_SIZE: usize = 4;
 
-#[derive(PartialEq, Clone, Debug)]
-pub(crate) struct CacheItem {
-    pub(crate) block_root: Hash256,
-    pub(crate) epoch: Epoch,
-    pub(crate) justified_balances: JustifiedBalances,
+/// Build the balances of `state` with `JustifiedBalances::from_state`, which reads the state's
+/// caches if they are valid and otherwise its validator registry, and count which path was taken.
+fn justified_balances_from_state<E: EthSpec>(
+    state: &BeaconState<E>,
+) -> Result<(JustifiedBalances, FromStatePath), Error> {
+    let (justified_balances, path) = JustifiedBalances::from_state(state)?;
+    metrics::inc_counter_vec(
+        &metrics::FORK_CHOICE_BALANCES_FROM_STATE,
+        &from_state_path_labels(&path),
+    );
+    if let FromStatePath::Fallback(reason) = &path {
+        debug!(
+            slot = %state.slot(),
+            ?reason,
+            "Built fork choice balances from the validator registry"
+        );
+    }
+    Ok((justified_balances, path))
 }
 
+/// The `path` and `reason` labels of `FORK_CHOICE_BALANCES_FROM_STATE` for `path`.
+fn from_state_path_labels(path: &FromStatePath) -> [&'static str; 2] {
+    match path {
+        FromStatePath::Caches => ["caches", "none"],
+        FromStatePath::Fallback(reason) => {
+            let reason = match reason {
+                StateCachesError::EpochCacheDecisionRoot(_) => "epoch_cache_decision_root",
+                StateCachesError::EpochCacheInvalid(_) => "epoch_cache_invalid",
+                StateCachesError::CommitteeCacheUninitialized(_) => "committee_cache_uninitialized",
+                StateCachesError::SlashingsCacheUninitialized(_) => "slashings_cache_uninitialized",
+                StateCachesError::MissingEffectiveBalance { .. } => "missing_effective_balance",
+                StateCachesError::Arith(_) => "arith",
+            };
+            ["fallback", reason]
+        }
+    }
+}
+
+/// An entry of the `BalancesCache`: the balances of the checkpoint state of
+/// `Checkpoint { epoch, root: block_root }`.
+#[derive(PartialEq, Clone, Debug)]
+pub struct BalancesCacheItem {
+    block_root: Hash256,
+    epoch: Epoch,
+    justified_balances: JustifiedBalances,
+    path: FromStatePath,
+}
+
+impl BalancesCacheItem {
+    /// The checkpoint whose state the balances describe.
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            epoch: self.epoch,
+            root: self.block_root,
+        }
+    }
+
+    /// The balances of the checkpoint state.
+    pub fn justified_balances(&self) -> &JustifiedBalances {
+        &self.justified_balances
+    }
+
+    /// Whether the balances were read from the checkpoint state's caches or from its validator
+    /// registry. Both give the same balances.
+    pub fn path(&self) -> &FromStatePath {
+        &self.path
+    }
+}
+
+/// A cache of the balances of the `MAX_BALANCE_CACHE_SIZE` most recently inserted checkpoint
+/// states, keyed by checkpoint, which fork choice adopts when its justified checkpoint changes.
+///
+/// ## Invariant
+///
+/// Every entry for `(block_root, epoch)` is `JustifiedBalances::from_justified_state` of the
+/// *exact* checkpoint state of `Checkpoint { epoch, root: block_root }`: the spec's
+/// `store_target_checkpoint_state`, which is the post-state of block `block_root` advanced to the
+/// start slot of `epoch`. When `on_verified_block` imports a block at the start slot, it builds
+/// the entry from that block's post-state. Otherwise it loads the state at the start slot from the
+/// database. That is the post-state of the block at the start slot if there is one (its entry was
+/// evicted, it was imported before a restart, or it is the anchor block, which is never passed to
+/// `on_verified_block`), and otherwise the state at the skipped start slot. So an operation
+/// included in a later block of `epoch`, such as a slashing, is never reflected in the entry, even
+/// though fork choice is given the post-states of those blocks.
+///
+/// Fork choice relies on this when it adopts an entry as its justified balances. The fast
+/// confirmation rule will rely on it for safety, because its output becomes the execution
+/// layer's `safe_block_hash`.
 #[derive(PartialEq, Clone, Default, Debug)]
 pub struct BalancesCache {
-    pub(crate) items: Vec<CacheItem>,
+    items: Vec<BalancesCacheItem>,
 }
 
 impl BalancesCache {
-    /// Add an entry for the given epoch boundary block root, built from `state`.
+    /// Add an entry for the checkpoint `(epoch_boundary_root, state.current_epoch())`, built from
+    /// `state`, unless the cache already has one. Evicts the oldest entry if the cache is full.
     ///
-    /// The caller must pass a `state` at the epoch boundary slot, so that the cached balances
-    /// match the checkpoint state exactly (see `on_verified_block`).
+    /// `state` must be the checkpoint state of that checkpoint (see the invariant on
+    /// `BalancesCache`): the state at the start slot of its current epoch, on a chain whose latest
+    /// block at or before that slot is `epoch_boundary_root`. Returns an error without inserting
+    /// if `state` is not at the start slot of its epoch. The block root is not checked.
     pub fn insert<E: EthSpec>(
         &mut self,
         epoch_boundary_root: Hash256,
         state: &BeaconState<E>,
     ) -> Result<(), Error> {
         let epoch = state.current_epoch();
+        if state.slot() != epoch.start_slot(E::slots_per_epoch()) {
+            return Err(Error::UnalignedBalancesCacheState {
+                state_slot: state.slot(),
+            });
+        }
+
         if self.position(epoch_boundary_root, epoch).is_none() {
-            let item = CacheItem {
+            let (justified_balances, path) = justified_balances_from_state(state)?;
+            let item = BalancesCacheItem {
                 block_root: epoch_boundary_root,
                 epoch,
-                justified_balances: JustifiedBalances::from_justified_state(state)?,
+                justified_balances,
+                path,
             };
 
             if self.items.len() == MAX_BALANCE_CACHE_SIZE {
@@ -94,12 +187,22 @@ impl BalancesCache {
             .position(|item| item.block_root == block_root && item.epoch == epoch)
     }
 
-    /// Get the balances for the given `block_root`, if any.
+    /// Get the balances of the checkpoint state of `Checkpoint { epoch, root: block_root }`, if
+    /// cached.
     ///
-    /// If some balances are found, they are cloned from the cache.
-    pub fn get(&mut self, block_root: Hash256, epoch: Epoch) -> Option<JustifiedBalances> {
+    /// Only an entry for exactly this block root and epoch matches: the same block root at another
+    /// epoch is another checkpoint, with another state. The returned balances share their
+    /// allocation with the entry.
+    pub fn get(&self, block_root: Hash256, epoch: Epoch) -> Option<JustifiedBalances> {
         let i = self.position(block_root, epoch)?;
-        Some(self.items[i].justified_balances.clone())
+        self.items
+            .get(i)
+            .map(|item| item.justified_balances.clone())
+    }
+
+    /// The entries, from the oldest to the most recently inserted.
+    pub fn items(&self) -> &[BalancesCacheItem] {
+        &self.items
     }
 }
 
@@ -115,7 +218,8 @@ pub struct BeaconForkChoiceStore<E: EthSpec, Hot: ItemStore, Cold: ItemStore> {
     finalized_checkpoint: Checkpoint,
     justified_checkpoint: Checkpoint,
     /// The balances of the state for `justified_checkpoint`, which has root `justified_state_root`,
-    /// as built by `JustifiedBalances::from_justified_state` (possibly via the `BalancesCache`).
+    /// as built by `JustifiedBalances::from_state` (possibly via the `BalancesCache`), which equals
+    /// `JustifiedBalances::from_justified_state` of that state.
     ///
     /// Invariant: `justified_checkpoint`, `justified_state_root` and `justified_balances` always
     /// describe the same checkpoint. They are only ever assigned together, by a constructor or by
@@ -182,7 +286,7 @@ where
             root: anchor_block_root,
         };
         let finalized_checkpoint = justified_checkpoint;
-        let justified_balances = JustifiedBalances::from_justified_state(&anchor_state)?;
+        let (justified_balances, _) = justified_balances_from_state(&anchor_state)?;
         let justified_state_root = anchor_state.canonical_root()?;
 
         Ok(Self {
@@ -232,7 +336,7 @@ where
             .map_err(Error::FailedToReadState)?
             .ok_or(Error::MissingState(justified_state_root))?;
 
-        let justified_balances = JustifiedBalances::from_justified_state(&justified_state)?;
+        let (justified_balances, _) = justified_balances_from_state(&justified_state)?;
         Ok(Self {
             store,
             balances_cache: <_>::default(),
@@ -248,6 +352,12 @@ where
             equivocating_indices: persisted.equivocating_indices,
             _phantom: PhantomData,
         })
+    }
+
+    /// The cache of checkpoint state balances, from which `set_justified_checkpoint` takes the
+    /// justified balances when it can.
+    pub fn balances_cache(&self) -> &BalancesCache {
+        &self.balances_cache
     }
 }
 
@@ -267,6 +377,9 @@ where
         self.time = slot
     }
 
+    /// Insert the balances of the checkpoint state of the block's epoch into the `BalancesCache`,
+    /// if they are not already cached. Only ever inserts the checkpoint state itself, never
+    /// `state` from later in the epoch (see the invariant on `BalancesCache`).
     fn on_verified_block<Payload: AbstractExecPayload<E>>(
         &mut self,
         _block: BeaconBlockRef<E, Payload>,
@@ -276,10 +389,14 @@ where
         let epoch = state.current_epoch();
         let epoch_boundary_slot = epoch.start_slot(E::slots_per_epoch());
 
+        // The block is at the epoch boundary slot, so its post-state is the checkpoint state of
+        // `(block_root, epoch)`.
         if state.slot() == epoch_boundary_slot {
             return self.balances_cache.insert(block_root, state);
         }
 
+        // The checkpoint of this block's chain for `epoch` is the latest block at or before the
+        // epoch boundary slot.
         let epoch_boundary_root = *state.get_block_root(epoch_boundary_slot)?;
         if self
             .balances_cache
@@ -289,9 +406,12 @@ where
             return Ok(());
         }
 
-        // The epoch boundary slot was skipped. We need to make sure to use the boundary state. If
-        // not, a slashing included in first post boundary block would cause us to cache incorrect
-        // balances.
+        // `state` may include operations from blocks after the epoch boundary, such as a slashing
+        // in this very block, so load the state at the epoch boundary slot instead. That is the
+        // post-state of the boundary block if there is one (its entry was evicted, it was imported
+        // before a restart, or it is the anchor block, which is never passed to
+        // `on_verified_block`), and otherwise the state at the skipped boundary slot. If it can't
+        // be found, nothing is inserted.
         let epoch_boundary_state_root = *state.get_state_root(epoch_boundary_slot)?;
         debug!(
             slot = %epoch_boundary_slot,
@@ -379,7 +499,8 @@ where
                 .map_err(Error::FailedToReadState)?
                 .ok_or(Error::MissingState(justified_state_root))?;
 
-            JustifiedBalances::from_justified_state(&state)?
+            let (justified_balances, _) = justified_balances_from_state(&state)?;
+            justified_balances
         };
 
         self.justified_checkpoint = checkpoint;
@@ -435,18 +556,20 @@ mod tests {
     use state_processing::state_advance::complete_state_advance;
     use store::MemoryStore;
     use store::hdiff::StorageStrategy;
-    use types::{Spec, Validator};
+    use types::test_utils::generate_deterministic_keypair;
+    use types::{ChainSpec, Spec, Validator};
 
     type E = Spec;
 
-    #[test]
-    fn balances_cache_hit_matches_justified_state() {
-        let spec = E::default_spec();
-        let mut state: BeaconState<E> = BeaconState::new(0, <_>::default(), &spec);
-        for i in 0..4u64 {
+    /// A state at the start of epoch 0 with four active validators, one of them slashed, and no
+    /// caches built.
+    fn state_with_slashed_validator(spec: &ChainSpec) -> BeaconState<E> {
+        let mut state: BeaconState<E> = BeaconState::new(0, <_>::default(), spec);
+        for i in 0..4 {
             state
                 .validators_mut()
                 .push(Validator {
+                    pubkey: generate_deterministic_keypair(i).pk.compress(),
                     effective_balance: 32_000_000_000,
                     slashed: i == 1,
                     activation_epoch: Epoch::new(0),
@@ -455,17 +578,103 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
+            state.balances_mut().push(32_000_000_000).unwrap();
         }
+        state
+    }
 
-        let block_root = Hash256::repeat_byte(1);
-        let mut cache = BalancesCache::default();
-        cache.insert(block_root, &state).unwrap();
-
-        let cached = cache.get(block_root, state.current_epoch()).unwrap();
+    /// An entry built from a state without caches reads the registry, and one built from a state
+    /// with caches reads the caches. Both equal `from_justified_state`, and are only found by their
+    /// exact checkpoint.
+    #[test]
+    fn balances_cache_hit_matches_justified_state() {
+        let spec = E::default_spec();
+        let mut state = state_with_slashed_validator(&spec);
+        let epoch = state.current_epoch();
         let expected = JustifiedBalances::from_justified_state(&state).unwrap();
-        assert_eq!(cached, expected);
-        assert!(!cached.slashed_balances().is_empty());
-        assert!(cache.get(block_root, state.current_epoch() + 1).is_none());
+        assert!(!expected.slashed_balances().is_empty());
+
+        let mut cache = BalancesCache::default();
+        let registry_root = Hash256::repeat_byte(1);
+        cache.insert(registry_root, &state).unwrap();
+        state.build_all_caches(&spec).unwrap();
+        let caches_root = Hash256::repeat_byte(2);
+        cache.insert(caches_root, &state).unwrap();
+
+        let [registry_item, caches_item] = cache.items() else {
+            panic!("expected two entries, got {:?}", cache.items());
+        };
+        assert!(
+            matches!(
+                registry_item.path(),
+                FromStatePath::Fallback(StateCachesError::EpochCacheInvalid(_))
+            ),
+            "{:?}",
+            registry_item.path()
+        );
+        assert_eq!(caches_item.path(), &FromStatePath::Caches);
+
+        for (root, item) in [(registry_root, registry_item), (caches_root, caches_item)] {
+            assert_eq!(item.checkpoint(), Checkpoint { epoch, root });
+            let cached = cache.get(root, epoch).unwrap();
+            assert_eq!(cached, expected);
+            assert!(JustifiedBalances::ptr_eq(
+                &cached,
+                item.justified_balances()
+            ));
+            assert!(cache.get(root, epoch + 1).is_none());
+        }
+    }
+
+    /// A state that isn't at the start slot of its epoch is not a checkpoint state, so it is
+    /// rejected.
+    #[test]
+    fn balances_cache_rejects_unaligned_state() {
+        let spec = E::default_spec();
+        let mut state = state_with_slashed_validator(&spec);
+        *state.slot_mut() = Slot::new(1);
+
+        let mut cache = BalancesCache::default();
+        let result = cache.insert(Hash256::repeat_byte(1), &state);
+        assert!(
+            matches!(
+                result,
+                Err(Error::UnalignedBalancesCacheState { state_slot }) if state_slot == 1
+            ),
+            "{result:?}"
+        );
+        assert!(cache.items().is_empty());
+    }
+
+    /// The cache keeps the most recently inserted entries, and inserting a cached checkpoint
+    /// again leaves its entry unchanged.
+    #[test]
+    fn balances_cache_evicts_oldest_entry() {
+        let spec = E::default_spec();
+        let mut state = state_with_slashed_validator(&spec);
+        let epoch = state.current_epoch();
+        let root = |i: usize| Hash256::from_low_u64_be(i as u64 + 1);
+
+        let mut cache = BalancesCache::default();
+        for i in 0..MAX_BALANCE_CACHE_SIZE {
+            cache.insert(root(i), &state).unwrap();
+        }
+        let full_cache = cache.clone();
+        state.build_all_caches(&spec).unwrap();
+        cache.insert(root(0), &state).unwrap();
+        assert_eq!(cache, full_cache);
+
+        cache.insert(root(MAX_BALANCE_CACHE_SIZE), &state).unwrap();
+        let roots = cache
+            .items()
+            .iter()
+            .map(|item| item.checkpoint().root)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roots,
+            (1..=MAX_BALANCE_CACHE_SIZE).map(root).collect::<Vec<_>>()
+        );
+        assert!(cache.get(root(0), epoch).is_none());
     }
 
     // >= 32 validators required for Gloas genesis under the mainnet preset (32 slots/epoch).

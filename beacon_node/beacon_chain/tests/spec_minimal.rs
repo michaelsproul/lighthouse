@@ -1,3 +1,4 @@
+mod balances_cache;
 mod block_production;
 mod envelope_verification;
 mod events;

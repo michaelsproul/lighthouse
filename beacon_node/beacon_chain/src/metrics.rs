@@ -704,10 +704,19 @@ pub static BALANCES_CACHE_BOUNDARY_STATE_LOAD_TIMES: LazyLock<Result<Histogram>>
     || {
         try_create_histogram(
             "beacon_balances_cache_boundary_state_load_seconds",
-            "Time spent loading the epoch boundary state to fill the balances cache after a skipped boundary slot",
+            "Time spent loading an epoch boundary state that is not in the balances cache and building its balances",
         )
     },
 );
+pub static FORK_CHOICE_BALANCES_FROM_STATE: LazyLock<Result<IntCounterVec>> = LazyLock::new(|| {
+    try_create_int_counter_vec(
+        "beacon_fork_choice_balances_from_state_total",
+        "Count of fork choice balances built from a state, by whether they were read from the \
+         state's caches or from its validator registry, and the reason for falling back to the \
+         registry",
+        &["path", "reason"],
+    )
+});
 
 /*
  * Persisting BeaconChain components to disk
