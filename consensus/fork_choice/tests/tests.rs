@@ -400,7 +400,7 @@ impl ForkChoiceTest {
             .unwrap()
             .unwrap();
         let current_epoch = state.current_epoch();
-        let mut num_active_validators = 0u64;
+        let mut num_unslashed_validators = 0u64;
         let mut slashed_balances = BTreeMap::new();
         let balances = state
             .validators()
@@ -408,7 +408,7 @@ impl ForkChoiceTest {
             .enumerate()
             .map(|(i, v)| {
                 if !v.slashed && v.is_active_at(current_epoch) {
-                    num_active_validators += 1;
+                    num_unslashed_validators += 1;
                     v.effective_balance
                 } else {
                     if v.slashed && v.is_active_at(current_epoch) {
@@ -422,18 +422,22 @@ impl ForkChoiceTest {
         let justified_balances = fc.fc_store().justified_balances();
         assert_eq!(
             &balances[..],
-            &justified_balances.effective_balances,
+            justified_balances.effective_balances(),
             "balances should match"
         );
         assert_eq!(
             balances.iter().sum::<u64>(),
-            justified_balances.total_effective_balance
+            justified_balances.raw_total_unslashed_balance()
         );
         assert_eq!(
-            num_active_validators,
-            justified_balances.num_active_validators
+            balances.iter().sum::<u64>() + slashed_balances.values().sum::<u64>(),
+            justified_balances.raw_total_active_balance()
         );
-        assert_eq!(slashed_balances, justified_balances.slashed_balances);
+        assert_eq!(
+            num_unslashed_validators,
+            justified_balances.num_unslashed_validators()
+        );
+        assert_eq!(&slashed_balances, justified_balances.slashed_balances());
     }
 
     /// Returns an attestation that is valid for some slot in the given `chain`.
@@ -666,7 +670,7 @@ async fn justified_balances_with_attester_slashing() {
         .await;
 
     let slashed_balances =
-        test.get(|fc_store| fc_store.justified_balances().slashed_balances.clone());
+        test.get(|fc_store| fc_store.justified_balances().slashed_balances().clone());
     assert_eq!(slashed_balances.len(), 1, "one attester was slashed");
     test.check_justified_balances();
 }
@@ -689,7 +693,7 @@ async fn justified_balances_with_slashing_after_skipped_boundary() {
         .await;
 
     let slashed_balances =
-        test.get(|fc_store| fc_store.justified_balances().slashed_balances.clone());
+        test.get(|fc_store| fc_store.justified_balances().slashed_balances().clone());
     assert!(
         slashed_balances.is_empty(),
         "the slashing postdates the justified checkpoint state"
@@ -856,7 +860,7 @@ async fn justified_checkpoint_pull_up_failure_is_atomic() {
     let (later_checkpoint, _, later_balances) = test.get(justified);
     assert!(later_checkpoint.epoch > epoch);
     assert_eq!(
-        later_balances.slashed_balances.len(),
+        later_balances.slashed_balances().len(),
         1,
         "the later checkpoint state includes the slashing"
     );

@@ -464,7 +464,7 @@ mod tests {
         let cached = cache.get(block_root, state.current_epoch()).unwrap();
         let expected = JustifiedBalances::from_justified_state(&state).unwrap();
         assert_eq!(cached, expected);
-        assert!(!cached.slashed_balances.is_empty());
+        assert!(!cached.slashed_balances().is_empty());
         assert!(cache.get(block_root, state.current_epoch() + 1).is_none());
     }
 

@@ -126,6 +126,21 @@ impl EpochCache {
             .ok_or(EpochCacheError::ValidatorIndexOutOfBounds { validator_index })
     }
 
+    /// The effective balance of every validator in the registry when this cache was built, indexed
+    /// by validator index. Inactive and slashed validators are included.
+    ///
+    /// Effective balances only change during epoch processing (and at fork upgrades, which only
+    /// zero those of validators that are not yet active), so for every validator active in the
+    /// cache's epoch these equal `state.validators[i].effective_balance`. Validators added to the
+    /// registry after the cache was built have no entry, and cannot be active in this epoch.
+    pub fn effective_balances(&self) -> Result<&[u64], EpochCacheError> {
+        Ok(&self
+            .inner
+            .as_ref()
+            .ok_or(EpochCacheError::CacheNotInitialized)?
+            .effective_balances)
+    }
+
     #[inline]
     pub fn get_base_reward(&self, validator_index: usize) -> Result<u64, EpochCacheError> {
         let inner = self
@@ -150,5 +165,41 @@ impl EpochCache {
             .as_ref()
             .ok_or(EpochCacheError::CacheNotInitialized)?;
         Ok(&inner.activation_queue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MinimalEthSpec;
+    use crate::core::EthSpec;
+
+    #[test]
+    fn effective_balances_requires_initialized_cache() {
+        assert_eq!(
+            EpochCache::default().effective_balances(),
+            Err(EpochCacheError::CacheNotInitialized)
+        );
+    }
+
+    #[test]
+    fn effective_balances_returns_every_entry() {
+        let spec = MinimalEthSpec::default_spec();
+        let effective_balances = vec![32_000_000_000, 0, 16_000_000_000];
+        let cache = EpochCache::new(
+            EpochCacheKey {
+                epoch: Epoch::new(1),
+                decision_block_root: Hash256::ZERO,
+            },
+            effective_balances.clone(),
+            vec![],
+            ActivationQueue::default(),
+            &spec,
+        );
+
+        assert_eq!(cache.effective_balances(), Ok(&effective_balances[..]));
+        for (index, effective_balance) in effective_balances.iter().enumerate() {
+            assert_eq!(cache.get_effective_balance(index), Ok(*effective_balance));
+        }
     }
 }
