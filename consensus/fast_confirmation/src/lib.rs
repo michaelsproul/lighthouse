@@ -28,11 +28,15 @@
 //!    lookup per distinct vote. This is a readability deviation from the spec loop, but is kept
 //!    because the 1M-validator `get_latest_confirmed` benches improve by ~28-82%.
 //!
-//! 4. **Snapshot balance sources** (`BalanceSourceData`): the current/previous observed-justified
-//!    sources are rebuilt only at the epoch-boundary rotation (bundled with their checkpoint in
-//!    `CheckpointAndBalance`), and the head source only when its `BalanceSourceKey` changes
-//!    (the epoch boundary root normally, per head block once the epoch contains a slashing) — instead
-//!    of re-scanning the validator set every slot.
+//! 4. **Snapshot balance sources** (`JustifiedBalances`): each balance source is fork choice's
+//!    projection of a state's validator registry rather than the state itself. The
+//!    current/previous observed-justified sources change only at the epoch-boundary rotation
+//!    (bundled with their checkpoint in `CheckpointAndBalance`), when the caller supplies the new
+//!    checkpoint's balances, normally from fork choice (its justified balances or its balances
+//!    cache) rather than by loading the checkpoint state. The head source (`BalanceSourceData`)
+//!    is rebuilt only when its `BalanceSourceKey` changes (the epoch boundary root normally, per
+//!    head block once the epoch contains a slashing), from the head state's caches when they are
+//!    valid — instead of re-scanning the validator set every slot.
 //!
 //! The visible algorithm deliberately keeps the spec function names and control-flow shape;
 //! the caches are implementation details behind those helpers.
@@ -42,13 +46,13 @@ pub mod metrics;
 pub mod optimizations;
 mod slot_assignments;
 
-pub use balance_source::{BalanceSourceData, BalanceSourceKey};
+pub use balance_source::{BalanceSourceData, BalanceSourceKey, checkpoint_balances_from_state};
 pub use optimizations::CheckpointAndBalance;
 use optimizations::{AttestationScoreCache, HonestFfgSupportCache};
 use slot_assignments::{SlotAssignments, WindowEpoch, attestation_shuffling_id};
 
 use proto_array::core::{ProtoArray, ProtoNode, VoteTracker};
-use proto_array::{ParentPayloadStatus, PayloadStatus};
+use proto_array::{JustifiedBalances, ParentPayloadStatus, PayloadStatus};
 use safe_arith::{ArithError, SafeArith};
 use std::collections::BTreeSet;
 use tracing::{debug, debug_span};
@@ -63,6 +67,7 @@ pub enum Error {
     UnableToObtainHeadState(String),
     UnableToObtainCheckpointState(String),
     MissingCheckpointState(Checkpoint),
+    MissingCheckpointBalances(Checkpoint),
     AncestorNotFound { block: Hash256, slot: Slot },
     UnrealizedJustificationNotFound(Hash256),
     CheckpointBlockNotFound { block: Hash256, epoch: types::Epoch },
@@ -143,6 +148,9 @@ pub struct FastConfirmationRule {
     pub byzantine_threshold: u64,
     /// Proposer score boost percentage from ChainSpec (e.g. 40 for mainnet).
     proposer_score_boost: u64,
+    /// `EFFECTIVE_BALANCE_INCREMENT` from ChainSpec, the floor of every total balance, which
+    /// the floored totals of `JustifiedBalances` apply.
+    effective_balance_increment: u64,
 
     // === Committee data from head state ===
     /// Per-validator committee slot assignments across the last 3 epochs.
@@ -175,32 +183,24 @@ impl FastConfirmationRule {
     /// Maximum valid value for `byzantine_threshold` (25%).
     const MAX_BYZANTINE_THRESHOLD: u64 = 25;
 
-    /// Initialize FCR from the finalized checkpoint, its checkpoint state and the head state,
-    /// building the balance sources and committee assignments up front (each tagged with its own
-    /// `BalanceSourceKey` derived from the state). The spec seeds both observed-justified
-    /// checkpoints with the finalized checkpoint, so both balance sources come from
-    /// `checkpoint_state` (spec: `store.checkpoint_states[finalized_checkpoint]`); the
-    /// head-derived caches come from `head_state`, whose block root is `head_root`.
+    /// Initialize FCR from the finalized checkpoint, the balances of its checkpoint state and the
+    /// head state, building the head balance source and committee assignments up front. The spec
+    /// seeds both observed-justified checkpoints with the finalized checkpoint, so both balance
+    /// sources are `checkpoint_balances` (spec: `store.checkpoint_states[finalized_checkpoint]`);
+    /// the head-derived caches come from `head_state`, whose block root is `head_root`.
     /// `byzantine_threshold` is clamped to [0, 25].
     #[allow(clippy::too_many_arguments)]
     pub fn new<E: EthSpec>(
         head_root: Hash256,
         head_state: &BeaconState<E>,
         finalized_checkpoint: Checkpoint,
-        checkpoint_state: &BeaconState<E>,
+        checkpoint_balances: JustifiedBalances,
         root_confirmed_before_restart: Option<Hash256>,
         byzantine_threshold: u64,
         proposer_score_boost: u64,
         spec: &ChainSpec,
     ) -> Result<Self, Error> {
         let byzantine_threshold = byzantine_threshold.min(Self::MAX_BYZANTINE_THRESHOLD);
-        // Sanity: the supplied state must be the checkpoint's state, advanced to the
-        // checkpoint's epoch.
-        if checkpoint_state.current_epoch() != finalized_checkpoint.epoch {
-            return Err(Error::MissingCheckpointState(finalized_checkpoint));
-        }
-        let checkpoint_balance =
-            BalanceSourceData::new(checkpoint_state, finalized_checkpoint.root)?;
         if let Some(root) = root_confirmed_before_restart {
             debug!(%root, "FCR restored a root confirmed before the restart");
         }
@@ -209,17 +209,18 @@ impl FastConfirmationRule {
             root_confirmed_before_restart,
             previous_epoch_observed_justified: CheckpointAndBalance::new(
                 finalized_checkpoint,
-                checkpoint_balance.clone(),
+                checkpoint_balances.clone(),
             ),
             current_epoch_observed_justified: CheckpointAndBalance::new(
                 finalized_checkpoint,
-                checkpoint_balance,
+                checkpoint_balances,
             ),
             previous_epoch_greatest_unrealized_checkpoint: finalized_checkpoint,
             previous_slot_head: finalized_checkpoint.root,
             current_slot_head: finalized_checkpoint.root,
             byzantine_threshold,
             proposer_score_boost,
+            effective_balance_increment: spec.effective_balance_increment,
             slot_assignments: SlotAssignments::new(head_state, spec, None)?,
             head_balance_source: BalanceSourceData::new(head_state, head_root)?,
             last_update_slot: None,
@@ -234,20 +235,24 @@ impl FastConfirmationRule {
         self.spec_test_mode = enabled;
     }
 
-    /// Directly set head balances for synthetic-data benchmarks; not used in production.
-    pub fn test_set_head_balance_source(&mut self, balance_source: BalanceSourceData) {
-        self.head_balance_source = balance_source;
+    /// Directly set head balances for synthetic-data benchmarks, keeping the head balance
+    /// source's key; not used in production.
+    pub fn test_set_head_balances(&mut self, balances: JustifiedBalances) {
+        self.head_balance_source.balances = balances;
     }
 
     /// Top-level entry point. Spec: `on_fast_confirmation(fcr_store)`.
     ///
     /// Called after head selection, while the fork-choice read lock is held.
-    /// All parameters are borrowed from fork choice. The `head_state` is used to
-    /// rebuild the head balance source and committee assignments; `checkpoint_state`
-    /// backs the observed-justified balance source at the epoch-boundary rotation
-    /// (spec: `store.checkpoint_states[checkpoint]`). Callers should obtain the
-    /// required checkpoint via `checkpoint_state_needed` and may pass `None` when
-    /// it returns `None`.
+    /// The fork choice data (`proto_array`, `votes`, `equivocating_indices` and the checkpoints)
+    /// is borrowed from fork choice. The `head_state` is the caller's advanced head state, used to
+    /// rebuild the head balance source and committee assignments. `checkpoint_balances` is a
+    /// shared snapshot supplied by the caller, normally fork choice's justified balances or an
+    /// entry of its balances cache, otherwise built from the loaded checkpoint state. It backs the
+    /// observed-justified balance source at the epoch-boundary rotation, and must be the balances
+    /// of the state of the checkpoint returned by `checkpoint_balances_needed`
+    /// (spec: `store.checkpoint_states[checkpoint]`). Callers may pass `None` when it returns
+    /// `None`.
     #[allow(clippy::too_many_arguments)]
     pub fn on_fast_confirmation<E: EthSpec>(
         &mut self,
@@ -259,7 +264,7 @@ impl FastConfirmationRule {
         votes: &[VoteTracker],
         equivocating_indices: &BTreeSet<u64>,
         head_state: &BeaconState<E>,
-        checkpoint_state: Option<&BeaconState<E>>,
+        checkpoint_balances: Option<JustifiedBalances>,
         spec: &ChainSpec,
     ) -> Result<(), Error> {
         let _span = debug_span!("fcr_on_fast_confirmation", slot = %current_slot).entered();
@@ -269,7 +274,7 @@ impl FastConfirmationRule {
             unrealized_justified_checkpoint,
             current_slot,
             head_state,
-            checkpoint_state,
+            checkpoint_balances,
             spec,
         )?;
 
@@ -303,11 +308,11 @@ impl FastConfirmationRule {
             && is_start_slot_at_epoch::<E>(current_slot)
     }
 
-    /// The checkpoint whose state (spec: `store.checkpoint_states[checkpoint]`) must be
-    /// supplied to `on_fast_confirmation` at `current_slot`, or `None` if no state is
-    /// required — either no rotation happens this slot, or the rotating checkpoint is
-    /// unchanged so its existing balance snapshot is reused.
-    pub fn checkpoint_state_needed<E: EthSpec>(&self, current_slot: Slot) -> Option<Checkpoint> {
+    /// The checkpoint whose state's balances (spec: `store.checkpoint_states[checkpoint]`) must
+    /// be supplied to `on_fast_confirmation` at `current_slot`, or `None` if none are required —
+    /// either no rotation happens this slot, or the rotating checkpoint is unchanged so its
+    /// existing balance snapshot is reused.
+    pub fn checkpoint_balances_needed<E: EthSpec>(&self, current_slot: Slot) -> Option<Checkpoint> {
         (self.will_rotate::<E>(current_slot)
             && self.previous_epoch_greatest_unrealized_checkpoint
                 != self.current_epoch_observed_justified.checkpoint())
@@ -315,12 +320,12 @@ impl FastConfirmationRule {
     }
 
     /// Spec: `get_previous_balance_source`.
-    fn get_previous_balance_source(&self) -> &BalanceSourceData {
+    fn get_previous_balance_source(&self) -> &JustifiedBalances {
         self.previous_epoch_observed_justified.balances()
     }
 
     /// Spec: `get_current_balance_source`.
-    fn get_current_balance_source(&self) -> &BalanceSourceData {
+    fn get_current_balance_source(&self) -> &JustifiedBalances {
         self.current_epoch_observed_justified.balances()
     }
 
@@ -331,7 +336,7 @@ impl FastConfirmationRule {
         unrealized_justified_checkpoint: &Checkpoint,
         current_slot: Slot,
         head_state: &BeaconState<E>,
-        checkpoint_state: Option<&BeaconState<E>>,
+        checkpoint_balances: Option<JustifiedBalances>,
         spec: &ChainSpec,
     ) -> Result<(), Error> {
         let _span = debug_span!("fcr_update_variables", slot = %current_slot).entered();
@@ -367,9 +372,9 @@ impl FastConfirmationRule {
             }
 
             // At first slot of epoch: rotate the (checkpoint, balances) pairs. `previous` takes
-            // `current`'s snapshot (spec-equal, no O(V) re-derive); `current` is rebuilt in one
-            // step so the pair stays coherent, with balances from the new checkpoint's state
-            // (spec: `store.checkpoint_states[checkpoint]`) evaluated at the checkpoint's epoch.
+            // `current`'s snapshot (spec-equal, shared rather than copied); `current` is replaced
+            // in one step so the pair stays coherent, with the new checkpoint's balances as
+            // supplied by the caller (spec: `store.checkpoint_states[checkpoint]`).
             // The first conjunct of `will_rotate` is always true inside the once-per-slot guard.
             if self.will_rotate::<E>(current_slot) {
                 let new_current_cp = self.previous_epoch_greatest_unrealized_checkpoint;
@@ -378,17 +383,9 @@ impl FastConfirmationRule {
                         // Same checkpoint keys the same `checkpoint_states` entry — reuse the snapshot.
                         self.current_epoch_observed_justified.clone()
                     } else {
-                        let checkpoint_state = checkpoint_state
-                            .ok_or(Error::MissingCheckpointState(new_current_cp))?;
-                        // Sanity: the supplied state must be the checkpoint's state, advanced to the
-                        // checkpoint's epoch.
-                        if checkpoint_state.current_epoch() != new_current_cp.epoch {
-                            return Err(Error::MissingCheckpointState(new_current_cp));
-                        }
-                        CheckpointAndBalance::new(new_current_cp, {
-                            let _span = debug_span!("fcr_rebuild_current_balance").entered();
-                            BalanceSourceData::new(checkpoint_state, new_current_cp.root)?
-                        })
+                        let checkpoint_balances = checkpoint_balances
+                            .ok_or(Error::MissingCheckpointBalances(new_current_cp))?;
+                        CheckpointAndBalance::new(new_current_cp, checkpoint_balances)
                     };
                 self.previous_epoch_observed_justified =
                     std::mem::replace(&mut self.current_epoch_observed_justified, new_current);
@@ -847,7 +844,7 @@ impl FastConfirmationRule {
     #[allow(clippy::too_many_arguments)]
     fn get_node_support_between_slots(
         &self,
-        balance_source: &BalanceSourceData,
+        balance_source: &JustifiedBalances,
         block: &ProtoNode,
         payload_status: Option<PayloadStatus>,
         start_slot: Slot,
@@ -857,12 +854,12 @@ impl FastConfirmationRule {
     ) -> Result<u64, Error> {
         // Spec: sum effective balance of validators that:
         // - Are assigned to attest in a committee in the `range(start_slot, end_slot + 1)`
-        // - Are active in `balance_source` tracked here as `balance > 0`
-        // - Are not slashed in `balance_source` tracked here as `slashed == false`
+        // - Are active and not slashed in `balance_source`, as yielded by
+        //   `nonzero_unslashed_balances` (which skips those with zero balance)
         // - Do not belong to the `store.equivocating_indices` set
         // - Their vote supports exactly the node
         let mut score = 0u64;
-        for (val_idx, balance) in balance_source.unslashed_and_active_indices() {
+        for (val_idx, balance) in balance_source.nonzero_unslashed_balances() {
             let Some(vote) = votes.get(val_idx) else {
                 continue;
             };
@@ -881,25 +878,35 @@ impl FastConfirmationRule {
         Ok(score)
     }
 
-    /// Spec: `compute_proposer_score(balance_source)`.
-    /// Uses `(committee_weight * proposer_score_boost) // 100` (multiply-first) to match
+    /// Spec: `compute_proposer_score(balance_source)`, which is
+    /// `calculate_committee_fraction(balance_source, PROPOSER_SCORE_BOOST)`.
+    ///
+    /// Unlike `get_total_active_balance`, `calculate_committee_fraction` totals the *unslashed*
+    /// active validators (floored at `EFFECTIVE_BALANCE_INCREMENT`, as `get_total_balance`
+    /// does). Uses `(committee_weight * proposer_score_boost) // 100` (multiply-first) to match
     /// the spec and avoid precision loss from divide-first ordering.
     fn compute_proposer_score<E: EthSpec>(
         &self,
-        balance_source: &BalanceSourceData,
+        balance_source: &JustifiedBalances,
     ) -> Result<u64, Error> {
-        let committee_weight = balance_source
-            .total_active_balance
-            .safe_div(E::slots_per_epoch())?;
+        let total_balance =
+            balance_source.total_unslashed_balance(self.effective_balance_increment);
+        let committee_weight = total_balance.safe_div(E::slots_per_epoch())?;
         Ok(committee_weight
             .safe_mul(self.proposer_score_boost)?
             .safe_div(100)?)
     }
 
+    /// Spec: `get_total_active_balance(balance_source)`: the total effective balance of the
+    /// active validators, slashed or not, floored at `EFFECTIVE_BALANCE_INCREMENT`.
+    fn get_total_active_balance(&self, balance_source: &JustifiedBalances) -> u64 {
+        balance_source.total_active_balance(self.effective_balance_increment)
+    }
+
     /// Spec: `compute_empty_slot_support_discount`.
     fn compute_empty_slot_support_discount<E: EthSpec>(
         &self,
-        balance_source: &BalanceSourceData,
+        balance_source: &JustifiedBalances,
         block_root: Hash256,
         proto_array: &ProtoArray,
         votes: &[VoteTracker],
@@ -944,7 +951,7 @@ impl FastConfirmationRule {
     /// Spec: `get_support_discount`.
     fn get_support_discount<E: EthSpec>(
         &self,
-        balance_source: &BalanceSourceData,
+        balance_source: &JustifiedBalances,
         block_root: Hash256,
         proto_array: &ProtoArray,
         votes: &[VoteTracker],
@@ -962,7 +969,7 @@ impl FastConfirmationRule {
     /// Spec: `compute_safety_threshold`.
     fn compute_safety_threshold<E: EthSpec>(
         &self,
-        balance_source: &BalanceSourceData,
+        balance_source: &JustifiedBalances,
         block_root: Hash256,
         current_slot: Slot,
         proto_array: &ProtoArray,
@@ -972,7 +979,7 @@ impl FastConfirmationRule {
         let parent_root = parent_root(block_root, proto_array)?;
         let parent_slot = get_block_slot(parent_root, proto_array)?;
 
-        let total_active_balance = balance_source.total_active_balance;
+        let total_active_balance = self.get_total_active_balance(balance_source);
         let proposer_score = self.compute_proposer_score::<E>(balance_source)?;
         let maximum_support = estimate_committee_weight_between_slots::<E>(
             total_active_balance,
@@ -1009,7 +1016,7 @@ impl FastConfirmationRule {
     /// Spec: `get_adversarial_weight`.
     fn get_adversarial_weight<E: EthSpec>(
         &self,
-        balance_source: &BalanceSourceData,
+        balance_source: &JustifiedBalances,
         block_root: Hash256,
         current_slot: Slot,
         proto_array: &ProtoArray,
@@ -1039,12 +1046,12 @@ impl FastConfirmationRule {
     /// Spec: `compute_adversarial_weight`.
     fn compute_adversarial_weight<E: EthSpec>(
         &self,
-        balance_source: &BalanceSourceData,
+        balance_source: &JustifiedBalances,
         start_slot: Slot,
         end_slot: Slot,
         equivocating_indices: &BTreeSet<u64>,
     ) -> Result<u64, Error> {
-        let total_active_balance = balance_source.total_active_balance;
+        let total_active_balance = self.get_total_active_balance(balance_source);
         let maximum_weight = estimate_committee_weight_between_slots::<E>(
             total_active_balance,
             start_slot,
@@ -1073,7 +1080,7 @@ impl FastConfirmationRule {
     /// with precomputed head assignments instead of materializing all committee participants.
     fn get_equivocation_score(
         &self,
-        balance_source: &BalanceSourceData,
+        balance_source: &JustifiedBalances,
         start_slot: Slot,
         end_slot: Slot,
         equivocating_indices: &BTreeSet<u64>,
@@ -1082,14 +1089,14 @@ impl FastConfirmationRule {
         // Spec: Sum the effective balance of validators that:
         // - Belong to the `store.equivocating_indices` set
         // - Are assigned to attest in a committee in the `range(start_slot, end_slot + 1)`
-        // - Are active in `balance_source` tracked here as `balance > 0`
+        // - Are active in `balance_source`, slashed or not, as `active_balance` is 0 otherwise
         for &idx in equivocating_indices {
             let idx = idx as usize;
             if self
                 .slot_assignments
                 .is_in_range(idx, start_slot, end_slot)?
             {
-                score = score.safe_add(balance_source.balance(idx))?;
+                score = score.safe_add(balance_source.active_balance(idx)?)?;
             }
         }
         Ok(score)
@@ -1117,7 +1124,8 @@ impl FastConfirmationRule {
             return Ok(true);
         }
 
-        let total_active_balance = self.head_balance_source.total_active_balance;
+        let total_active_balance =
+            self.get_total_active_balance(&self.head_balance_source.balances);
         let honest_ffg = honest_ffg_support.get_or_compute(|| {
             self.compute_honest_ffg_support::<E>(
                 head_root,
@@ -1140,7 +1148,8 @@ impl FastConfirmationRule {
         equivocating_indices: &BTreeSet<u64>,
         honest_ffg_support: &HonestFfgSupportCache,
     ) -> Result<bool, Error> {
-        let total_active_balance = self.head_balance_source.total_active_balance;
+        let total_active_balance =
+            self.get_total_active_balance(&self.head_balance_source.balances);
         let honest_ffg = honest_ffg_support.get_or_compute(|| {
             self.compute_honest_ffg_support::<E>(
                 head_root,
@@ -1182,7 +1191,11 @@ impl FastConfirmationRule {
         // - Have a vote for the current target
         let mut score = 0u64;
 
-        for (val_idx, balance) in self.head_balance_source.unslashed_and_active_indices() {
+        for (val_idx, balance) in self
+            .head_balance_source
+            .balances
+            .nonzero_unslashed_balances()
+        {
             let Some(vote) = votes.get(val_idx) else {
                 continue;
             };
@@ -1219,8 +1232,8 @@ impl FastConfirmationRule {
     ) -> Result<u64, Error> {
         let _s = debug_span!("fcr_honest_ffg").entered();
         let current_epoch = current_slot.epoch(E::slots_per_epoch());
-        let balance_source = &self.head_balance_source;
-        let total_active_balance = balance_source.total_active_balance;
+        let balance_source = &self.head_balance_source.balances;
+        let total_active_balance = self.get_total_active_balance(balance_source);
 
         let ffg_support_for_checkpoint = self.get_current_target_score::<E>(
             head_root,
@@ -1260,7 +1273,7 @@ impl FastConfirmationRule {
     #[allow(clippy::too_many_arguments)]
     fn is_one_confirmed<E: EthSpec>(
         &self,
-        balance_source: &BalanceSourceData,
+        balance_source: &JustifiedBalances,
         block_root: Hash256,
         attestation_scores: &AttestationScoreCache,
         current_slot: Slot,
@@ -1687,40 +1700,262 @@ mod tests {
         );
     }
 
+    /// A chain of the genesis block and its child at slot 1, both in epoch 0.
+    fn two_block_chain<E: EthSpec>(spec: &ChainSpec) -> (ProtoArray, Hash256) {
+        use proto_array::{Block, ExecutionStatus, ProtoArrayForkChoice};
+        use std::time::Duration;
+        use types::AttestationShufflingId;
+
+        let genesis_root = Hash256::repeat_byte(1);
+        let child_root = Hash256::repeat_byte(2);
+        let genesis_checkpoint = Checkpoint {
+            epoch: Epoch::new(0),
+            root: genesis_root,
+        };
+        let shuffling_id = AttestationShufflingId::from_components(Epoch::new(0), genesis_root);
+        let mut fork_choice = ProtoArrayForkChoice::new::<E>(
+            Slot::new(0),
+            Slot::new(0),
+            Hash256::ZERO,
+            genesis_checkpoint,
+            genesis_checkpoint,
+            shuffling_id.clone(),
+            shuffling_id.clone(),
+            ExecutionStatus::irrelevant(),
+            None,
+            None,
+            0,
+            spec,
+        )
+        .unwrap();
+        let child = Block {
+            slot: Slot::new(1),
+            root: child_root,
+            parent_root: Some(genesis_root),
+            state_root: Hash256::ZERO,
+            target_root: genesis_root,
+            current_epoch_shuffling_id: shuffling_id.clone(),
+            next_epoch_shuffling_id: shuffling_id,
+            justified_checkpoint: genesis_checkpoint,
+            finalized_checkpoint: genesis_checkpoint,
+            execution_status: ExecutionStatus::irrelevant(),
+            unrealized_justified_checkpoint: Some(genesis_checkpoint),
+            unrealized_finalized_checkpoint: Some(genesis_checkpoint),
+            execution_payload_parent_hash: None,
+            execution_payload_block_hash: None,
+            proposer_index: Some(0),
+            payload_received: false,
+        };
+        fork_choice
+            .process_block::<E>(child, Slot::new(1), spec, Duration::from_secs(0))
+            .unwrap();
+        (fork_choice.core_proto_array().clone(), child_root)
+    }
+
+    /// FCR on a genesis state with `validators`, whose balances are both the head and the
+    /// checkpoint balance sources.
+    fn fcr_for_state<E: EthSpec>(state: &BeaconState<E>, spec: &ChainSpec) -> FastConfirmationRule {
+        let checkpoint = Checkpoint {
+            epoch: state.current_epoch(),
+            root: Hash256::repeat_byte(1),
+        };
+        FastConfirmationRule::new::<E>(
+            checkpoint.root,
+            state,
+            checkpoint,
+            checkpoint_balances_from_state(state, checkpoint).unwrap(),
+            None,
+            25,
+            40,
+            spec,
+        )
+        .unwrap()
+    }
+
+    /// Regression test: the proposer score is `calculate_committee_fraction`, which totals only
+    /// the unslashed validators. It used to include the slashed ones.
+    #[test]
+    fn proposer_score_excludes_slashed_validators() {
+        use balance_source::tests::{RegistryScan, active, active_slashed, state_with_validators};
+
+        const ETH: u64 = 1_000_000_000;
+        let spec = E::default_spec();
+        assert_eq!(E::slots_per_epoch(), 32);
+        let mut validators = vec![active(32 * ETH, &spec); 64];
+        validators[5] = active_slashed(32 * ETH, &spec);
+        let state = state_with_validators::<E>(&validators, &spec);
+        let fcr = fcr_for_state(&state, &spec);
+        let balance_source = fcr.get_current_balance_source();
+
+        // 63 * 32 ETH / 32 * 40%, rather than 64 * 32 ETH / 32 * 40%.
+        assert_eq!(
+            fcr.compute_proposer_score::<E>(balance_source).unwrap(),
+            25_200_000_000
+        );
+        assert_eq!(
+            RegistryScan::new(&state).proposer_score_before_fix::<E>(),
+            25_600_000_000
+        );
+
+        // The rest of the safety threshold uses the total including the slashed validator. For a
+        // block at slot 1 with its parent at slot 0, evaluated at slot 2, the maximum support is
+        // one committee, 2048 ETH / 32, and the adversarial weight, which counts twice, is 25% of
+        // it: (64 + 25.2 + 2 * 16) / 2 ETH.
+        let (proto_array, block_root) = two_block_chain::<E>(&spec);
+        assert_eq!(
+            fcr.compute_safety_threshold::<E>(
+                balance_source,
+                block_root,
+                Slot::new(2),
+                &proto_array,
+                &[],
+                &BTreeSet::new(),
+            )
+            .unwrap(),
+            60_600_000_000
+        );
+    }
+
+    /// Every total is floored at `EFFECTIVE_BALANCE_INCREMENT`, as the spec's `get_total_balance`
+    /// does, before it is divided between committees.
+    #[test]
+    fn total_balances_are_floored() {
+        use balance_source::tests::{active, active_slashed, state_with_validators};
+
+        let spec = E::default_spec();
+        let total = spec.effective_balance_increment;
+        let committee_weight = total / E::slots_per_epoch();
+        let proposer_score = committee_weight * 40 / 100;
+        let (proto_array, block_root) = two_block_chain::<E>(&spec);
+        let current_slot = Slot::new(2);
+        let no_equivocations = BTreeSet::new();
+
+        // Every active validator is slashed: the unslashed total is 0.
+        let state =
+            state_with_validators::<E>(&[active_slashed(spec.max_effective_balance, &spec)], &spec);
+        let fcr = fcr_for_state(&state, &spec);
+        assert_eq!(
+            fcr.compute_proposer_score::<E>(fcr.get_current_balance_source())
+                .unwrap(),
+            proposer_score
+        );
+
+        // Every active validator has an effective balance of 0: both totals are 0.
+        let state = state_with_validators::<E>(&[active(0, &spec), active(0, &spec)], &spec);
+        let fcr = fcr_for_state(&state, &spec);
+        let balance_source = fcr.get_current_balance_source();
+        assert_eq!(fcr.get_total_active_balance(balance_source), total);
+        assert_eq!(
+            fcr.compute_proposer_score::<E>(balance_source).unwrap(),
+            proposer_score
+        );
+
+        // For the block at slot 1, evaluated at slot 2, as in
+        // `proposer_score_excludes_slashed_validators`.
+        let adversarial_weight = committee_weight / 100 * 25;
+        assert_eq!(
+            fcr.compute_adversarial_weight::<E>(
+                balance_source,
+                Slot::new(1),
+                Slot::new(1),
+                &no_equivocations
+            )
+            .unwrap(),
+            adversarial_weight
+        );
+        assert_eq!(
+            fcr.compute_safety_threshold::<E>(
+                balance_source,
+                block_root,
+                current_slot,
+                &proto_array,
+                &[],
+                &no_equivocations,
+            )
+            .unwrap(),
+            (committee_weight + proposer_score + 2 * adversarial_weight) / 2
+        );
+
+        // With no votes, the honest FFG support is the honest share of the committees from the
+        // current slot to the end of the epoch, and the FFG predicates compare it with the total.
+        // The target is the genesis checkpoint, which is not unrealized justified here. At the
+        // last slot, the support is too small for either predicate to hold. Compared with an
+        // unfloored total of 0 instead, it would satisfy both.
+        let unrealized_justified_checkpoint = Checkpoint {
+            epoch: Epoch::new(0),
+            root: Hash256::repeat_byte(3),
+        };
+        let last_slot = Slot::new(E::slots_per_epoch() - 1);
+        for (slot, expected) in [(current_slot, true), (last_slot, false)] {
+            let honest_ffg_support = (total - slot.as_u64() * committee_weight) / 100 * 75;
+            assert_eq!(
+                fcr.compute_honest_ffg_support::<E>(
+                    block_root,
+                    slot,
+                    &proto_array,
+                    &[],
+                    &no_equivocations
+                )
+                .unwrap(),
+                honest_ffg_support
+            );
+            assert_eq!(
+                fcr.will_no_conflicting_checkpoint_be_justified::<E>(
+                    block_root,
+                    &unrealized_justified_checkpoint,
+                    slot,
+                    &proto_array,
+                    &[],
+                    &no_equivocations,
+                    &HonestFfgSupportCache::new(),
+                )
+                .unwrap(),
+                expected,
+                "{slot}"
+            );
+            assert_eq!(
+                fcr.will_current_target_be_justified::<E>(
+                    block_root,
+                    slot,
+                    &proto_array,
+                    &[],
+                    &no_equivocations,
+                    &HonestFfgSupportCache::new(),
+                )
+                .unwrap(),
+                expected,
+                "{slot}"
+            );
+        }
+    }
+
     /// Regression test: a slashing processed mid-epoch must rebuild the head balance source
     /// even though the epoch boundary root is unchanged for the rest of the epoch (the FCR analogue
     /// of the unrealized-checkpoints bug fixed in sigp/lighthouse#9471).
+    ///
+    /// The slashing is applied with `slash_validator` in a block, as block processing does, so
+    /// that the state's caches stay valid and the head source is read from them.
     #[test]
     fn head_balance_source_rebuilt_after_intra_epoch_slashing() {
-        use state_processing::{GloasVerificationContext, per_slot_processing};
-        use types::MinimalEthSpec;
+        use balance_source::tests::{
+            active, assert_agrees_with_registry_scan, state_with_validators,
+        };
+        use proto_array::{FromStatePath, JustifiedBalances};
+        use state_processing::common::slash_validator;
+        use state_processing::per_block_processing::{VerifyBlockRoot, process_block_header};
+        use state_processing::{
+            AllCaches, ConsensusContext, GloasVerificationContext, per_slot_processing,
+        };
+        use types::{BeaconBlockHeader, MinimalEthSpec};
         type E = MinimalEthSpec;
 
         let spec = E::default_spec();
-        let mut state: BeaconState<E> = BeaconState::new(0, Default::default(), &spec);
-        for _ in 0..32 {
-            let validator = types::Validator {
-                effective_balance: spec.max_effective_balance,
-                activation_epoch: Epoch::new(0),
-                exit_epoch: spec.far_future_epoch,
-                withdrawable_epoch: spec.far_future_epoch,
-                ..Default::default()
-            };
-            state
-                .validators_mut()
-                .push(validator)
-                .expect("push validator");
-            state
-                .balances_mut()
-                .push(spec.max_effective_balance)
-                .expect("push balance");
-        }
-        state
-            .build_all_committee_caches(&spec)
-            .expect("committee caches");
+        let mut state =
+            state_with_validators::<E>(&vec![active(spec.max_effective_balance, &spec); 32], &spec);
 
         // Advance to a mid-epoch slot: at an epoch start the dependent root changes and would
-        // rebuild the source regardless, masking the bug.
+        // rebuild the source regardless, masking the bug. Build the caches, as `run_fcr` does for
+        // the head state.
         let mid_epoch_slot = Slot::new(E::slots_per_epoch() + 4);
         while state.slot() < mid_epoch_slot {
             per_slot_processing(
@@ -1731,20 +1966,20 @@ mod tests {
             )
             .expect("should advance slot");
         }
-        state
-            .build_all_committee_caches(&spec)
-            .expect("committee caches");
+        state.build_all_caches(&spec).expect("caches");
 
         let checkpoint = Checkpoint {
             epoch: state.current_epoch(),
             root: Hash256::repeat_byte(1),
         };
         let head_root_a = Hash256::repeat_byte(2);
+        let checkpoint_balances =
+            checkpoint_balances_from_state(&state, checkpoint).expect("checkpoint balances");
         let mut fcr = FastConfirmationRule::new::<E>(
             head_root_a,
             &state,
             checkpoint,
-            &state,
+            checkpoint_balances,
             None,
             25,
             40,
@@ -1756,16 +1991,38 @@ mod tests {
             fcr.head_balance_source.key,
             BalanceSourceKey::NoSlashings { .. }
         ));
-        assert!(!fcr.head_balance_source.slashed[0]);
+        assert_eq!(fcr.head_balance_source.path, FromStatePath::Caches);
+        assert_agrees_with_registry_scan(&fcr.head_balance_source.balances, &state);
         let pre_slashing_key = fcr.head_balance_source.key;
 
-        // Simulate a slashing landing in a new head block within the same epoch (mirroring what
-        // `slash_validator` does to the state).
-        let effective_balance = spec.max_effective_balance;
-        state.get_validator_mut(0).expect("validator 0").slashed = true;
-        state
-            .set_slashings(state.current_epoch(), effective_balance)
-            .expect("set slashings");
+        // A new head block within the same epoch includes a slashing.
+        let mut ctxt = ConsensusContext::new(state.slot());
+        let proposer_index = ctxt.get_proposer_index(&state, &spec).expect("proposer");
+        let block_header = BeaconBlockHeader {
+            slot: state.slot(),
+            proposer_index,
+            parent_root: state.latest_block_header().canonical_root(),
+            state_root: Hash256::ZERO,
+            body_root: Hash256::repeat_byte(0xbb),
+        };
+        process_block_header(
+            &mut state,
+            block_header,
+            VerifyBlockRoot::False,
+            &mut ctxt,
+            &spec,
+        )
+        .expect("block header");
+        let slashed_index = (proposer_index as usize + 1) % state.validators().len();
+        assert_eq!(
+            fcr.head_balance_source
+                .balances
+                .unslashed_balance(slashed_index),
+            spec.max_effective_balance
+        );
+        slash_validator(&mut state, slashed_index, None, &mut ctxt, &spec).expect("slashing");
+        assert!(state.slashings_cache().is_slashed(slashed_index));
+        state.build_all_caches(&spec).expect("caches");
 
         let head_root_b = Hash256::repeat_byte(3);
         fcr.update_fast_confirmation_variables::<E>(
@@ -1779,7 +2036,6 @@ mod tests {
         .expect("update variables");
 
         // The regression assertion: the balance source must have been rebuilt.
-        assert!(fcr.head_balance_source.slashed[0]);
         assert_eq!(
             fcr.head_balance_source.key,
             BalanceSourceKey::SlashingsPresent {
@@ -1787,6 +2043,19 @@ mod tests {
             }
         );
         assert_ne!(fcr.head_balance_source.key, pre_slashing_key);
+        // From the caches, and equal to the registry scan.
+        assert_eq!(fcr.head_balance_source.path, FromStatePath::Caches);
+        let balances = &fcr.head_balance_source.balances;
+        assert_eq!(
+            balances,
+            &JustifiedBalances::from_justified_state(&state).unwrap()
+        );
+        assert_agrees_with_registry_scan(balances, &state);
+        assert_eq!(balances.unslashed_balance(slashed_index), 0);
+        assert_eq!(
+            balances.active_balance(slashed_index),
+            Ok(spec.max_effective_balance)
+        );
 
         // While the epoch contains a slashing, every head change rebuilds the source.
         let head_root_c = Hash256::repeat_byte(4);
@@ -1805,5 +2074,6 @@ mod tests {
                 head_block_root: head_root_c
             }
         );
+        assert_eq!(fcr.head_balance_source.path, FromStatePath::Caches);
     }
 }

@@ -2,6 +2,7 @@ mod balances_cache;
 mod block_production;
 mod envelope_verification;
 mod events;
+mod fast_confirmation_balances;
 mod fast_confirmation_restart;
 mod inclusion_list_store;
 mod op_verification;

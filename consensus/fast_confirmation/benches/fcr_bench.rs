@@ -13,9 +13,7 @@ use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use ethereum_hashing::hash_fixed;
-use fast_confirmation::{
-    BalanceSourceData, BalanceSourceKey, CheckpointAndBalance, FastConfirmationRule,
-};
+use fast_confirmation::{CheckpointAndBalance, FastConfirmationRule};
 use fixed_bytes::FixedBytesExtended;
 use proto_array::core::{ProtoArray, VoteTracker};
 use proto_array::{Block, ExecutionStatus, JustifiedBalances, ProtoArrayForkChoice};
@@ -96,7 +94,7 @@ fn block_root_at(slot: u64) -> Hash256 {
 struct BenchData {
     proto_array: ProtoArray,
     votes: Vec<VoteTracker>,
-    balance_source: BalanceSourceData,
+    balances: JustifiedBalances,
     fcr: FastConfirmationRule,
     finalized_checkpoint: Checkpoint,
     unrealized_justified_checkpoint: Checkpoint,
@@ -115,12 +113,10 @@ impl BenchData {
         self.fcr.previous_slot_head = head_root;
         self.fcr.current_slot_head = head_root;
         self.fcr.confirmed_root = block_root_at(scenario.confirmed_slot);
-        self.fcr.current_epoch_observed_justified = CheckpointAndBalance::new(
-            self.observed_justified_checkpoint,
-            self.balance_source.clone(),
-        );
+        self.fcr.current_epoch_observed_justified =
+            CheckpointAndBalance::new(self.observed_justified_checkpoint, self.balances.clone());
         self.fcr.previous_epoch_observed_justified =
-            CheckpointAndBalance::new(self.genesis_checkpoint, self.balance_source.clone());
+            CheckpointAndBalance::new(self.genesis_checkpoint, self.balances.clone());
     }
 }
 
@@ -243,17 +239,6 @@ fn build_chain_inner(
     let proto_array = fc.core_proto_array().clone();
     let votes = fc.votes().to_vec();
 
-    let total_active_balance = BALANCE.saturating_mul(num_validators as u64);
-    let balance_source = BalanceSourceData {
-        key: BalanceSourceKey::NoSlashings {
-            epoch_boundary_root: observed_justified_checkpoint.root,
-            epoch: Slot::new(CHAIN_TIP_SLOT).epoch(E::slots_per_epoch()),
-        },
-        total_active_balance,
-        effective_balances: vec![BALANCE; num_validators],
-        slashed: vec![false; num_validators],
-    };
-
     // `new` builds head assignments/balances from the state; the bench overwrites balances and
     // slot-tracking variables, so a small committee-cache-ready state suffices (its assignments
     // aren't on the O(V) cost path).
@@ -281,19 +266,19 @@ fn build_chain_inner(
         finalized_checkpoint.root,
         &seed_state,
         finalized_checkpoint,
-        &seed_state,
+        balances.clone(),
         None,
         25,
         40,
         &spec,
     )
     .expect("fcr initialization");
-    fcr.test_set_head_balance_source(balance_source.clone());
+    fcr.test_set_head_balances(balances.clone());
 
     BenchData {
         proto_array,
         votes,
-        balance_source,
+        balances,
         fcr,
         finalized_checkpoint,
         unrealized_justified_checkpoint: observed_justified_checkpoint,
@@ -368,7 +353,7 @@ fn bench_precompute_chain_scores(c: &mut Criterion) {
                     &data.proto_array,
                     &data.block_roots[1..],
                     terminal_slot,
-                    &data.balance_source,
+                    &data.balances,
                     &data.votes,
                     &data.equivocating_indices,
                 )

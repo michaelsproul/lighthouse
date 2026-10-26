@@ -8,7 +8,7 @@ use crate::{BeaconSnapshot, metrics};
 use educe::Educe;
 use fixed_bytes::FixedBytesExtended;
 use fork_choice::ForkChoiceStore;
-use proto_array::{FromStatePath, JustifiedBalances, StateCachesError};
+use proto_array::{FromStatePath, JustifiedBalances};
 use safe_arith::ArithError;
 use ssz_derive::{Decode, Encode};
 use std::collections::BTreeSet;
@@ -57,7 +57,7 @@ fn justified_balances_from_state<E: EthSpec>(
     let (justified_balances, path) = JustifiedBalances::from_state(state)?;
     metrics::inc_counter_vec(
         &metrics::FORK_CHOICE_BALANCES_FROM_STATE,
-        &from_state_path_labels(&path),
+        &path.metric_labels(),
     );
     if let FromStatePath::Fallback(reason) = &path {
         debug!(
@@ -67,24 +67,6 @@ fn justified_balances_from_state<E: EthSpec>(
         );
     }
     Ok((justified_balances, path))
-}
-
-/// The `path` and `reason` labels of `FORK_CHOICE_BALANCES_FROM_STATE` for `path`.
-fn from_state_path_labels(path: &FromStatePath) -> [&'static str; 2] {
-    match path {
-        FromStatePath::Caches => ["caches", "none"],
-        FromStatePath::Fallback(reason) => {
-            let reason = match reason {
-                StateCachesError::EpochCacheDecisionRoot(_) => "epoch_cache_decision_root",
-                StateCachesError::EpochCacheInvalid(_) => "epoch_cache_invalid",
-                StateCachesError::CommitteeCacheUninitialized(_) => "committee_cache_uninitialized",
-                StateCachesError::SlashingsCacheUninitialized(_) => "slashings_cache_uninitialized",
-                StateCachesError::MissingEffectiveBalance { .. } => "missing_effective_balance",
-                StateCachesError::Arith(_) => "arith",
-            };
-            ["fallback", reason]
-        }
-    }
 }
 
 /// An entry of the `BalancesCache`: the balances of the checkpoint state of
@@ -135,8 +117,9 @@ impl BalancesCacheItem {
 /// though fork choice is given the post-states of those blocks.
 ///
 /// Fork choice relies on this when it adopts an entry as its justified balances. The fast
-/// confirmation rule will rely on it for safety, because its output becomes the execution
-/// layer's `safe_block_hash`.
+/// confirmation rule relies on it for safety when it adopts an entry as the balances of an
+/// observed justified checkpoint, because its output becomes the execution layer's
+/// `safe_block_hash`.
 #[derive(PartialEq, Clone, Default, Debug)]
 pub struct BalancesCache {
     items: Vec<BalancesCacheItem>,
@@ -355,7 +338,8 @@ where
     }
 
     /// The cache of checkpoint state balances, from which `set_justified_checkpoint` takes the
-    /// justified balances when it can.
+    /// justified balances when it can. The fast confirmation rule also reads entries by exact
+    /// checkpoint, relying on the invariant documented on `BalancesCache`.
     pub fn balances_cache(&self) -> &BalancesCache {
         &self.balances_cache
     }
@@ -552,6 +536,7 @@ pub struct PersistedForkChoiceStore {
 mod tests {
     use super::*;
     use crate::test_utils::{BeaconChainHarness, EphemeralHarnessType};
+    use proto_array::StateCachesError;
     use state_processing::AllCaches;
     use state_processing::state_advance::complete_state_advance;
     use store::MemoryStore;

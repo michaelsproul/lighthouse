@@ -3,9 +3,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use safe_arith::{ArithError, SafeArith};
-use types::{
-    BeaconState, BeaconStateError, ChainSpec, EpochCacheError, EthSpec, Hash256, RelativeEpoch,
-};
+use types::{BeaconState, BeaconStateError, EpochCacheError, EthSpec, Hash256, RelativeEpoch};
 
 /// The balances of a state's validator registry at the state's current epoch, as fork choice
 /// weighs votes with them.
@@ -81,6 +79,20 @@ impl From<ArithError> for StateCachesError {
     }
 }
 
+impl StateCachesError {
+    /// A name for the precondition that failed, for use as a metric label.
+    pub fn metric_label(&self) -> &'static str {
+        match self {
+            Self::EpochCacheDecisionRoot(_) => "epoch_cache_decision_root",
+            Self::EpochCacheInvalid(_) => "epoch_cache_invalid",
+            Self::CommitteeCacheUninitialized(_) => "committee_cache_uninitialized",
+            Self::SlashingsCacheUninitialized(_) => "slashings_cache_uninitialized",
+            Self::MissingEffectiveBalance { .. } => "missing_effective_balance",
+            Self::Arith(_) => "arith",
+        }
+    }
+}
+
 /// Which construction `JustifiedBalances::from_state` used.
 #[derive(Debug, PartialEq, Clone)]
 pub enum FromStatePath {
@@ -89,6 +101,17 @@ pub enum FromStatePath {
     /// The state's caches could not be used for the given reason, so the balances were read from
     /// the validator registry.
     Fallback(StateCachesError),
+}
+
+impl FromStatePath {
+    /// The `path` and `reason` metric labels for this path: `caches` and `none`, or `fallback`
+    /// and the precondition that failed.
+    pub fn metric_labels(&self) -> [&'static str; 2] {
+        match self {
+            Self::Caches => ["caches", "none"],
+            Self::Fallback(reason) => ["fallback", reason.metric_label()],
+        }
+    }
 }
 
 impl JustifiedBalances {
@@ -354,24 +377,24 @@ impl JustifiedBalances {
     }
 
     /// The total effective balance of unslashed validators, floored at
-    /// `EFFECTIVE_BALANCE_INCREMENT`.
+    /// `effective_balance_increment`, the spec's `EFFECTIVE_BALANCE_INCREMENT`.
     ///
     /// Spec: `get_total_balance` of the unslashed active validators, as used by
     /// `calculate_committee_fraction`.
-    pub fn total_unslashed_balance(&self, spec: &ChainSpec) -> u64 {
+    pub fn total_unslashed_balance(&self, effective_balance_increment: u64) -> u64 {
         cmp::max(
-            spec.effective_balance_increment,
+            effective_balance_increment,
             self.inner.raw_total_unslashed_balance,
         )
     }
 
     /// The total effective balance of all active validators, slashed or not, floored at
-    /// `EFFECTIVE_BALANCE_INCREMENT`.
+    /// `effective_balance_increment`, the spec's `EFFECTIVE_BALANCE_INCREMENT`.
     ///
     /// Spec: `get_total_active_balance`.
-    pub fn total_active_balance(&self, spec: &ChainSpec) -> u64 {
+    pub fn total_active_balance(&self, effective_balance_increment: u64) -> u64 {
         cmp::max(
-            spec.effective_balance_increment,
+            effective_balance_increment,
             self.inner.raw_total_active_balance,
         )
     }
@@ -403,9 +426,9 @@ mod tests {
     use std::sync::LazyLock;
     use types::test_utils::generate_deterministic_keypair;
     use types::{
-        ActivationQueue, BeaconBlockHeader, DepositData, Epoch, EpochCache, EpochCacheKey,
-        ForkName, MainnetEthSpec, MinimalEthSpec, PendingConsolidation, PendingDeposit,
-        SlashingsCache, Slot, Validator,
+        ActivationQueue, BeaconBlockHeader, ChainSpec, DepositData, Epoch, EpochCache,
+        EpochCacheKey, ForkName, MainnetEthSpec, MinimalEthSpec, PendingConsolidation,
+        PendingDeposit, SlashingsCache, Slot, Validator,
     };
 
     type E = MinimalEthSpec;
@@ -497,8 +520,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0, 32 * ETH)]
         );
-        assert_eq!(justified_balances.total_unslashed_balance(&spec), 32 * ETH);
-        assert_eq!(justified_balances.total_active_balance(&spec), 63 * ETH);
+        assert_eq!(
+            justified_balances.total_unslashed_balance(spec.effective_balance_increment),
+            32 * ETH
+        );
+        assert_eq!(
+            justified_balances.total_active_balance(spec.effective_balance_increment),
+            63 * ETH
+        );
     }
 
     #[test]
@@ -545,12 +574,15 @@ mod tests {
 
         assert_eq!(justified_balances.raw_total_unslashed_balance(), 0);
         assert_eq!(
-            justified_balances.total_unslashed_balance(&spec),
+            justified_balances.total_unslashed_balance(spec.effective_balance_increment),
             spec.effective_balance_increment
         );
         // The slashed-inclusive total comes from the raw unslashed total, not the floored one.
         assert_eq!(justified_balances.raw_total_active_balance(), 63 * ETH);
-        assert_eq!(justified_balances.total_active_balance(&spec), 63 * ETH);
+        assert_eq!(
+            justified_balances.total_active_balance(spec.effective_balance_increment),
+            63 * ETH
+        );
         assert_eq!(justified_balances.num_unslashed_validators(), 0);
     }
 
@@ -569,11 +601,11 @@ mod tests {
             assert_eq!(justified_balances.raw_total_unslashed_balance(), 0);
             assert_eq!(justified_balances.raw_total_active_balance(), 0);
             assert_eq!(
-                justified_balances.total_unslashed_balance(&spec),
+                justified_balances.total_unslashed_balance(spec.effective_balance_increment),
                 spec.effective_balance_increment
             );
             assert_eq!(
-                justified_balances.total_active_balance(&spec),
+                justified_balances.total_active_balance(spec.effective_balance_increment),
                 spec.effective_balance_increment
             );
             assert_eq!(justified_balances.unslashed_balance(0), 0);
