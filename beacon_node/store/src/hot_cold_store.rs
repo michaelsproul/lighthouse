@@ -3,7 +3,7 @@ use crate::database::interface::BeaconNodeBackend;
 use crate::forwards_iter::{HybridForwardsBlockRootsIterator, HybridForwardsStateRootsIterator};
 use crate::hdiff::{HDiff, HDiffBuffer, HierarchyConfig, HierarchyModuli, StorageStrategy};
 use crate::historic_state_cache::HistoricStateCache;
-use crate::iter::{BlockRootsIterator, ParentRootBlockIterator, RootsIterator};
+use crate::iter::{ParentRootBlockIterator, RootsIterator};
 use crate::memory_store::MemoryStore;
 use crate::metadata::{
     ANCHOR_INFO_KEY, ANCHOR_UNINITIALIZED, AnchorInfo, COMPACTION_TIMESTAMP_KEY, CONFIG_KEY,
@@ -3114,136 +3114,210 @@ impl<E: EthSpec, Hot: ItemStore, Cold: ItemStore> HotColdDB<E, Hot, Cold> {
             .transpose()?)
     }
 
-    /// Try to prune all finalized execution payloads and payload-envelope bodies, returning early
-    /// if there is no need to prune.
-    pub fn try_prune_execution_payloads(&self, force: bool) -> Result<(), Error> {
-        let split = self.get_split_info();
+    /// Try to prune all finalized execution payloads and payload envelope bodies.
+    ///
+    /// Finalized block roots are read from the freezer DB, which has them for every slot from the
+    /// `oldest_block_slot` up to the split slot, regardless of whether historic states are stored.
+    /// The range is processed in chunks of `SLOTS_PER_HISTORICAL_ROOT` slots, each committed
+    /// separately so that an interrupted run resumes where it left off. Unless `force` is set, a
+    /// chunk is only pruned if a block near either end of it still has payload data stored.
+    ///
+    /// The split block's payload is never pruned here, even if the split slot is skipped, as it
+    /// is the head block after checkpoint sync from an unaligned checkpoint.
+    pub fn try_prune_execution_payloads(
+        &self,
+        force: bool,
+    ) -> Result<PayloadPruningOutcome, Error> {
+        let mut outcome = PayloadPruningOutcome::default();
 
-        if split.slot == 0 {
-            return Ok(());
-        }
-
-        let bellatrix_fork_slot = if let Some(epoch) = self.spec.bellatrix_fork_epoch {
-            epoch.start_slot(E::slots_per_epoch())
-        } else {
-            return Ok(());
+        let Some(bellatrix_fork_epoch) = self.spec.bellatrix_fork_epoch else {
+            return Ok(outcome);
         };
+        let bellatrix_fork_slot = bellatrix_fork_epoch.start_slot(E::slots_per_epoch());
 
-        // Load the split state so we can backtrack to find execution payloads. The split state
-        // should be in the state cache as the enshrined finalized state, so this should never
-        // cache miss.
-        let split_state = self
-            .get_state(&split.state_root, Some(split.slot), true)?
-            .ok_or(HotColdDBError::MissingSplitState(
-                split.state_root,
-                split.slot,
-            ))?;
-
-        // The finalized block may or may not have its execution payload stored, depending on
-        // whether it was at a skipped slot. Check the newest prior block that could have payload
-        // data. In Gloas, a WITHHELD block has no envelope summary or payload, so its absence does
-        // not prove that older envelope payloads have already been pruned.
-        let split_block_root = split_state.get_latest_block_root(split.state_root);
-
-        let already_pruned =
-            process_results(split_state.rev_iter_block_roots(&self.spec), |iter| {
-                self.finalized_payloads_are_pruned(split_block_root, iter)
-            })??;
-
-        if already_pruned && !force {
-            info!("Execution payloads and payload envelope bodies are pruned");
-            return Ok(());
+        let split = self.get_split_info();
+        let start_slot = std::cmp::max(bellatrix_fork_slot, self.get_oldest_block_slot());
+        let end_slot = split.slot;
+        if start_slot >= end_slot {
+            return Ok(outcome);
         }
 
-        // Iterate block roots backwards to the Bellatrix fork or the anchor slot, whichever comes
-        // first.
-        warn!(
-            info = "you may notice degraded I/O performance while this runs",
-            "Pruning finalized payloads"
-        );
-        let anchor_info = self.get_anchor_info();
+        // Chunks are aligned to multiples of the chunk size, so that the same blocks are probed
+        // on every run.
+        let chunk_size = E::slots_per_historical_root() as u64;
+        let first_chunk_index = start_slot.as_u64() / chunk_size;
+        let end_chunk_index = end_slot.as_u64().div_ceil(chunk_size);
+        let num_chunks = end_chunk_index.saturating_sub(first_chunk_index);
+        let progress_interval = std::cmp::max(num_chunks / 10, 1);
 
-        let mut ops = vec![];
-        let mut last_pruned_block_root = None;
+        for (chunks_processed, chunk_index) in (first_chunk_index..end_chunk_index).enumerate() {
+            let chunk_start = std::cmp::max(
+                Slot::new(chunk_index.saturating_mul(chunk_size)),
+                start_slot,
+            );
+            let chunk_end = std::cmp::min(
+                Slot::new(chunk_index.saturating_add(1).saturating_mul(chunk_size)),
+                end_slot,
+            );
 
-        for res in std::iter::once(Ok((split_block_root, split.slot)))
-            .chain(BlockRootsIterator::new(self, &split_state))
-        {
-            let (block_root, slot) = match res {
-                Ok(tuple) => tuple,
-                Err(e) => {
+            if force
+                || self.finalized_payloads_stored_in_range(
+                    chunk_start,
+                    chunk_end,
+                    split.block_root,
+                )?
+            {
+                if outcome.chunks_pruned == 0 {
                     warn!(
-                        error = ?e,
-                        "Stopping payload pruning early"
+                        info = "you may notice degraded I/O performance while this runs",
+                        %start_slot,
+                        %end_slot,
+                        "Pruning finalized payloads"
                     );
-                    break;
                 }
-            };
 
-            if slot < bellatrix_fork_slot {
-                info!("Payload pruning reached Bellatrix boundary");
-                break;
+                match self.prune_finalized_payloads_in_range(
+                    chunk_start,
+                    chunk_end,
+                    split.block_root,
+                ) {
+                    Ok(blocks_processed) => {
+                        outcome.chunks_pruned = outcome.chunks_pruned.saturating_add(1);
+                        outcome.blocks_processed =
+                            outcome.blocks_processed.saturating_add(blocks_processed);
+                    }
+                    Err(e) => {
+                        warn!(
+                            error = ?e,
+                            %chunk_start,
+                            "Stopping payload pruning early"
+                        );
+                        break;
+                    }
+                }
             }
 
-            if Some(block_root) != last_pruned_block_root {
-                if self.execution_payload_exists(&block_root)? {
-                    debug!(%slot, ?block_root, "Pruning execution payload");
-                    ops.push(StoreOp::DeleteExecutionPayload(block_root));
-                }
-
-                if self.payload_body_exists(&block_root)? {
-                    debug!(%slot, ?block_root, "Pruning payload envelope body");
-                    ops.push(StoreOp::DeletePayload(block_root));
-                }
-
-                last_pruned_block_root = Some(block_root);
-            }
-
-            if slot <= anchor_info.oldest_block_slot {
-                info!(%slot, "Payload pruning reached anchor oldest block slot");
-                break;
+            let chunks_processed = (chunks_processed as u64).saturating_add(1);
+            if outcome.chunks_pruned > 0
+                && chunks_processed < num_chunks
+                && chunks_processed.is_multiple_of(progress_interval)
+            {
+                info!(
+                    pruned_up_to_slot = %chunk_end,
+                    %end_slot,
+                    chunks_pruned = outcome.chunks_pruned,
+                    "Payload pruning in progress"
+                );
             }
         }
-        let payloads_pruned = ops.len();
-        self.do_atomically_with_block_and_blobs_cache(ops)?;
-        info!(%payloads_pruned, "Execution payload pruning complete");
-        Ok(())
+
+        if outcome.chunks_pruned == 0 {
+            info!("Execution payloads and payload envelope bodies are pruned");
+        } else {
+            info!(
+                chunks_pruned = outcome.chunks_pruned,
+                blocks_processed = outcome.blocks_processed,
+                "Execution payload pruning complete"
+            );
+        }
+        Ok(outcome)
     }
 
-    /// Check the newest canonical block before `split_block_root` that could have stored payload
-    /// data. Payload pruning proceeds backwards, so its state indicates whether there is any work
-    /// left to do.
-    fn finalized_payloads_are_pruned(
+    /// Check whether the finalized range `start_slot..end_slot` still has payload data stored, by
+    /// checking the blocks nearest to either end of it that could have payload data, other than
+    /// the split block.
+    fn finalized_payloads_stored_in_range(
         &self,
+        start_slot: Slot,
+        end_slot: Slot,
         split_block_root: Hash256,
-        block_roots: impl Iterator<Item = (Slot, Hash256)>,
     ) -> Result<bool, Error> {
-        for (slot, block_root) in block_roots {
-            if block_root == split_block_root {
-                continue;
-            }
+        let slots = (start_slot.as_u64()..end_slot.as_u64()).map(Slot::new);
+        Ok(
+            self.finalized_payload_stored(slots.clone(), split_block_root)? == Some(true)
+                || self.finalized_payload_stored(slots.rev(), split_block_root)? == Some(true),
+        )
+    }
 
-            if self.execution_payload_exists(&block_root)? {
-                return Ok(false);
+    /// Check whether the first canonical block in `slots` that could have payload data (other than
+    /// the split block) has it stored, or return `None` if none of them could.
+    fn finalized_payload_stored(
+        &self,
+        slots: impl Iterator<Item = Slot>,
+        split_block_root: Hash256,
+    ) -> Result<Option<bool>, Error> {
+        let mut prev_block_root = None;
+        for slot in slots {
+            let Some(block_root) = self.get_cold_block_root(slot)? else {
+                continue;
+            };
+            if prev_block_root.replace(block_root) == Some(block_root)
+                || block_root == split_block_root
+            {
+                continue;
             }
 
             if self.spec.fork_name_at_slot::<E>(slot).gloas_enabled() {
                 if !self.payload_envelope_summary_exists(&block_root)? {
-                    // A canonical Gloas block without a summary was WITHHELD and never had an
-                    // envelope payload. Continue backwards until we find a FULL block.
+                    // A canonical Gloas block without a summary was WITHHELD (or finalized as
+                    // EMPTY) and never had a payload body stored, so try the next block.
                     continue;
                 }
-                return Ok(!self.payload_body_exists(&block_root)?);
-            } else {
-                // Before Gloas, an absent execution payload means this part of the chain has
-                // already been pruned (or predates Bellatrix).
-                return Ok(true);
+                return self.payload_body_exists(&block_root).map(Some);
             }
+            return self.execution_payload_exists(&block_root).map(Some);
+        }
+        Ok(None)
+    }
+
+    /// Delete the execution payloads and payload envelope bodies of the canonical blocks in the
+    /// finalized range `start_slot..end_slot` other than the split block, returning the number of
+    /// blocks processed.
+    ///
+    /// Deletes are issued without checking whether each payload is stored, as checking would
+    /// require reading it from disk.
+    fn prune_finalized_payloads_in_range(
+        &self,
+        start_slot: Slot,
+        end_slot: Slot,
+        split_block_root: Hash256,
+    ) -> Result<usize, Error> {
+        // The range ends before the split slot, so its block roots are all read from the freezer
+        // DB and no state is needed to iterate them.
+        let block_roots = self.forwards_block_roots_iterator_until(
+            start_slot,
+            end_slot.saturating_sub(1u64),
+            || Err(Error::NoContinuationData),
+        )?;
+
+        let mut ops = vec![];
+        let mut prev_block_root = None;
+        let mut blocks_processed = 0;
+        for res in block_roots {
+            let (block_root, slot) = res?;
+            if prev_block_root == Some(block_root) {
+                continue;
+            }
+            let is_first_block = prev_block_root.replace(block_root).is_none();
+            if block_root == split_block_root {
+                continue;
+            }
+
+            if is_first_block {
+                // If `start_slot` is skipped then the first block is from an earlier slot, which
+                // could be from before Gloas, so delete from both columns.
+                ops.push(StoreOp::DeleteExecutionPayload(block_root));
+                ops.push(StoreOp::DeletePayload(block_root));
+            } else if self.spec.fork_name_at_slot::<E>(slot).gloas_enabled() {
+                ops.push(StoreOp::DeletePayload(block_root));
+            } else {
+                ops.push(StoreOp::DeleteExecutionPayload(block_root));
+            }
+            blocks_processed += 1;
         }
 
-        // In case of a long split with no suitable parent, continue as if payloads are pruned. The
-        // node probably has other things to worry about and a forced prune remains available.
-        Ok(true)
+        self.do_atomically_with_block_and_blobs_cache(ops)?;
+        Ok(blocks_processed)
     }
 
     /// Try to prune blobs, approximating the current epoch from the split slot.
@@ -3671,6 +3745,15 @@ pub fn migrate_database<E: EthSpec, Hot: ItemStore, Cold: ItemStore>(
     })
 }
 
+/// Summary of a call to `HotColdDB::try_prune_execution_payloads`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PayloadPruningOutcome {
+    /// Number of chunks of finalized slots that were pruned.
+    pub chunks_pruned: usize,
+    /// Number of finalized blocks whose payload data was deleted (if it was stored).
+    pub blocks_processed: usize,
+}
+
 #[derive(Debug)]
 pub struct SplitChange {
     pub previous: Split,
@@ -4064,10 +4147,11 @@ impl BytesKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::KeyValueStore;
     use bls::Signature;
 
     #[test]
-    fn payload_pruning_fast_path_skips_withheld_gloas_blocks() {
+    fn payload_pruning_probe_skips_split_and_withheld_gloas_blocks() {
         type E = Spec;
 
         let mut spec = E::default_spec();
@@ -4098,29 +4182,42 @@ mod tests {
             .put_payload_envelope(&full_block_root, &envelope)
             .expect("envelope should be stored");
 
-        let block_roots = || {
-            [
-                (Slot::new(4), split_block_root),
-                (Slot::new(3), withheld_block_root),
-                (Slot::new(2), full_block_root),
-            ]
-            .into_iter()
+        for (slot, block_root) in [
+            (2u64, full_block_root),
+            (3, withheld_block_root),
+            (4, split_block_root),
+        ] {
+            store
+                .cold_db
+                .put_bytes(
+                    DBColumn::BeaconBlockRoots,
+                    &slot.to_be_bytes(),
+                    block_root.as_slice(),
+                )
+                .expect("block root should be stored");
+        }
+
+        // Probing backwards from the split block must skip it and the withheld block.
+        let probe_backwards = |start_slot: u64| {
+            store
+                .finalized_payload_stored((start_slot..5).rev().map(Slot::new), split_block_root)
+                .expect("payload pruning state should be detected")
+        };
+        let range_has_payloads = || {
+            store
+                .finalized_payloads_stored_in_range(Slot::new(2), Slot::new(5), split_block_root)
+                .expect("payload pruning state should be detected")
         };
 
-        assert!(
-            !store
-                .finalized_payloads_are_pruned(split_block_root, block_roots())
-                .expect("pruning state should be detected")
-        );
+        assert_eq!(probe_backwards(2), Some(true));
+        assert_eq!(probe_backwards(3), None);
+        assert!(range_has_payloads());
 
         store
             .do_atomically_with_block_and_blobs_cache(vec![StoreOp::DeletePayload(full_block_root)])
             .expect("envelope payload should be pruned");
 
-        assert!(
-            store
-                .finalized_payloads_are_pruned(split_block_root, block_roots())
-                .expect("pruning state should be detected")
-        );
+        assert_eq!(probe_backwards(2), Some(false));
+        assert!(!range_has_payloads());
     }
 }

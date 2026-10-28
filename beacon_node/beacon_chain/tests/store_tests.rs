@@ -52,11 +52,11 @@ use std::time::Duration;
 use store::database::interface::BeaconNodeBackend;
 use store::invariants::InvariantViolation;
 use store::metadata::{
-    BLOB_INFO_KEY, BlobInfo, CURRENT_SCHEMA_VERSION, DATA_COLUMN_INFO_KEY, DATA_INFO_KEY,
-    DataColumnInfo, DataInfo, STATE_UPPER_LIMIT_NO_RETAIN, SchemaVersion,
+    AnchorInfo, BLOB_INFO_KEY, BlobInfo, CURRENT_SCHEMA_VERSION, DATA_COLUMN_INFO_KEY,
+    DATA_INFO_KEY, DataColumnInfo, DataInfo, STATE_UPPER_LIMIT_NO_RETAIN, SchemaVersion,
 };
 use store::{
-    DBColumn, HotColdDB, StoreConfig, StoreOp,
+    DBColumn, HotColdDB, PayloadPruningOutcome, StoreConfig, StoreOp,
     hdiff::HierarchyConfig,
     iter::{BlockRootsIterator, StateRootsIterator},
 };
@@ -4279,6 +4279,10 @@ async fn reproduction_unaligned_checkpoint_sync_pruned_payload() {
         chain.head_snapshot().beacon_state.slot()
     );
 
+    // Payloads are pruned in the background on startup, so prune here too rather than racing it.
+    // The anchor block is the split block, whose payload must not be pruned.
+    chain.store.try_prune_execution_payloads(false).unwrap();
+
     // In Gloas, the execution payload envelope is separate from the block and will be synced
     // from the network. We don't check for its existence here.
     if !wss_block.fork_name_unchecked().gloas_enabled() {
@@ -7140,6 +7144,308 @@ async fn prune_historic_states() {
 
     check_finalization(&harness, num_blocks_produced + additional_blocks_produced);
     check_split_slot(&harness, store);
+}
+
+/// Build a chain on a node with payload pruning disabled, as if run with `--prune-payloads false`.
+///
+/// If `prune_states` is set then historic states are pruned afterwards, as on a non-archive node.
+/// If `skip_epoch_start_slots` is set then the first slot of every epoch is skipped, including the
+/// split slot.
+async fn get_harness_without_payload_pruning(
+    db_path: &TempDir,
+    prune_states: bool,
+    skip_epoch_start_slots: bool,
+) -> (
+    Arc<HotColdDB<E, BeaconNodeBackend, BeaconNodeBackend>>,
+    TestHarness,
+) {
+    let store = get_store(db_path);
+    let harness = get_harness(store.clone(), LOW_VALIDATOR_COUNT);
+    let all_validators = (0..LOW_VALIDATOR_COUNT).collect::<Vec<_>>();
+    let genesis_state_root = harness.chain.genesis_state_root;
+    let genesis_state = harness.get_current_state();
+
+    // With the minimal spec this spans more than one chunk of `SLOTS_PER_HISTORICAL_ROOT` slots.
+    let num_slots = E::slots_per_epoch() * 12;
+    let slots = (1..=num_slots)
+        .filter(|slot| !skip_epoch_start_slots || slot % E::slots_per_epoch() != 0)
+        .map(Slot::new)
+        .collect::<Vec<_>>();
+    harness
+        .add_attested_blocks_at_slots(genesis_state.clone(), &slots, &all_validators)
+        .await;
+
+    if prune_states {
+        store
+            .prune_historic_states(genesis_state_root, &genesis_state)
+            .unwrap();
+        assert!(
+            store
+                .get_anchor_info()
+                .no_historic_states_stored(store.get_split_slot())
+        );
+    }
+
+    let split = store.get_split_info();
+    assert!(
+        split.slot >= E::slots_per_epoch() * 9,
+        "chain should finalize"
+    );
+    let block_at_split_slot = harness
+        .chain
+        .block_root_at_slot(split.slot, WhenSlotSkipped::None)
+        .unwrap();
+    assert_eq!(block_at_split_slot.is_none(), skip_epoch_start_slots);
+    (store, harness)
+}
+
+/// Canonical blocks from `start_slot` to the head, omitting the repeated roots of skipped slots.
+fn canonical_blocks_from(harness: &TestHarness, start_slot: Slot) -> Vec<(Hash256, Slot)> {
+    let mut blocks = harness
+        .chain
+        .forwards_iter_block_roots(start_slot)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+    blocks.dedup_by_key(|(block_root, _)| *block_root);
+    blocks
+}
+
+fn payload_data_stored(
+    store: &HotColdDB<E, BeaconNodeBackend, BeaconNodeBackend>,
+    block_root: &Hash256,
+) -> bool {
+    store.execution_payload_exists(block_root).unwrap()
+        || store.payload_body_exists(block_root).unwrap()
+}
+
+/// Delete the payload data of `blocks`, as an earlier pruning run would have.
+fn delete_payload_data(
+    store: &HotColdDB<E, BeaconNodeBackend, BeaconNodeBackend>,
+    blocks: &[(Hash256, Slot)],
+) {
+    let ops = blocks
+        .iter()
+        .flat_map(|(block_root, _)| {
+            [
+                StoreOp::DeleteExecutionPayload(*block_root),
+                StoreOp::DeletePayload(*block_root),
+            ]
+        })
+        .collect();
+    store.do_atomically_with_block_and_blobs_cache(ops).unwrap();
+}
+
+/// Number of chunks that payload pruning divides `start_slot..end_slot` into.
+fn num_payload_pruning_chunks(start_slot: Slot, end_slot: Slot) -> usize {
+    let chunk_size = E::slots_per_historical_root() as u64;
+    (end_slot.as_u64().div_ceil(chunk_size) - start_slot.as_u64() / chunk_size) as usize
+}
+
+/// Check that payload data is pruned for the canonical blocks before the split slot (from
+/// `start_slot`) and retained for the blocks after it. The split block is not checked.
+fn assert_finalized_payloads_pruned(
+    harness: &TestHarness,
+    store: &HotColdDB<E, BeaconNodeBackend, BeaconNodeBackend>,
+    start_slot: Slot,
+) {
+    let split = store.get_split_info();
+    let split_slot = split.slot;
+    for (block_root, slot) in canonical_blocks_from(harness, start_slot) {
+        if block_root == split.block_root {
+            continue;
+        } else if slot < split_slot {
+            assert!(
+                !payload_data_stored(store, &block_root),
+                "finalized payload at slot {slot} should be pruned"
+            );
+        } else if slot > split_slot {
+            assert!(
+                payload_data_stored(store, &block_root),
+                "unfinalized payload at slot {slot} should be retained"
+            );
+        }
+    }
+}
+
+async fn check_payload_pruning_enabled_later(prune_states: bool, skip_epoch_start_slots: bool) {
+    let db_path = tempdir().unwrap();
+    let (store, harness) =
+        get_harness_without_payload_pruning(&db_path, prune_states, skip_epoch_start_slots).await;
+    let split = store.get_split_info();
+
+    for (block_root, slot) in canonical_blocks_from(&harness, Slot::new(1)) {
+        assert!(
+            payload_data_stored(&store, &block_root),
+            "payload at slot {slot} should be stored before pruning"
+        );
+    }
+
+    let outcome = store.try_prune_execution_payloads(false).unwrap();
+    assert_eq!(
+        outcome.chunks_pruned,
+        num_payload_pruning_chunks(Slot::new(0), split.slot)
+    );
+    assert_finalized_payloads_pruned(&harness, &store, Slot::new(0));
+    // The split block's payload is retained, even if the split slot is skipped.
+    assert!(payload_data_stored(&store, &split.block_root));
+
+    // Once pruned, there is nothing left to prune.
+    assert_eq!(
+        store.try_prune_execution_payloads(false).unwrap(),
+        PayloadPruningOutcome::default()
+    );
+}
+
+#[tokio::test]
+async fn payload_pruning_enabled_later_non_archive() {
+    check_payload_pruning_enabled_later(true, false).await;
+}
+
+#[tokio::test]
+async fn payload_pruning_enabled_later_archive() {
+    check_payload_pruning_enabled_later(false, false).await;
+}
+
+#[tokio::test]
+async fn payload_pruning_enabled_later_skipped_split_slot() {
+    check_payload_pruning_enabled_later(true, true).await;
+}
+
+// Previously, pruning on a node without historic states stopped after `SLOTS_PER_HISTORICAL_ROOT`
+// slots, and later runs skipped pruning because the most recent finalized payloads were gone.
+#[tokio::test]
+async fn payload_pruning_after_history_limited_prune() {
+    let db_path = tempdir().unwrap();
+    let (store, harness) = get_harness_without_payload_pruning(&db_path, true, false).await;
+    let split_slot = store.get_split_slot();
+
+    let history_start_slot = split_slot.saturating_sub(E::slots_per_historical_root() as u64);
+    let recently_finalized_blocks = canonical_blocks_from(&harness, history_start_slot)
+        .into_iter()
+        .filter(|(_, slot)| *slot <= split_slot)
+        .collect::<Vec<_>>();
+    delete_payload_data(&store, &recently_finalized_blocks);
+
+    let outcome = store.try_prune_execution_payloads(false).unwrap();
+    let expected_chunks_pruned = if history_start_slot > 0 {
+        num_payload_pruning_chunks(Slot::new(0), history_start_slot)
+    } else {
+        0
+    };
+    assert_eq!(outcome.chunks_pruned, expected_chunks_pruned);
+    assert_finalized_payloads_pruned(&harness, &store, Slot::new(0));
+}
+
+#[tokio::test]
+async fn payload_pruning_resumes_after_interruption() {
+    let db_path = tempdir().unwrap();
+    let (store, harness) = get_harness_without_payload_pruning(&db_path, true, false).await;
+    let split_slot = store.get_split_slot();
+
+    // Model a run that was interrupted after pruning the first chunk.
+    let first_chunk_end =
+        std::cmp::min(Slot::new(E::slots_per_historical_root() as u64), split_slot);
+    let first_chunk_blocks = canonical_blocks_from(&harness, Slot::new(0))
+        .into_iter()
+        .filter(|(_, slot)| *slot < first_chunk_end)
+        .collect::<Vec<_>>();
+    delete_payload_data(&store, &first_chunk_blocks);
+
+    let outcome = store.try_prune_execution_payloads(false).unwrap();
+    assert_eq!(
+        outcome.chunks_pruned,
+        num_payload_pruning_chunks(Slot::new(0), split_slot) - 1
+    );
+    assert_finalized_payloads_pruned(&harness, &store, Slot::new(0));
+}
+
+#[tokio::test]
+async fn payload_pruning_probes_past_withheld_payloads() {
+    if !test_spec::<E>()
+        .fork_name_at_slot::<E>(Slot::new(1))
+        .gloas_enabled()
+    {
+        return;
+    }
+
+    let db_path = tempdir().unwrap();
+    let (store, harness) = get_harness_without_payload_pruning(&db_path, true, false).await;
+    let split_slot = store.get_split_slot();
+
+    // Model WITHHELD payloads (with no summary or body) at both ends of the first chunk, so that
+    // detecting its payloads requires probing past them.
+    let first_chunk_end =
+        std::cmp::min(Slot::new(E::slots_per_historical_root() as u64), split_slot);
+    let first_chunk_blocks = canonical_blocks_from(&harness, Slot::new(0))
+        .into_iter()
+        .filter(|(_, slot)| *slot < first_chunk_end)
+        .collect::<Vec<_>>();
+    let num_blocks = first_chunk_blocks.len();
+    let withheld_blocks = [0, 1, num_blocks - 2, num_blocks - 1].map(|i| first_chunk_blocks[i]);
+    store
+        .do_atomically_with_block_and_blobs_cache(
+            withheld_blocks
+                .iter()
+                .map(|(block_root, _)| StoreOp::DeletePayloadWithSummary(*block_root))
+                .collect(),
+        )
+        .unwrap();
+
+    let outcome = store.try_prune_execution_payloads(false).unwrap();
+    assert_eq!(
+        outcome.chunks_pruned,
+        num_payload_pruning_chunks(Slot::new(0), split_slot)
+    );
+    assert_finalized_payloads_pruned(&harness, &store, Slot::new(0));
+
+    // Pruning removes payload bodies but retains envelope summaries.
+    for (block_root, slot) in canonical_blocks_from(&harness, Slot::new(1)) {
+        if !withheld_blocks.contains(&(block_root, slot)) {
+            assert!(
+                store.payload_envelope_summary_exists(&block_root).unwrap(),
+                "envelope summary at slot {slot} should be retained"
+            );
+        }
+    }
+}
+
+// After checkpoint sync, payloads are only stored from the `oldest_block_slot`, and the freezer
+// only has block roots from there.
+#[tokio::test]
+async fn payload_pruning_starts_at_oldest_block_slot() {
+    let db_path = tempdir().unwrap();
+    let (store, harness) = get_harness_without_payload_pruning(&db_path, true, false).await;
+    let split_slot = store.get_split_slot();
+
+    let oldest_block_slot = Slot::new(E::slots_per_epoch() * 2 + 3);
+    let blocks_before_oldest_block_slot = canonical_blocks_from(&harness, Slot::new(1))
+        .into_iter()
+        .filter(|(_, slot)| *slot < oldest_block_slot)
+        .collect::<Vec<_>>();
+    let anchor = store.get_anchor_info();
+    store
+        .compare_and_set_anchor_info_with_write(
+            anchor.clone(),
+            AnchorInfo {
+                oldest_block_slot,
+                ..anchor
+            },
+        )
+        .unwrap();
+
+    let outcome = store.try_prune_execution_payloads(false).unwrap();
+    assert_eq!(
+        outcome.chunks_pruned,
+        num_payload_pruning_chunks(oldest_block_slot, split_slot)
+    );
+    assert_finalized_payloads_pruned(&harness, &store, oldest_block_slot);
+    for (block_root, slot) in blocks_before_oldest_block_slot {
+        assert!(
+            payload_data_stored(&store, &block_root),
+            "payload at slot {slot} before the oldest block slot should not be touched"
+        );
+    }
 }
 
 // Test the function `get_ancestor_state_root` for slots prior to the split where we only have
