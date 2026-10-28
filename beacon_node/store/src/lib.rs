@@ -27,7 +27,7 @@ pub mod iter;
 
 pub use self::blob_sidecar_list_from_root::BlobSidecarListFromRoot;
 pub use self::config::StoreConfig;
-pub use self::hot_cold_store::{HotColdDB, HotStateSummary, Split};
+pub use self::hot_cold_store::{HotColdDB, HotStateSummary, PayloadPruningOutcome, Split};
 pub use self::memory_store::MemoryStore;
 pub use crate::metadata::DataInfo;
 pub use errors::Error;
