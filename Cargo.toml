@@ -237,6 +237,7 @@ slot_clock = { path = "common/slot_clock" }
 smallvec = "1"
 snap = "1"
 ssz_types = { version = "0.14.0", features = ["context_deserialize", "runtime_types"] }
+sszen = { path = "../sszen/core", default-features = false, features = ["std"] }
 state_processing = { path = "consensus/state_processing" }
 store = { path = "beacon_node/store" }
 strum = { version = "0.27", features = ["derive"] }

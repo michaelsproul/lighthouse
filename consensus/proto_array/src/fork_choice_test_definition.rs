@@ -5,11 +5,15 @@ mod no_votes;
 mod votes;
 
 use crate::error::Error;
-use crate::proto_array_fork_choice::{Block, ExecutionStatus, PayloadStatus, ProtoArrayForkChoice};
+use crate::proto_array::ProtoNode;
+use crate::proto_array_fork_choice::{
+    Block, ExecutionStatus, PayloadStatus, ProtoArrayForkChoice, VoteTracker,
+};
 use crate::{InvalidationOperation, JustifiedBalances, ParentPayloadStatus};
 use fixed_bytes::FixedBytesExtended;
 use serde::{Deserialize, Serialize};
-use ssz::BitVector;
+use ssz::{BitVector, Encode};
+use ssz_derive::Encode;
 use std::collections::BTreeSet;
 use std::time::Duration;
 use types::{
@@ -699,8 +703,32 @@ fn assert_canonical_payload_status_matches_find_head(
     }
 }
 
+/// `SszContainerV29` with the `ethereum_ssz` codec it had before it moved to `sszen`.
+#[derive(Encode)]
+struct EthereumSszContainerV29 {
+    votes: Vec<VoteTracker>,
+    prune_threshold: usize,
+    nodes: Vec<ProtoNode>,
+    indices: Vec<(Hash256, usize)>,
+}
+
 fn check_bytes_round_trip(original: &ProtoArrayForkChoice) {
     let bytes = original.as_bytes();
+
+    // Fork choice persisted by earlier versions must still decode, so the encoding must not change.
+    let container = original.as_ssz_container();
+    let ethereum_ssz_bytes = EthereumSszContainerV29 {
+        votes: container.votes,
+        prune_threshold: container.prune_threshold,
+        nodes: container.nodes,
+        indices: container.indices,
+    }
+    .as_ssz_bytes();
+    assert!(
+        bytes == ethereum_ssz_bytes,
+        "sszen and ethereum_ssz should encode fork choice the same way"
+    );
+
     let decoded = ProtoArrayForkChoice::from_bytes(&bytes, original.balances.clone())
         .expect("fork choice should decode from bytes");
     assert!(

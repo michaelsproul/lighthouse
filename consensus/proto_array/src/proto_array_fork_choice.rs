@@ -9,7 +9,6 @@ use crate::{
 };
 use fixed_bytes::FixedBytesExtended;
 use serde::{Deserialize, Serialize};
-use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use std::{
     collections::{BTreeSet, HashMap},
@@ -32,6 +31,8 @@ pub struct VoteTracker {
     current_payload_present: bool,
     next_payload_present: bool,
 }
+
+crate::impl_sszen_via_ethereum_ssz!(VoteTracker, Some(32 + 32 + 8 + 8 + 1 + 1));
 
 // Can be deleted once the V28 schema migration is buried.
 // Matches the on-disk format from schema v28: current_root, next_root, next_epoch.
@@ -1325,11 +1326,11 @@ impl ProtoArrayForkChoice {
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {
-        self.as_ssz_container().as_ssz_bytes()
+        sszen::Encode::as_ssz_bytes(&self.as_ssz_container())
     }
 
     pub fn from_bytes(bytes: &[u8], balances: JustifiedBalances) -> Result<Self, String> {
-        let container = SszContainer::from_ssz_bytes(bytes)
+        let container = <SszContainer as sszen::Decode>::from_ssz_bytes(bytes)
             .map_err(|e| format!("Failed to decode ProtoArrayForkChoice: {:?}", e))?;
         Self::from_container(container, balances)
     }

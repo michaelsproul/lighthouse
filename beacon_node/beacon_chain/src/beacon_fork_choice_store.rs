@@ -407,6 +407,8 @@ pub struct PersistedForkChoiceStore {
     pub equivocating_indices: BTreeSet<u64>,
 }
 
+proto_array::impl_sszen_via_ethereum_ssz!(PersistedForkChoiceStoreV28, None);
+
 #[cfg(test)]
 mod tests {
     use super::*;

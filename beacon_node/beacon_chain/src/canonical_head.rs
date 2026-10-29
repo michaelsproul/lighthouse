@@ -1743,6 +1743,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     /// Persist fork choice to disk, writing immediately.
     ///
     /// Fails if fork choice is poisoned.
+    ///
+    /// At runtime, call this only while holding `recompute_head_lock`. The snapshot is written
+    /// after the fork choice lock is released, so `recompute_head_lock` is what stops an older
+    /// snapshot from overwriting a newer one.
     pub fn persist_fork_choice(&self) -> Result<(), Error> {
         let _fork_choice_timer = metrics::start_timer(&metrics::PERSIST_FORK_CHOICE);
 
@@ -1769,11 +1773,14 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
     /// Return a database operation for writing fork choice to disk.
     pub fn persist_fork_choice_in_batch(&self) -> Result<KeyValueStoreOp, Error> {
-        Self::persist_fork_choice_in_batch_standalone(
-            &self.canonical_head.fork_choice_read_lock(),
-            self.store.get_config(),
-        )
-        .map_err(Into::into)
+        // Hold the read lock only while taking the snapshot. Encoding and compressing it takes
+        // tens of milliseconds with a large validator set, and a held read lock blocks writers
+        // and, behind them, readers.
+        let persisted_fork_choice =
+            Self::persisted_fork_choice(&self.canonical_head.fork_choice_read_lock());
+        persisted_fork_choice
+            .as_kv_store_op(FORK_CHOICE_DB_KEY, self.store.get_config())
+            .map_err(Into::into)
     }
 
     /// Return a database operation for writing fork choice to disk.
@@ -1781,11 +1788,14 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         fork_choice: &BeaconForkChoice<T>,
         store_config: &StoreConfig,
     ) -> Result<KeyValueStoreOp, StoreError> {
-        let persisted_fork_choice = PersistedForkChoice {
+        Self::persisted_fork_choice(fork_choice).as_kv_store_op(FORK_CHOICE_DB_KEY, store_config)
+    }
+
+    fn persisted_fork_choice(fork_choice: &BeaconForkChoice<T>) -> PersistedForkChoice {
+        PersistedForkChoice {
             fork_choice: fork_choice.to_persisted(),
             fork_choice_store: fork_choice.fc_store().to_persisted(),
-        };
-        persisted_fork_choice.as_kv_store_op(FORK_CHOICE_DB_KEY, store_config)
+        }
     }
 }
 

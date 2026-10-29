@@ -16,9 +16,16 @@ four_byte_option_impl!(four_byte_option_checkpoint, Checkpoint);
 
 pub type SszContainer = SszContainerV29;
 
+/// V29 derives its codec with `sszen`, which produces the same bytes as `ethereum_ssz`. The
+/// `ethereum_ssz` derive copies each variable-length field once per enclosing container, which
+/// makes persisting fork choice several times slower with a million votes.
 #[superstruct(
     variants(V28, V29),
-    variant_attributes(derive(Encode, Decode, Clone)),
+    variant_attributes(derive(Clone)),
+    specific_variant_attributes(
+        V28(derive(Encode, Decode)),
+        V29(derive(sszen::SszSize, sszen::Encode, sszen::Decode)),
+    ),
     no_enum
 )]
 pub struct SszContainer {

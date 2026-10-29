@@ -4,6 +4,7 @@ mod justified_balances;
 mod proto_array;
 mod proto_array_fork_choice;
 mod ssz_container;
+mod sszen_bridge;
 
 pub use crate::justified_balances::JustifiedBalances;
 pub use crate::proto_array::{

@@ -2083,10 +2083,15 @@ where
 
 /// Helper struct that is used to encode/decode the state of the `ForkChoice` as SSZ bytes.
 ///
-/// This is used when persisting the state of the fork choice to disk.
+/// This is used when persisting the state of the fork choice to disk. V29 uses `sszen`, like the
+/// `SszContainerV29` it holds.
 #[superstruct(
     variants(V28, V29),
-    variant_attributes(derive(Encode, Decode, Clone)),
+    variant_attributes(derive(Clone)),
+    specific_variant_attributes(
+        V28(derive(Encode, Decode)),
+        V29(derive(sszen::SszSize, sszen::Encode, sszen::Decode)),
+    ),
     no_enum
 )]
 pub struct PersistedForkChoice {

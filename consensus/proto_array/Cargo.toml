@@ -18,6 +18,7 @@ fixed_bytes = { workspace = true }
 safe_arith = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }
+sszen = { workspace = true }
 superstruct = { workspace = true }
 typenum = { workspace = true }
 types = { workspace = true }

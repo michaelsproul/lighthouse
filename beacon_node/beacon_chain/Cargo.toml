@@ -65,6 +65,7 @@ slasher = { workspace = true }
 slot_clock = { workspace = true }
 smallvec = { workspace = true }
 ssz_types = { workspace = true }
+sszen = { workspace = true }
 state_processing = { workspace = true }
 store = { workspace = true }
 strum = { workspace = true }

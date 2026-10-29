@@ -180,6 +180,8 @@ pub struct ProtoNode {
     pub equivocating_attestation_score: u64,
 }
 
+crate::impl_sszen_via_ethereum_ssz!(ProtoNode, None);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[ssz(enum_behaviour = "tag")]

@@ -1515,6 +1515,7 @@ dependencies = [
  "slot_clock",
  "smallvec",
  "ssz_types",
+ "sszen",
  "state_processing",
  "store",
  "strum",
@@ -4194,6 +4195,7 @@ dependencies = [
  "logging",
  "metrics",
  "proto_array",
+ "sszen",
  "state_processing",
  "store",
  "superstruct",
@@ -8010,6 +8012,7 @@ dependencies = [
  "safe_arith",
  "serde",
  "smallvec",
+ "sszen",
  "superstruct",
  "typenum",
  "types",
@@ -9574,6 +9577,30 @@ dependencies = [
  "smallvec",
  "tree_hash",
  "typenum",
+]
+
+[[package]]
+name = "sszen"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "hex",
+ "serde",
+ "smallvec",
+ "sszen_derive",
+ "static_assertions",
+ "thiserror 2.0.21",
+ "triomphe",
+]
+
+[[package]]
+name = "sszen_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
