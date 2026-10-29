@@ -203,22 +203,12 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // 1. It seems we have time to propagate and still receive the proposer boost.
         // 2. The current head block was seen late.
         // 3. The `get_proposer_head` conditions from fork choice pass.
+        //
+        // Conditions 1 and 2 are skipped for a re-org due to a proposer equivocation.
         let re_org_cutoff_duration = self
             .spec
             .compute_slot_component_duration(self.spec.proposer_reorg_cutoff_bps)
             .ok()?;
-
-        let proposing_on_time = slot_delay < re_org_cutoff_duration;
-        if !proposing_on_time {
-            debug!(reason = "not proposing on time", "Not attempting re-org");
-            return None;
-        }
-
-        let head_late = self.block_observed_after_attestation_deadline(canonical_head, head_slot);
-        if !head_late {
-            debug!(reason = "head not late", "Not attempting re-org");
-            return None;
-        }
 
         // Is the current head weak and appropriate for re-orging?
         let proposer_head_timer =
@@ -244,6 +234,19 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .ok()?;
 
         drop(proposer_head_timer);
+
+        let proposing_on_time = slot_delay < re_org_cutoff_duration;
+        if !proposing_on_time && !proposer_head.is_equivocation_reorg {
+            debug!(reason = "not proposing on time", "Not attempting re-org");
+            return None;
+        }
+
+        let head_late = self.block_observed_after_attestation_deadline(canonical_head, head_slot);
+        if !head_late && !proposer_head.is_equivocation_reorg {
+            debug!(reason = "head not late", "Not attempting re-org");
+            return None;
+        }
+
         let re_org_parent_block = proposer_head.parent_node.root();
 
         // The head uniquely determines the parent payload status for the re-org block, whichever
@@ -286,6 +289,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             parent = ?re_org_parent_block,
             head_weight = proposer_head.head_node.weight(),
             threshold_weight = proposer_head.re_org_head_weight_threshold,
+            is_equivocation_reorg = proposer_head.is_equivocation_reorg,
             "Attempting re-org due to weak head"
         );
 

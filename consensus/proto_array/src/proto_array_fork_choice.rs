@@ -464,6 +464,11 @@ pub struct ProposerHeadInfo {
     /// The current slot from fork choice's point of view, may lead the wall-clock slot by upto
     /// 500ms.
     pub current_slot: Slot,
+    /// Is this reorg more aggressive due to an equivocation in the previous slot?
+    ///
+    /// This boolean is used to signal to callers that they don't need to run the stricter checks
+    /// required for a reorg.
+    pub is_equivocation_reorg: bool,
 }
 
 /// Error type to enable short-circuiting checks in `get_proposer_head`.
@@ -852,6 +857,11 @@ impl ProtoArrayForkChoice {
             .into());
         }
 
+        // A re-org due to a proposer equivocation does not require a strong parent.
+        if info.is_equivocation_reorg {
+            return Ok(info);
+        }
+
         // Spec: `is_parent_strong`. Use `PayloadStatus::Pending` to avoid weight split
         // between payload statuses. https://github.com/ethereum/consensus-specs/issues/5305
         let parent_pending_weight = info.parent_node.attestation_score(PayloadStatus::Pending);
@@ -889,6 +899,37 @@ impl ProtoArrayForkChoice {
         let parent_node = nodes.pop().ok_or(DoNotReOrg::MissingHeadOrParentNode)?;
         let head_node = nodes.pop().ok_or(DoNotReOrg::MissingHeadOrParentNode)?;
 
+        // Compute re-org weight thresholds for head and parent.
+        let re_org_head_weight_threshold =
+            calculate_committee_fraction::<E>(justified_balances, spec.reorg_head_weight_threshold)
+                .ok_or(Error::ReOrgThresholdOverflow)?;
+
+        let re_org_parent_weight_threshold = calculate_committee_fraction::<E>(
+            justified_balances,
+            spec.reorg_parent_weight_threshold,
+        )
+        .ok_or(Error::ReOrgThresholdOverflow)?;
+
+        // Spec: `is_proposer_equivocation`. If the head's proposer equivocated then re-org more
+        // aggressively, skipping the remaining checks. Pre-Gloas nodes lack a proposer index.
+        let is_equivocation_reorg = head_node.proposer_index().is_ok_and(|head_proposer| {
+            self.proto_array.nodes.iter().any(|node| {
+                node.proposer_index() == Ok(head_proposer)
+                    && node.slot() == head_node.slot()
+                    && node.root() != head_node.root()
+            })
+        });
+        if is_equivocation_reorg {
+            return Ok(ProposerHeadInfo {
+                head_node,
+                parent_node,
+                re_org_head_weight_threshold,
+                re_org_parent_weight_threshold,
+                current_slot,
+                is_equivocation_reorg,
+            });
+        }
+
         let parent_slot = parent_node.slot();
         let head_slot = head_node.slot();
         let re_org_block_slot = head_slot.saturating_add(1_u64);
@@ -924,23 +965,13 @@ impl ProtoArrayForkChoice {
             return Err(DoNotReOrg::JustificationAndFinalizationNotCompetitive.into());
         }
 
-        // Compute re-org weight thresholds for head and parent.
-        let re_org_head_weight_threshold =
-            calculate_committee_fraction::<E>(justified_balances, spec.reorg_head_weight_threshold)
-                .ok_or(Error::ReOrgThresholdOverflow)?;
-
-        let re_org_parent_weight_threshold = calculate_committee_fraction::<E>(
-            justified_balances,
-            spec.reorg_parent_weight_threshold,
-        )
-        .ok_or(Error::ReOrgThresholdOverflow)?;
-
         Ok(ProposerHeadInfo {
             head_node,
             parent_node,
             re_org_head_weight_threshold,
             re_org_parent_weight_threshold,
             current_slot,
+            is_equivocation_reorg,
         })
     }
 
