@@ -5,7 +5,7 @@ mod proto_array;
 mod proto_array_fork_choice;
 mod ssz_container;
 
-pub use crate::justified_balances::JustifiedBalances;
+pub use crate::justified_balances::{FromStatePath, JustifiedBalances, StateCachesError};
 pub use crate::proto_array::{
     InvalidationOperation, ParentPayloadStatus, calculate_committee_fraction,
 };

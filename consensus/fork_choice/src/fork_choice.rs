@@ -1104,6 +1104,11 @@ where
     }
 
     /// Update checkpoints in store if necessary
+    ///
+    /// `justified_state_root_producer` must return the root of the checkpoint state for
+    /// `justified_checkpoint` (see `ForkChoiceStore::set_justified_checkpoint`). Every caller takes
+    /// both from the same state, or from the store's unrealized justified checkpoint and state
+    /// root, which are always set together.
     fn update_checkpoints(
         &mut self,
         justified_checkpoint: Checkpoint,

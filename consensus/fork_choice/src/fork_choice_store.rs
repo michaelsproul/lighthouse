@@ -47,7 +47,11 @@ pub trait ForkChoiceStore<E: EthSpec>: Sized {
     /// Returns the state root of the justified checkpoint.
     fn justified_state_root(&self) -> Hash256;
 
-    /// Returns balances from the `state` identified by `justified_checkpoint.root`.
+    /// Returns the balances of the justified checkpoint state: the state at
+    /// `Self::justified_state_root`, i.e. the state of block `justified_checkpoint.root` advanced to
+    /// the start slot of `justified_checkpoint.epoch`.
+    ///
+    /// These always describe `Self::justified_checkpoint`; see `Self::set_justified_checkpoint`.
     fn justified_balances(&self) -> &JustifiedBalances;
 
     /// Returns the `finalized_checkpoint`.
@@ -68,7 +72,18 @@ pub trait ForkChoiceStore<E: EthSpec>: Sized {
     /// Sets `finalized_checkpoint`.
     fn set_finalized_checkpoint(&mut self, checkpoint: Checkpoint);
 
-    /// Sets the `justified_checkpoint`.
+    /// Sets the `justified_checkpoint`, its `state_root` and the balances from that state.
+    ///
+    /// The caller must pass the root of the checkpoint state for `checkpoint` as `state_root`: the
+    /// state of block `checkpoint.root` advanced to the start slot of `checkpoint.epoch` (the
+    /// spec's `store_target_checkpoint_state`). Implementations need not check this; for example,
+    /// a `BalancesCache` hit is keyed by `checkpoint` alone, while a miss loads `state_root`.
+    ///
+    /// Must be failure-atomic: on error, the justified checkpoint, state root and balances are all
+    /// left unchanged.
+    ///
+    /// Given the precondition and failure-atomicity, `Self::justified_balances` always describes
+    /// `Self::justified_checkpoint`.
     fn set_justified_checkpoint(
         &mut self,
         checkpoint: Checkpoint,

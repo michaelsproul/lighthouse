@@ -7998,7 +7998,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 fork_choice
                     .fc_store()
                     .justified_balances()
-                    .total_effective_balance,
+                    .raw_total_unslashed_balance(),
             )
         };
         builder_payment_quorum::<T::EthSpec>(total_effective_balance, &self.spec)
@@ -8057,7 +8057,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 fork_choice
                     .fc_store()
                     .justified_balances()
-                    .total_effective_balance,
+                    .raw_total_unslashed_balance(),
             )
         };
 

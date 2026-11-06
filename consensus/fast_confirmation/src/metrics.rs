@@ -106,3 +106,24 @@ pub static FAST_CONFIRMATION_SKIPS: LazyLock<Result<IntCounter>> = LazyLock::new
         "Count of head recomputes that skipped FCR because the head was behind the wall clock",
     )
 });
+pub(crate) static FAST_CONFIRMATION_BALANCES_FROM_STATE: LazyLock<Result<IntCounterVec>> =
+    LazyLock::new(|| {
+        try_create_int_counter_vec(
+            "beacon_fast_confirmation_balances_from_state_total",
+            "Count of FCR balance sources built from a state, by balance source (head or \
+         checkpoint), by whether they were read from the state's caches or from its validator \
+         registry, and the reason for falling back to the registry",
+            &["balance_source", "path", "reason"],
+        )
+    });
+pub static FAST_CONFIRMATION_CHECKPOINT_BALANCES: LazyLock<Result<IntCounterVec>> =
+    LazyLock::new(|| {
+        try_create_int_counter_vec(
+            "beacon_fast_confirmation_checkpoint_balances_total",
+            "Count of lookups of the balances of a newly observed justified checkpoint, and of \
+         the finalized checkpoint that seeds both observed justified checkpoints at startup, by \
+         what served them: fork choice's justified balances, its balances cache, or a load of \
+         the checkpoint state",
+            &["tier"],
+        )
+    });

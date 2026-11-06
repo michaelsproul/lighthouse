@@ -8003,13 +8003,16 @@ dependencies = [
 name = "proto_array"
 version = "0.2.0"
 dependencies = [
+ "bls",
  "criterion",
  "ethereum_ssz",
  "ethereum_ssz_derive",
  "fixed_bytes",
+ "proptest",
  "safe_arith",
  "serde",
  "smallvec",
+ "state_processing",
  "superstruct",
  "typenum",
  "types",

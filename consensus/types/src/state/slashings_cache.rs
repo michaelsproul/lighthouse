@@ -5,6 +5,11 @@ use rpds::HashTrieSetSync as HashTrieSet;
 use crate::{core::Slot, state::BeaconStateError, validator::Validator};
 
 /// Persistent (cheap to clone) cache of all slashed validator indices.
+///
+/// `slash_validator` is the only function in the state transition that sets `validator.slashed`,
+/// and it records every slashing here. The initialization check (`is_initialized`) only compares
+/// the latest block slot, so it detects a stale cache but not arbitrary mutation: code that sets
+/// `validator.slashed` directly must also update or rebuild this cache.
 #[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SlashingsCache {
@@ -58,6 +63,14 @@ impl SlashingsCache {
 
     pub fn is_slashed(&self, validator_index: usize) -> bool {
         self.slashed_validators.contains(&validator_index)
+    }
+
+    /// Iterate the indices of all slashed validators, in no particular order.
+    ///
+    /// Prefer this to calling `is_slashed` for every validator in the registry: the set usually
+    /// holds far fewer entries than the registry.
+    pub fn slashed_validator_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.slashed_validators.iter().copied()
     }
 
     pub fn update_latest_block_slot(&mut self, latest_block_slot: Slot) {
@@ -117,6 +130,29 @@ mod tests {
 
         // An out-of-bounds index is not slashed.
         assert!(!cache.is_slashed(validators.len()));
+    }
+
+    #[test]
+    fn slashed_validator_indices_iterates_the_slashed_set() {
+        let mut cache = SlashingsCache::new(Slot::new(3), validators().iter());
+
+        let mut indices = cache.slashed_validator_indices().collect::<Vec<_>>();
+        indices.sort_unstable();
+        assert_eq!(indices, vec![1, 3]);
+
+        // A recorded slashing is included, even for an index beyond the original registry.
+        cache.record_validator_slashing(Slot::new(3), 0).unwrap();
+        cache.record_validator_slashing(Slot::new(3), 7).unwrap();
+        let mut indices = cache.slashed_validator_indices().collect::<Vec<_>>();
+        indices.sort_unstable();
+        assert_eq!(indices, vec![0, 1, 3, 7]);
+
+        assert_eq!(
+            SlashingsCache::default()
+                .slashed_validator_indices()
+                .count(),
+            0
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ use beacon_chain::test_utils::{
 };
 use beacon_chain::{
     BeaconChain, BeaconChainError, BeaconForkChoiceStore, ChainConfig, ForkChoiceError,
-    StateSkipConfig, WhenSlotSkipped,
+    ForkChoiceStoreError, StateSkipConfig, WhenSlotSkipped,
 };
 use bls::AggregateSignature;
 use fixed_bytes::FixedBytesExtended;
@@ -14,6 +14,8 @@ use fork_choice::{
     AttestationFromBlock, ForkChoiceStore, InvalidAttestation, InvalidBlock,
     InvalidPayloadAttestation, PayloadVerificationStatus, QueuedAttestation,
 };
+use proto_array::JustifiedBalances;
+use state_processing::per_epoch_processing::altair;
 use state_processing::state_advance::complete_state_advance;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -398,7 +400,7 @@ impl ForkChoiceTest {
             .unwrap()
             .unwrap();
         let current_epoch = state.current_epoch();
-        let mut num_active_validators = 0u64;
+        let mut num_unslashed_validators = 0u64;
         let mut slashed_balances = BTreeMap::new();
         let balances = state
             .validators()
@@ -406,7 +408,7 @@ impl ForkChoiceTest {
             .enumerate()
             .map(|(i, v)| {
                 if !v.slashed && v.is_active_at(current_epoch) {
-                    num_active_validators += 1;
+                    num_unslashed_validators += 1;
                     v.effective_balance
                 } else {
                     if v.slashed && v.is_active_at(current_epoch) {
@@ -420,18 +422,22 @@ impl ForkChoiceTest {
         let justified_balances = fc.fc_store().justified_balances();
         assert_eq!(
             &balances[..],
-            &justified_balances.effective_balances,
+            justified_balances.effective_balances(),
             "balances should match"
         );
         assert_eq!(
             balances.iter().sum::<u64>(),
-            justified_balances.total_effective_balance
+            justified_balances.raw_total_unslashed_balance()
         );
         assert_eq!(
-            num_active_validators,
-            justified_balances.num_active_validators
+            balances.iter().sum::<u64>() + slashed_balances.values().sum::<u64>(),
+            justified_balances.raw_total_active_balance()
         );
-        assert_eq!(slashed_balances, justified_balances.slashed_balances);
+        assert_eq!(
+            num_unslashed_validators,
+            justified_balances.num_unslashed_validators()
+        );
+        assert_eq!(&slashed_balances, justified_balances.slashed_balances());
     }
 
     /// Returns an attestation that is valid for some slot in the given `chain`.
@@ -664,7 +670,7 @@ async fn justified_balances_with_attester_slashing() {
         .await;
 
     let slashed_balances =
-        test.get(|fc_store| fc_store.justified_balances().slashed_balances.clone());
+        test.get(|fc_store| fc_store.justified_balances().slashed_balances().clone());
     assert_eq!(slashed_balances.len(), 1, "one attester was slashed");
     test.check_justified_balances();
 }
@@ -687,12 +693,179 @@ async fn justified_balances_with_slashing_after_skipped_boundary() {
         .await;
 
     let slashed_balances =
-        test.get(|fc_store| fc_store.justified_balances().slashed_balances.clone());
+        test.get(|fc_store| fc_store.justified_balances().slashed_balances().clone());
     assert!(
         slashed_balances.is_empty(),
         "the slashing postdates the justified checkpoint state"
     );
     test.check_justified_balances();
+}
+
+/// Returns `true` if pulling up `state`'s justification would justify its current epoch.
+fn justifies_current_epoch(state: &BeaconState<E>) -> bool {
+    altair::process_justification_and_finalization(state)
+        .unwrap()
+        .current_justified_checkpoint()
+        .epoch
+        == state.current_epoch()
+}
+
+/// A store's justified checkpoint, justified state root and justified balances.
+type Justified = (Checkpoint, Hash256, JustifiedBalances);
+
+fn justified(fc_store: &BeaconForkChoiceStore<E, MemoryStore, MemoryStore>) -> Justified {
+    (
+        *fc_store.justified_checkpoint(),
+        fc_store.justified_state_root(),
+        fc_store.justified_balances().clone(),
+    )
+}
+
+/// Asserts that the store's justified state root is the state for its justified checkpoint, and
+/// that its justified balances are that state's balances.
+fn assert_justified_coherent(harness: &BeaconChainHarness<EphemeralHarnessType<E>>) {
+    let (checkpoint, state_root, balances) = justified(
+        harness
+            .chain
+            .canonical_head
+            .fork_choice_read_lock()
+            .fc_store(),
+    );
+    let state = harness
+        .chain
+        .store
+        .get_hot_state(&state_root, CACHE_STATE_IN_TESTS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state.slot(),
+        checkpoint.epoch.start_slot(E::slots_per_epoch())
+    );
+    assert_eq!(state.get_latest_block_root(state_root), checkpoint.root);
+    assert_eq!(
+        JustifiedBalances::from_justified_state(&state).unwrap(),
+        balances
+    );
+}
+
+/// Regression test for a justified checkpoint pull-up that fails because the new checkpoint's
+/// balances are neither in the balances cache nor loadable from the database.
+///
+/// `on_tick` has already advanced the store's time when the pull-up fails, so a retried `get_head`
+/// in the same slot doesn't retry the pull-up. The failure must leave the old justified checkpoint
+/// paired with its own balances.
+#[tokio::test]
+async fn justified_checkpoint_pull_up_failure_is_atomic() {
+    let slots_per_epoch = E::slots_per_epoch();
+
+    // Stop before the first block that justifies the current epoch once pulled up.
+    let test = ForkChoiceTest::new()
+        .apply_blocks_while(|_, state| state.current_justified_checkpoint().epoch == 0)
+        .await
+        .unwrap()
+        .apply_blocks(1)
+        .await
+        .assert_justified_epoch(2)
+        .apply_blocks_while(|_, state| !justifies_current_epoch(state))
+        .await
+        .unwrap();
+    let harness = &test.harness;
+    let spec = &harness.chain.spec;
+
+    let slot = harness.get_current_slot();
+    let epoch = slot.epoch(slots_per_epoch);
+    let epoch_start_slot = epoch.start_slot(slots_per_epoch);
+    assert!(slot > epoch_start_slot);
+
+    // Apply that block directly to fork choice, with the block and state roots at the start of the
+    // epoch replaced. The block's unrealized justified checkpoint then has no balances cache entry,
+    // and its state root isn't in the database.
+    let unknown_block_root = Hash256::repeat_byte(0xbb);
+    let unknown_state_root = Hash256::repeat_byte(0xcc);
+    let pre_state = harness
+        .chain
+        .state_at_slot(slot - 1, StateSkipConfig::WithStateRoots)
+        .unwrap();
+    let ((block, _), mut state) = harness.make_block(pre_state, slot).await;
+    state
+        .set_block_root(epoch_start_slot, unknown_block_root)
+        .unwrap();
+    state
+        .set_state_root(epoch_start_slot, unknown_state_root)
+        .unwrap();
+    assert!(justifies_current_epoch(&state));
+
+    let mut fork_choice = harness.chain.canonical_head.fork_choice_write_lock();
+    fork_choice
+        .on_block(
+            slot,
+            block.message(),
+            block.canonical_root(),
+            Duration::from_secs(0),
+            &state,
+            PayloadVerificationStatus::Verified,
+            spec,
+        )
+        .unwrap();
+    let unrealized_justified_checkpoint = Checkpoint {
+        epoch,
+        root: unknown_block_root,
+    };
+    assert_eq!(
+        *fork_choice.fc_store().unrealized_justified_checkpoint(),
+        unrealized_justified_checkpoint
+    );
+    assert_eq!(
+        fork_choice.fc_store().unrealized_justified_state_root(),
+        unknown_state_root
+    );
+
+    // The pull-up at the next epoch boundary fails, after the store's time has advanced.
+    assert!(fork_choice.justified_checkpoint().epoch < epoch);
+    let justified_before = justified(fork_choice.fc_store());
+    let next_epoch_start_slot = (epoch + 1).start_slot(slots_per_epoch);
+    while harness.get_current_slot() < next_epoch_start_slot {
+        harness.advance_slot();
+    }
+    let error = fork_choice.update_time(next_epoch_start_slot).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ForkChoiceError::UnableToSetJustifiedCheckpoint(ForkChoiceStoreError::MissingState(
+                root
+            )) if root == unknown_state_root
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        fork_choice.fc_store().get_current_slot(),
+        next_epoch_start_slot
+    );
+    assert_eq!(justified(fork_choice.fc_store()), justified_before);
+
+    // Retrying in the same slot doesn't tick, so it runs on the old checkpoint and balances.
+    fork_choice.get_head(next_epoch_start_slot, spec).unwrap();
+    assert_eq!(justified(fork_choice.fc_store()), justified_before);
+    drop(fork_choice);
+    assert_justified_coherent(harness);
+
+    // Later justified checkpoints are still installed, with their own balances. Slash a validator
+    // in the next block first, so that the later checkpoint's balances differ from the old ones and
+    // the coherence check can tell them apart.
+    let test = test
+        .add_previous_epoch_attester_slashing()
+        .await
+        .apply_blocks(2 * slots_per_epoch as usize)
+        .await;
+    let (later_checkpoint, _, later_balances) = test.get(justified);
+    assert!(later_checkpoint.epoch > epoch);
+    assert_eq!(
+        later_balances.slashed_balances().len(),
+        1,
+        "the later checkpoint state includes the slashing"
+    );
+    assert_ne!(later_balances, justified_before.2);
+    assert_justified_coherent(&test.harness);
 }
 
 macro_rules! assert_invalid_block {

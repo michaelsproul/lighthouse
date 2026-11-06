@@ -4,27 +4,29 @@
 //! per-block `get_attestation_score`) via a faster algorithm. They are deliberately kept out of
 //! `lib.rs` so that module reads as the spec algorithm.
 
-use crate::{BalanceSourceData, Error};
+use crate::Error;
+use proto_array::JustifiedBalances;
 use proto_array::core::{ProtoArray, VoteTracker};
 use safe_arith::SafeArith;
 use std::cell::OnceCell;
 use std::collections::{BTreeSet, HashMap};
 use types::{Checkpoint, Epoch, Hash256, Slot};
 
-/// An observed-justified checkpoint paired with the balance snapshot anchored to it.
+/// An observed-justified checkpoint paired with the balances of its checkpoint state (spec:
+/// `store.checkpoint_states[checkpoint]`).
 ///
 /// The fields are private and can only be set together through [`Self::new`], so the spec tracking
-/// variable and its `get_*_balance_source` data cannot drift apart by accident. The balances carry
-/// their own `checkpoint` (the one they were built for); [`Self::is_stale`] reports when that lags
-/// the tracked `checkpoint` and a rebuild is due.
+/// variable and its `get_*_balance_source` data cannot drift apart by accident. The checkpoint
+/// fixes its state, so the balances never need rebuilding while it is tracked.
 #[derive(Clone, Debug)]
 pub struct CheckpointAndBalance {
     checkpoint: Checkpoint,
-    balances: BalanceSourceData,
+    balances: JustifiedBalances,
 }
 
 impl CheckpointAndBalance {
-    pub fn new(checkpoint: Checkpoint, balances: BalanceSourceData) -> Self {
+    /// `balances` must be those of the checkpoint state of `checkpoint`.
+    pub fn new(checkpoint: Checkpoint, balances: JustifiedBalances) -> Self {
         Self {
             checkpoint,
             balances,
@@ -35,7 +37,7 @@ impl CheckpointAndBalance {
         self.checkpoint
     }
 
-    pub fn balances(&self) -> &BalanceSourceData {
+    pub fn balances(&self) -> &JustifiedBalances {
         &self.balances
     }
 }
@@ -54,7 +56,7 @@ impl AttestationScoreCache {
         proto_array: &ProtoArray,
         chain: &[Hash256],
         terminal_slot: Slot,
-        balance_source: &BalanceSourceData,
+        balance_source: &JustifiedBalances,
         votes: &[VoteTracker],
         equivocating_indices: &BTreeSet<u64>,
     ) -> Result<Self, Error> {
@@ -253,7 +255,7 @@ pub fn precompute_chain_attestation_scores(
     proto_array: &ProtoArray,
     chain: &[Hash256],
     terminal_slot: Slot,
-    balance_source: &BalanceSourceData,
+    balance_source: &JustifiedBalances,
     votes: &[VoteTracker],
     equivocating_indices: &BTreeSet<u64>,
 ) -> Result<HashMap<Hash256, u64>, Error> {
@@ -288,7 +290,7 @@ pub fn precompute_chain_attestation_scores(
 /// Sum unslashed balances by LMD vote root (skipping zero and equivocating votes), so the ancestor
 /// projection runs once per distinct root rather than once per validator.
 pub(crate) fn aggregate_vote_balances(
-    balance_source: &BalanceSourceData,
+    balance_source: &JustifiedBalances,
     votes: &[VoteTracker],
     equivocating_indices: &BTreeSet<u64>,
 ) -> Result<RootBalanceMap<Hash256>, Error> {
