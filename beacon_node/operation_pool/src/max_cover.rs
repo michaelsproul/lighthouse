@@ -10,11 +10,11 @@ use itertools::Itertools;
 ///   See: https://en.wikipedia.org/wiki/Maximum_coverage_problem
 pub trait MaxCover: Clone {
     /// The result type, of which we would eventually like a collection of maximal quality.
-    type Object: Clone;
+    type Object;
     /// The intermediate object type, which can be converted to `Object`.
-    type Intermediate: Clone;
+    type Intermediate;
     /// The type used to represent sets.
-    type Set: Clone;
+    type Set;
 
     /// Extract the intermediate object.
     fn intermediate(&self) -> &Self::Intermediate;
@@ -50,54 +50,75 @@ impl<T> MaxCoverItem<T> {
 ///
 /// * Time complexity: `O(limit * items_iter.len())`
 /// * Space complexity: `O(item_iter.len())`
+///
+/// The loops are written out, without iterator adaptors, so that the function can be translated
+/// to Lean (see `verification/operation_pool`).
 pub fn maximum_cover<I, T>(items_iter: I, limit: usize, label: &str) -> Vec<T>
 where
     I: IntoIterator<Item = T>,
     T: MaxCover,
 {
-    // Construct an initial vec of all items, marked available.
-    let mut all_items: Vec<_> = items_iter
-        .into_iter()
-        .map(MaxCoverItem::new)
-        .filter(|x| x.item.score() != 0)
-        .collect();
+    // Construct an initial vec of all items with a non-zero score, marked available.
+    let mut all_items = vec![];
+    for item in items_iter {
+        if item.score() != 0 {
+            all_items.push(MaxCoverItem::new(item));
+        }
+    }
 
-    metrics::set_int_gauge(
-        &metrics::MAX_COVER_NON_ZERO_ITEMS,
-        &[label],
-        all_items.len() as i64,
-    );
+    metrics::set_max_cover_non_zero_items(label, all_items.len());
 
     let mut result = vec![];
 
     for _ in 0..limit {
         // Select the item with the maximum score.
-        let best = match all_items
-            .iter_mut()
-            .filter(|x| x.available && x.item.score() != 0)
-            .max_by_key(|x| x.item.score())
-        {
-            Some(x) => {
-                x.available = false;
-                x.item.clone()
-            }
-            None => return result,
+        let Some(best_index) = best_item_index(&all_items) else {
+            return result;
         };
+        let Some(best_item) = all_items.get_mut(best_index) else {
+            return result;
+        };
+        best_item.available = false;
+        let best = best_item.item.clone();
 
         // Update the covering sets of the other items, for the inclusion of the selected item.
         // Items covered by the selected item can't be re-covered.
-        all_items
-            .iter_mut()
-            .filter(|x| x.available && x.item.score() != 0)
-            .for_each(|x| {
-                x.item
-                    .update_covering_set(best.intermediate(), best.covering_set())
-            });
+        update_covering_sets(&mut all_items, &best);
 
         result.push(best);
     }
 
     result
+}
+
+/// The index of the available item with the maximum score, if an available item has a non-zero
+/// score.
+///
+/// The last item with the maximum score wins a tie, as with `Iterator::max_by_key`.
+fn best_item_index<T: MaxCover>(all_items: &[MaxCoverItem<T>]) -> Option<usize> {
+    let mut best_index = None;
+    let mut best_score = 0;
+    for (index, x) in all_items.iter().enumerate() {
+        if x.available {
+            let score = x.item.score();
+            if score != 0 && score >= best_score {
+                best_index = Some(index);
+                best_score = score;
+            }
+        }
+    }
+    best_index
+}
+
+/// Update the covering set of each available item with a non-zero score, for the inclusion of
+/// `best` in the solution.
+fn update_covering_sets<T: MaxCover>(all_items: &mut [MaxCoverItem<T>], best: &T) {
+    for x in all_items.iter_mut() {
+        if x.available && x.item.score() != 0 {
+            x.item
+                .update_covering_set(best.intermediate(), best.covering_set());
+        }
+    }
 }
 
 /// Perform a greedy merge of two max cover solutions, preferring higher-score values.

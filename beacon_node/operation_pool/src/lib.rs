@@ -31,7 +31,7 @@ use rand::seq::SliceRandom;
 use ssz::BitVector;
 use state_processing::per_block_processing::errors::AttestationValidationError;
 use state_processing::per_block_processing::{
-    VerifySignatures, get_slashable_indices_modular, verify_exit,
+    VerifySignatures, get_slashable_indices_modular, verify_exit, verify_proposer_slashing,
 };
 use state_processing::{SigVerifiedOp, VerifyOperation};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
@@ -499,10 +499,13 @@ impl<E: EthSpec> OperationPool<E> {
             self.proposer_slashings.read().values(),
             |slashing| {
                 slashing.signature_is_still_valid(&state.fork())
-                    && state
-                        .validators()
-                        .get(slashing.as_inner().signed_header_1.message.proposer_index as usize)
-                        .is_some_and(|validator| validator.is_slashable_at(state.current_epoch()))
+                    && verify_proposer_slashing(
+                        slashing.as_inner(),
+                        state,
+                        VerifySignatures::False,
+                        spec,
+                    )
+                    .is_ok()
             },
             |slashing| slashing.as_inner().clone(),
             E::MaxProposerSlashings::to_usize(),
@@ -516,6 +519,20 @@ impl<E: EthSpec> OperationPool<E> {
             .collect();
 
         let attester_slashings = self.get_attester_slashings(state, &mut to_be_slashed);
+
+        // Exclude from the exits every validator that the slashings above can slash. The set
+        // already holds these indices: this recomputes them from the packed slashings alone, so
+        // that the exclusion can be proved without reasoning about the max cover (see
+        // `verification/operation_pool`).
+        insert_proposer_slashing_indices(&mut to_be_slashed, &proposer_slashings);
+        for slashing in &attester_slashings {
+            let slashing = slashing.to_ref();
+            insert_common_attesting_indices(
+                &mut to_be_slashed,
+                slashing.attestation_1().attesting_indices_iter().as_slice(),
+                slashing.attestation_2().attesting_indices_iter().as_slice(),
+            );
+        }
 
         let voluntary_exits = self.get_voluntary_exits(
             state,
@@ -836,6 +853,10 @@ impl<E: EthSpec> OperationPool<E> {
 }
 
 /// Filter up to a maximum number of operations out of an iterator.
+///
+/// Written as an explicit loop so that it can be extracted with Aeneas and proved correct in Lean
+/// (see `verification/operation_pool`). It makes the same calls to `next`, `filter` and `mapping`,
+/// in the same order, as `filter(..).take(limit).map(..).collect()`.
 fn filter_limit_operations<'a, T, V: 'a, I, F, G>(
     operations: I,
     filter: F,
@@ -848,12 +869,46 @@ where
     G: Fn(&T) -> V,
     T: Clone + 'a,
 {
-    operations
-        .into_iter()
-        .filter(|x| filter(*x))
-        .take(limit)
-        .map(mapping)
-        .collect()
+    let mut selected = Vec::new();
+    let mut operations = operations.into_iter();
+    while selected.len() < limit {
+        let Some(operation) = operations.next() else {
+            break;
+        };
+        if filter(operation) {
+            selected.push(mapping(operation));
+        }
+    }
+    selected
+}
+
+/// Add the proposer index of each slashing to `indices`.
+///
+/// Free of `EthSpec` so that it can be extracted with Aeneas and proved correct in Lean (see
+/// `verification/operation_pool`).
+fn insert_proposer_slashing_indices(indices: &mut HashSet<u64>, slashings: &[ProposerSlashing]) {
+    for slashing in slashings {
+        indices.insert(slashing.signed_header_1.message.proposer_index);
+    }
+}
+
+/// Add every validator index that appears in both `first` and `second` to `indices`.
+///
+/// For the two attestations of an attester slashing this is a superset of the validators that
+/// processing the slashing can slash.
+///
+/// Free of `EthSpec` so that it can be extracted with Aeneas and proved correct in Lean (see
+/// `verification/operation_pool`).
+fn insert_common_attesting_indices(indices: &mut HashSet<u64>, first: &[u64], second: &[u64]) {
+    let mut in_first = HashSet::with_capacity(first.len());
+    for index in first {
+        in_first.insert(*index);
+    }
+    for index in second {
+        if in_first.contains(index) {
+            indices.insert(*index);
+        }
+    }
 }
 
 /// Remove all entries from the given hash map for which `prune_if` returns true.

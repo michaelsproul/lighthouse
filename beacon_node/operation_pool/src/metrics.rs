@@ -38,3 +38,8 @@ pub static MAX_COVER_NON_ZERO_ITEMS: LazyLock<Result<IntGaugeVec>> = LazyLock::n
         &["label"],
     )
 });
+
+/// Record the number of items with a non-zero score that a max coverage optimisation considers.
+pub fn set_max_cover_non_zero_items(label: &str, count: usize) {
+    set_int_gauge(&MAX_COVER_NON_ZERO_ITEMS, &[label], count as i64);
+}
