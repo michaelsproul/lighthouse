@@ -348,10 +348,17 @@ pub fn prune_payloads<E: EthSpec>(
         spec.clone(),
     )?;
 
-    // If we're trigging a prune manually then ignore the check on the split's parent that bails
-    // out early.
+    // If we're triggering a prune manually then prune every finalized chunk, without checking
+    // whether it still has payloads stored.
     let force = true;
-    db.try_prune_execution_payloads(force)
+    db.try_prune_execution_payloads(force)?;
+
+    // Deleted payloads only free up disk space once their columns are compacted.
+    for column in [DBColumn::ExecPayload, DBColumn::PayloadBody] {
+        info!(?column, "Compacting database column");
+        db.hot_db.compact_column(column)?;
+    }
+    Ok(())
 }
 
 pub fn prune_blobs<E: EthSpec>(

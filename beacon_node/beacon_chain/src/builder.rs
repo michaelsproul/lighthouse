@@ -1164,9 +1164,19 @@ where
         if beacon_chain.store.get_config().prune_payloads {
             let store = beacon_chain.store.clone();
             beacon_chain.task_executor.spawn_blocking(
-                move || {
-                    if let Err(e) = store.try_prune_execution_payloads(false) {
-                        error!( error = ?e,"Error pruning payloads in background");
+                move || match store.try_prune_execution_payloads(false) {
+                    // Payloads are normally pruned on finalization, so pruning several chunks here
+                    // means a backlog was cleared. Its disk space is only reclaimed by compaction.
+                    Ok(outcome) if outcome.chunks_pruned > 1 => {
+                        info!(
+                            info = "run `lighthouse db compact --column exp` and `lighthouse db \
+                                    compact --column pay` while the beacon node is stopped",
+                            "Compact the database to reclaim space from pruned payloads"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!(error = ?e, "Error pruning payloads in background");
                     }
                 },
                 "prune_payloads_background",
