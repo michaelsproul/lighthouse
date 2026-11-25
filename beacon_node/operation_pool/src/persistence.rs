@@ -136,18 +136,12 @@ impl<E: EthSpec> PersistedOperationPool<E> {
         };
 
         let proposer_slashings = RwLock::new(
-            self.proposer_slashings()
-                .iter()
-                .cloned()
-                .map(|slashing| (slashing.as_inner().proposer_index(), slashing))
-                .collect(),
+            // Each slashing is stored under the index of its proposer.
+            self.proposer_slashings().iter().cloned().collect(),
         );
         let voluntary_exits = RwLock::new(
-            self.voluntary_exits()
-                .iter()
-                .cloned()
-                .map(|exit| (exit.as_inner().message.validator_index, exit))
-                .collect(),
+            // Each exit is stored under the index of its validator.
+            self.voluntary_exits().iter().cloned().collect(),
         );
         let sync_contributions = RwLock::new(self.sync_contributions().iter().cloned().collect());
         let attestations = match &self {

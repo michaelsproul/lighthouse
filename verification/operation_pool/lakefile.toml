@@ -1,0 +1,41 @@
+name = "operation_pool_proofs"
+defaultTargets = ["OperationPool", "StateProcessing"]
+
+# The Aeneas release for commit 2e3d4488 (Lean v4.36.0), unpacked under `../deps`.
+[[require]]
+name = "aeneas"
+path = "../deps/aeneas-release-2e3d448/backends/lean"
+
+# EthLib checkout at commit 24f2ccdae of upstream `master` (Lean v4.36.0), cloned under `../deps`.
+[[require]]
+name = "EthLib"
+path = "../deps/ethlib"
+
+# Every library sets `autoImplicit = false`: a name that does not resolve is an error, not a new
+# variable.
+
+# Opaque external types that both extracted crates mention.
+[[lean_lib]]
+name = "ExternalTypes"
+leanOptions = { autoImplicit = false }
+
+# Proofs on EthLib's spec alone: the slashings and exits of a block succeed when the state has
+# room for them.
+[[lean_lib]]
+name = "EthLibOps"
+leanOptions = { autoImplicit = false }
+
+# The packing cores of the `operation_pool` crate, the bridge to the spec and the main theorem.
+[[lean_lib]]
+name = "OperationPool"
+leanOptions = { autoImplicit = false }
+
+# The `verify_exit` cores of the `state_processing` crate.
+[[lean_lib]]
+name = "StateProcessing"
+leanOptions = { autoImplicit = false }
+
+# `lake build Audit` prints the axioms the main theorems depend on. Not a default target.
+[[lean_lib]]
+name = "Audit"
+leanOptions = { autoImplicit = false }

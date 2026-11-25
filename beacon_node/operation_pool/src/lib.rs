@@ -7,6 +7,7 @@ mod metrics;
 mod persistence;
 mod reward_cache;
 mod sync_aggregate_id;
+mod validator_map;
 
 pub use crate::bls_to_execution_changes::ReceivedPreCapella;
 pub use attestation::{AttMaxCover, PROPOSER_REWARD_DENOMINATOR, earliest_attestation_validators};
@@ -22,6 +23,7 @@ use types::EpochCacheError;
 use crate::attestation_storage::{AttestationMap, CheckpointKey};
 use crate::bls_to_execution_changes::BlsToExecutionChanges;
 use crate::sync_aggregate_id::SyncAggregateId;
+use crate::validator_map::{ValidatorIndexed, ValidatorMap};
 use attester_slashing::AttesterSlashingMaxCover;
 use bls::AggregateSignature;
 use max_cover::maximum_cover;
@@ -31,7 +33,7 @@ use rand::seq::SliceRandom;
 use ssz::BitVector;
 use state_processing::per_block_processing::errors::AttestationValidationError;
 use state_processing::per_block_processing::{
-    VerifySignatures, get_slashable_indices_modular, verify_exit,
+    VerifySignatures, get_slashable_indices_modular, verify_exit, verify_proposer_slashing,
 };
 use state_processing::{SigVerifiedOp, VerifyOperation};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
@@ -57,9 +59,9 @@ pub struct OperationPool<E: EthSpec + Default> {
     /// Set of attester slashings, and the fork version they were verified against.
     attester_slashings: RwLock<HashSet<SigVerifiedOp<AttesterSlashing<E>, E>>>,
     /// Map from proposer index to slashing.
-    proposer_slashings: RwLock<HashMap<u64, SigVerifiedOp<ProposerSlashing, E>>>,
+    proposer_slashings: RwLock<ValidatorMap<SigVerifiedOp<ProposerSlashing, E>>>,
     /// Map from exiting validator to their exit data.
-    voluntary_exits: RwLock<HashMap<u64, SigVerifiedOp<SignedVoluntaryExit, E>>>,
+    voluntary_exits: RwLock<ValidatorMap<SigVerifiedOp<SignedVoluntaryExit, E>>>,
     /// Map from credential changing validator to their position in the queue.
     bls_to_execution_changes: RwLock<BlsToExecutionChanges<E>>,
     /// Map from payload attestation data to the aggregate for that data.
@@ -99,6 +101,20 @@ pub struct AttestationStats {
 impl From<SyncAggregateError> for OpPoolError {
     fn from(e: SyncAggregateError) -> Self {
         OpPoolError::SyncAggregateError(e)
+    }
+}
+
+/// A proposer slashing is stored under the index of the proposer it slashes.
+impl<E: EthSpec> ValidatorIndexed for SigVerifiedOp<ProposerSlashing, E> {
+    fn validator_index(&self) -> u64 {
+        self.as_inner().proposer_index()
+    }
+}
+
+/// A voluntary exit is stored under the index of the validator that exits.
+impl<E: EthSpec> ValidatorIndexed for SigVerifiedOp<SignedVoluntaryExit, E> {
+    fn validator_index(&self) -> u64 {
+        self.as_inner().message.validator_index
     }
 }
 
@@ -467,10 +483,9 @@ impl<E: EthSpec> OperationPool<E> {
         &self,
         verified_proposer_slashing: SigVerifiedOp<ProposerSlashing, E>,
     ) {
-        self.proposer_slashings.write().insert(
-            verified_proposer_slashing.as_inner().proposer_index(),
-            verified_proposer_slashing,
-        );
+        self.proposer_slashings
+            .write()
+            .insert(verified_proposer_slashing);
     }
 
     /// Insert an attester slashing into the pool.
@@ -499,10 +514,13 @@ impl<E: EthSpec> OperationPool<E> {
             self.proposer_slashings.read().values(),
             |slashing| {
                 slashing.signature_is_still_valid(&state.fork())
-                    && state
-                        .validators()
-                        .get(slashing.as_inner().signed_header_1.message.proposer_index as usize)
-                        .is_some_and(|validator| validator.is_slashable_at(state.current_epoch()))
+                    && verify_proposer_slashing(
+                        slashing.as_inner(),
+                        state,
+                        VerifySignatures::False,
+                        spec,
+                    )
+                    .is_ok()
             },
             |slashing| slashing.as_inner().clone(),
             E::MaxProposerSlashings::to_usize(),
@@ -516,6 +534,20 @@ impl<E: EthSpec> OperationPool<E> {
             .collect();
 
         let attester_slashings = self.get_attester_slashings(state, &mut to_be_slashed);
+
+        // Exclude from the exits every validator that the slashings above can slash. The set
+        // already holds these indices: this recomputes them from the packed slashings alone, so
+        // that the exclusion can be proved without reasoning about the max cover (see
+        // `verification/operation_pool`).
+        insert_proposer_slashing_indices(&mut to_be_slashed, &proposer_slashings);
+        for slashing in &attester_slashings {
+            let slashing = slashing.to_ref();
+            insert_common_attesting_indices(
+                &mut to_be_slashed,
+                slashing.attestation_1().attesting_indices_iter().as_slice(),
+                slashing.attestation_2().attesting_indices_iter().as_slice(),
+            );
+        }
 
         let voluntary_exits = self.get_voluntary_exits(
             state,
@@ -612,9 +644,7 @@ impl<E: EthSpec> OperationPool<E> {
 
     /// Insert a voluntary exit that has previously been checked elsewhere.
     pub fn insert_voluntary_exit(&self, exit: SigVerifiedOp<SignedVoluntaryExit, E>) {
-        self.voluntary_exits
-            .write()
-            .insert(exit.as_inner().message.validator_index, exit);
+        self.voluntary_exits.write().insert(exit);
     }
 
     /// Get a list of voluntary exits for inclusion in a block.
@@ -836,6 +866,10 @@ impl<E: EthSpec> OperationPool<E> {
 }
 
 /// Filter up to a maximum number of operations out of an iterator.
+///
+/// Written as an explicit loop so that it can be extracted with Aeneas and proved correct in Lean
+/// (see `verification/operation_pool`). It makes the same calls to `next`, `filter` and `mapping`,
+/// in the same order, as `filter(..).take(limit).map(..).collect()`.
 fn filter_limit_operations<'a, T, V: 'a, I, F, G>(
     operations: I,
     filter: F,
@@ -848,12 +882,46 @@ where
     G: Fn(&T) -> V,
     T: Clone + 'a,
 {
-    operations
-        .into_iter()
-        .filter(|x| filter(*x))
-        .take(limit)
-        .map(mapping)
-        .collect()
+    let mut selected = Vec::new();
+    let mut operations = operations.into_iter();
+    while selected.len() < limit {
+        let Some(operation) = operations.next() else {
+            break;
+        };
+        if filter(operation) {
+            selected.push(mapping(operation));
+        }
+    }
+    selected
+}
+
+/// Add the proposer index of each slashing to `indices`.
+///
+/// Free of `EthSpec` so that it can be extracted with Aeneas and proved correct in Lean (see
+/// `verification/operation_pool`).
+fn insert_proposer_slashing_indices(indices: &mut HashSet<u64>, slashings: &[ProposerSlashing]) {
+    for slashing in slashings {
+        indices.insert(slashing.signed_header_1.message.proposer_index);
+    }
+}
+
+/// Add every validator index that appears in both `first` and `second` to `indices`.
+///
+/// For the two attestations of an attester slashing this is a superset of the validators that
+/// processing the slashing can slash.
+///
+/// Free of `EthSpec` so that it can be extracted with Aeneas and proved correct in Lean (see
+/// `verification/operation_pool`).
+fn insert_common_attesting_indices(indices: &mut HashSet<u64>, first: &[u64], second: &[u64]) {
+    let mut in_first = HashSet::with_capacity(first.len());
+    for index in first {
+        in_first.insert(*index);
+    }
+    for index in second {
+        if in_first.contains(index) {
+            indices.insert(*index);
+        }
+    }
 }
 
 /// Remove all entries from the given hash map for which `prune_if` returns true.
@@ -862,14 +930,14 @@ where
 /// in the state's validator registry and then passed to `prune_if`.
 /// Entries for unknown validators will be kept.
 fn prune_validator_hash_map<T, F, E: EthSpec>(
-    map: &mut HashMap<u64, SigVerifiedOp<T, E>>,
+    map: &mut ValidatorMap<SigVerifiedOp<T, E>>,
     prune_if: F,
     state: &BeaconState<E>,
 ) where
     F: Fn(u64, &Validator) -> bool,
     T: VerifyOperation<E>,
 {
-    map.retain(|&validator_index, op| {
+    map.retain(|validator_index, op| {
         op.signature_is_still_valid(&state.fork())
             && state
                 .validators()
